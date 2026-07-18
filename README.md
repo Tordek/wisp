@@ -12,6 +12,7 @@
 ## Opcodes
 
 ### Control Flow
+
 - NOP
 - HALT
 - JUMP {target}
@@ -25,9 +26,8 @@
 - RETURN
 - MAKE_CLOSURE dst, code
 
-
-
 ### Arithmetic:
+
 - ADD, to: 4, op1: 4, op2: 4
 - MUL, to: 4, op1: 4, op2: 4
 - SUB, to: 4, op1: 4, op2: 4
@@ -35,6 +35,7 @@
 - IDIV - returns 2 values
 
 ### Data
+
 - LOAD reg, {literal}, Where a Literal is either NIL, T, an INTEGRAL or an ADDRESS
 - LOAD reg, {constant} Where constant is an relative position of the CONSTANTS area of the program
 - MOV toReg, fromReg
@@ -42,8 +43,10 @@
 - STORE depth, slot, reg ?
 - LOADGLOBAL reg, symbol - scoped per-program
 - LOADSGLOBAL reg, symbol - scoped for the machine
+- LDPAYLOAD {Ax}, reg - Loads the PAYLOAD of a WORD into an ADDRESS token.
 
 ### Comparison
+
 - EQ
 - LT
 - GT
@@ -52,6 +55,7 @@
 - NE
 
 ### Cons cells
+
 - CONS to, car, cdr
 - CAR to, cons
 - CDR to, cons
@@ -59,21 +63,41 @@
 - SET_CDR cons, value
 
 ### Type ops
+
 - TYPEP dst, obj, register
 - TYPEP dst, obj, type
 - TYPE dst, obj
 - CHECK_TYPE obj, type
 
 ### Memory
+
 - ALLOC dst, {type} [, {size}]
 
-## Preloaded symbols:
-- T
-- one for each type
-- NIL
+## Preloaded symbols
 
+The CPU requires certain Root symbols to be defined at the start of RAM:
+
+Minimally, usually in ROM:
+
+- NIL
+- T
+
+Afterwards, loaded from a Bootstrap program:
+
+Type symbols:
+
+- CONS
+- FIXNUM
+- POINTER
+- STRING
+
+Trap symbols:
+
+- INVALID-INSTRUCTION
+- INVALID-WORD
 
 ## Calling Convention
+
 The first 12 registers are caller-saved, as needed; their values can be modified
 freely by the function call.
 
@@ -85,7 +109,7 @@ results), R6 points to a contiguous, mixed ARRAYDATA of params.
 The last 4 registers may be used as temporary storage, but the function MUST
 restore their values before exiting.
 
-On return, R7 indicates how many of the parameters contain values. 
+On return, R7 indicates how many of the parameters contain values.
 
 - R0-7 hold arguments to calls. Caller-saved.
 - R0-5 hold results from calls.
@@ -94,8 +118,4 @@ On return, R7 indicates how many of the parameters contain values.
 - R8-11 are temp variables, may be clobbered. Caller-saved.
 - R12-15 are temp variables, may not be clobbered. Callee-saved.
 
-
-
-
-
-Sam
+- A0-3 are Address registers, able to hold raw data, usually pointers.
