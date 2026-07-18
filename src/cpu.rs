@@ -2,6 +2,9 @@ use int_enum::IntEnum;
 
 use crate::memory::Memory;
 
+type MachineAddressSize = u64;
+type WordSize = u64;
+
 pub const INSTRUCTION_SIZE: u64 = 2;
 pub enum MemoryLayout {}
 impl MemoryLayout {
@@ -158,17 +161,17 @@ impl Instruction {
 }
 
 impl Cpu {
-    pub fn reset<M: Memory>(&mut self, memory: &M) {
+    pub fn reset<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &M) {
         self.pc = memory.read_word(MemoryLayout::RESET_VECTOR);
     }
 
-    fn fetch<M: Memory>(&self, memory: &M) -> u128 {
+    fn fetch<M: Memory<MachineAddressSize, WordSize>>(&self, memory: &M) -> u128 {
         let instruction_low = memory.read_word(self.pc) as u128;
         let instruction_high = memory.read_word(self.pc + 1) as u128;
         instruction_high << 64 | instruction_low
     }
 
-    fn execute<M: Memory>(
+    fn execute<M: Memory<MachineAddressSize, WordSize>>(
         &mut self,
         instruction: Instruction,
         memory: &mut M,
@@ -216,7 +219,7 @@ impl Cpu {
         }
     }
 
-    pub fn step<M: Memory>(&mut self, memory: &mut M) {
+    pub fn step<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &mut M) {
         let instruction_raw = self.fetch(memory);
         let instruction = Instruction::decode(instruction_raw);
 
