@@ -148,7 +148,7 @@ impl WispMachine {
     }
 
     pub fn step(&mut self) {
-        self.cpu.step(&mut self.ram);
+        self.cpu.full_step(&mut self.ram);
         if self.cpu.halted {
             self.halted = true;
         }

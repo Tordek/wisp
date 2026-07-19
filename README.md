@@ -15,14 +15,10 @@
 
 - NOP
 - HALT
-- JUMP {target}
-- JT reg, {target}
-- JF reg, {target}
-- JUMPA {address}
-- JAT reg, {address}
-- JAF reg, {address}
-- CALL {reg}
-- CALL {address}
+- JUMP {target} - With 4 variants for {address}, {register}, {absolute}, {relative}
+- JT reg, {target} - With 4 variants for {address}, {register}, {absolute}, {relative}
+- JF reg, {target} - With 4 variants for {address}, {register}, {absolute}, {relative}
+- CALL {reg} - With 4 variants for {address}, {register}, {absolute}, {relative}
 - RETURN
 - MAKE_CLOSURE dst, code
 
