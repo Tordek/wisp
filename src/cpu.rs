@@ -11,6 +11,8 @@ impl MemoryLayout {
     // Standard addresses.
     pub const NIL_ROOT: u64 = 0x0000000000000000;
     pub const T_ROOT: u64 = 0x0000000000000001;
+    pub const ALLOC_VECTOR: u64 = 0x000000000000fc0;
+    pub const ALLOC_CONS_VECTOR: u64 = 0x000000000000fd0;
     pub const RESET_VECTOR: u64 = 0x000000000000fe0;
     pub const TRAP_VECTOR: u64 = 0x000000000000ff0;
     pub const CPU_RESERVED_END: u64 = 0x000000000001000;
@@ -34,6 +36,7 @@ impl ConsLayout {
     pub const CDR_OFFSET: u64 = 1;
 }
 
+#[derive(Clone, Copy, Debug)]
 pub enum Root {
     NIL,
     T,
@@ -43,7 +46,7 @@ pub enum Root {
 }
 
 #[repr(u8)]
-#[derive(PartialEq, Eq, Clone, Copy, IntEnum)]
+#[derive(PartialEq, Eq, Clone, Copy, IntEnum, Debug)]
 pub enum WordType {
     Undefined,
     Fixnum,
@@ -57,7 +60,7 @@ pub enum WordType {
     Float,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct Word {
     tag: WordType,
     payload: u64,
@@ -101,6 +104,7 @@ impl From<Word> for u64 {
     }
 }
 
+#[derive(Debug)]
 pub struct Cpu {
     /// Common registers.
     registers: [Word; 16],
@@ -133,11 +137,13 @@ impl Default for Cpu {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 struct Register(usize);
 
+#[derive(Debug)]
 struct AddressRegister(usize);
 
+#[derive(Debug)]
 enum Instruction {
     Halt,
     Nop,
@@ -187,7 +193,7 @@ enum Instruction {
         offset: i64,
     },
     CallAdr {
-        target: Register,
+        target: AddressRegister,
     },
     CallReg {
         target: Register,
@@ -199,7 +205,6 @@ enum Instruction {
         offset: i64,
     },
     Cons {
-        dst: Register,
         car: Register,
         cdr: Register,
     },
@@ -313,175 +318,221 @@ enum Instruction {
         dst: Register,
         root: Root,
     },
+    LoadAddress {
+        dst: AddressRegister,
+        address: u64,
+    },
+    Store {
+        address: AddressRegister,
+        value: Register,
+    },
+    StoreOffset {
+        base: AddressRegister,
+        offset: i64,
+        value: Register,
+    },
+    LoadCons {
+        dst: Register,
+        address: AddressRegister,
+    },
 }
 
 // TODO: Find a real encoding/decoding.
 impl Instruction {
     fn decode(lo: u64, hi: u64) -> Result<Self, Trap> {
-        match lo {
+        let [opcode, r0, r1, r2, r3, r4, r5, r6] = lo.to_le_bytes();
+        match opcode {
             0 => Ok(Self::Halt),
             1 => Ok(Self::Nop),
             2 => Ok(Self::JumpAdr {
-                target: AddressRegister(hi as usize),
+                target: AddressRegister(hi as usize - 16),
             }),
-            3 => Ok(Self::JumpIfAdr {
-                condition: Register(((hi >> 8) & 0xff) as usize),
-                target: AddressRegister(((hi >> 0) & 0xff) as usize),
+            3 => Ok(Self::JumpReg {
+                target: Register(r0 as usize),
             }),
-            4 => Ok(Self::JumpIfNotAdr {
-                condition: Register(((hi >> 8) & 0xff) as usize),
-                target: AddressRegister(((hi >> 0) & 0xff) as usize),
+            4 => Ok(Self::JumpImm { target: hi }),
+            5 => Ok(Self::JumpRel { offset: hi as i64 }),
+            6 => Ok(Self::JumpIfAdr {
+                target: AddressRegister(hi as usize - 16),
+                condition: Register(r1 as usize),
             }),
-            5 => Ok(Self::JumpIfReg {
-                condition: Register(((hi >> 8) & 0xff) as usize),
-                target: Register(((hi >> 8) & 0xff) as usize),
+            7 => Ok(Self::JumpIfReg {
+                target: Register(r0 as usize),
+                condition: Register(r1 as usize),
             }),
-            6 => Ok(Self::JumpIfNotReg {
-                condition: Register(((hi >> 8) & 0xff) as usize),
-                target: Register(((hi >> 8) & 0xff) as usize),
-            }),
-            7 => Ok(Self::JumpReg {
-                target: Register(((hi >> 8) & 0xff) as usize),
-            }),
-            8 => Ok(Self::JumpRel {
-                offset: ((hi >> 8) & 0xff) as i64,
+            8 => Ok(Self::JumpIfImm {
+                target: hi,
+                condition: Register(r1 as usize),
             }),
             9 => Ok(Self::JumpIfRel {
-                condition: Register(((hi >> 8) & 0xff) as usize),
-                offset: ((hi >> 8) & 0xff) as i64,
+                offset: hi as i64,
+                condition: Register(r1 as usize),
             }),
-            10 => Ok(Self::JumpIfNotRel {
-                condition: Register(((hi >> 8) & 0xff) as usize),
-                offset: (((hi >> 8) & 0xff) as i64),
+            10 => Ok(Self::JumpIfNotAdr {
+                target: AddressRegister(hi as usize - 16),
+                condition: Register(r1 as usize),
             }),
-            11 => Ok(Self::Eq {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            11 => Ok(Self::JumpIfNotReg {
+                target: Register(r0 as usize),
+                condition: Register(r1 as usize),
             }),
-            12 => Ok(Self::Ne {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            12 => Ok(Self::JumpIfNotImm {
+                target: hi,
+                condition: Register(r1 as usize),
             }),
-            13 => Ok(Self::Gt {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            13 => Ok(Self::JumpIfNotRel {
+                offset: hi as i64,
+                condition: Register(r1 as usize),
             }),
-            14 => Ok(Self::Gte {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            14 => Ok(Self::CallAdr {
+                target: AddressRegister(hi as usize - 16),
             }),
-            15 => Ok(Self::Lt {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            15 => Ok(Self::CallReg {
+                target: Register(r0 as usize),
             }),
-            16 => Ok(Self::Lte {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            16 => Ok(Self::CallImm { target: hi }),
+            17 => Ok(Self::CallRel { offset: hi as i64 }),
+
+            18 => Ok(Self::Return),
+            19 => Ok(Self::MakeClosure {
+                dst: Register(r0 as usize),
+                code: AddressRegister(r0 as usize - 16),
             }),
-            17 => Ok(Self::Cons {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                car: Register(((hi >> 8) & 0xff) as usize),
-                cdr: Register(((hi >> 8) & 0xff) as usize),
+
+            20 => Ok(Self::Eq {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            18 => Ok(Self::Car {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                src: Register(((hi >> 8) & 0xff) as usize),
+            21 => Ok(Self::Ne {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            19 => Ok(Self::Cdr {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                src: Register(((hi >> 8) & 0xff) as usize),
+            22 => Ok(Self::Gt {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            20 => Ok(Self::SetCar {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                val: Register(((hi >> 8) & 0xff) as usize),
+            23 => Ok(Self::Gte {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            21 => Ok(Self::SetCdr {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                val: Register(((hi >> 8) & 0xff) as usize),
+            24 => Ok(Self::Lt {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            22 => Ok(Self::Uncons {
-                car: Register(((hi >> 8) & 0xff) as usize),
-                cdr: Register(((hi >> 8) & 0xff) as usize),
-                src: Register(((hi >> 8) & 0xff) as usize),
+            25 => Ok(Self::Lte {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            23 => Ok(Self::Add {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+
+            26 => Ok(Self::Cons {
+                car: Register(r0 as usize),
+                cdr: Register(r0 as usize),
             }),
-            24 => Ok(Self::Sub {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            27 => Ok(Self::Car {
+                dst: Register(r0 as usize),
+                src: Register(r0 as usize),
             }),
-            25 => Ok(Self::Mul {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            28 => Ok(Self::Cdr {
+                dst: Register(r0 as usize),
+                src: Register(r0 as usize),
             }),
-            26 => Ok(Self::Div {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            29 => Ok(Self::SetCar {
+                dst: Register(r0 as usize),
+                val: Register(r0 as usize),
             }),
-            27 => Ok(Self::IDiv {
-                div: Register(((hi >> 8) & 0xff) as usize),
-                rem: Register(((hi >> 8) & 0xff) as usize),
-                op1: Register(((hi >> 8) & 0xff) as usize),
-                op2: Register(((hi >> 8) & 0xff) as usize),
+            30 => Ok(Self::SetCdr {
+                dst: Register(r0 as usize),
+                val: Register(r0 as usize),
             }),
-            28 => Ok(Self::CallReg {
-                target: Register(((hi >> 8) & 0xff) as usize),
+            31 => Ok(Self::Uncons {
+                car: Register(r0 as usize),
+                cdr: Register(r0 as usize),
+                src: Register(r0 as usize),
             }),
-            29 => Ok(Self::CallAdr {
-                target: Register(((hi >> 8) & 0xff) as usize),
+            32 => Ok(Self::Add {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            30 => Ok(Self::Return),
-            31 => Ok(Self::MakeClosure {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                code: AddressRegister(((hi >> 8) & 0xff) as usize),
+            33 => Ok(Self::Sub {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            32 => Ok(Self::LoadPc {
-                dst: AddressRegister(((hi >> 8) & 0xff) as usize),
+            34 => Ok(Self::Mul {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            33 => Ok(Self::PushPc),
-            34 => Ok(Self::PopR {
-                dst: Register(((hi >> 8) & 0xff) as usize),
+            35 => Ok(Self::Div {
+                dst: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            35 => Ok(Self::PushR {
-                src: Register(((hi >> 8) & 0xff) as usize),
+            36 => Ok(Self::IDiv {
+                div: Register(r0 as usize),
+                rem: Register(r0 as usize),
+                op1: Register(r0 as usize),
+                op2: Register(r0 as usize),
             }),
-            36 => Ok(Self::PopA {
-                dst: AddressRegister(((hi >> 8) & 0xff) as usize),
+            37 => Ok(Self::LoadPc {
+                dst: AddressRegister(r0 as usize - 16),
             }),
-            37 => Ok(Self::PushA {
-                src: AddressRegister(((hi >> 8) & 0xff) as usize),
+            38 => Ok(Self::PushPc),
+            39 => Ok(Self::PopR {
+                dst: Register(r0 as usize),
             }),
-            38 => Ok(Self::LoadChar {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                val: ((hi >> 8) & 0xff),
+            40 => Ok(Self::PushR {
+                src: Register(r0 as usize),
             }),
-            39 => Ok(Self::LoadFixnum {
-                dst: Register(((hi >> 8) & 0xff) as usize),
-                val: ((hi >> 8) & 0xff),
+            41 => Ok(Self::PopA {
+                dst: AddressRegister(r0 as usize - 16),
             }),
-            40 => match ((hi >> 8) & 0xff) {
+            42 => Ok(Self::PushA {
+                src: AddressRegister(r0 as usize - 16),
+            }),
+            43 => Ok(Self::LoadChar {
+                dst: Register(r0 as usize),
+                val: hi,
+            }),
+            44 => Ok(Self::LoadFixnum {
+                dst: Register(r0 as usize),
+                val: hi,
+            }),
+            45 => match hi {
                 0 => Ok(Self::LoadRoot {
-                    dst: Register(((hi >> 8) & 0xff) as usize),
+                    dst: Register(r0 as usize),
                     root: Root::NIL,
                 }),
                 1 => Ok(Self::LoadRoot {
-                    dst: Register(((hi >> 8) & 0xff) as usize),
+                    dst: Register(r0 as usize),
                     root: Root::T,
                 }),
                 _ => Err(Trap::InvalidInstruction),
             },
+            46 => Ok(Instruction::LoadAddress {
+                dst: AddressRegister(r0 as usize - 16),
+                address: hi,
+            }),
+            47 => Ok(Instruction::Store {
+                address: AddressRegister(r0 as usize - 16),
+                value: Register(r1 as usize),
+            }),
+            48 => Ok(Self::StoreOffset {
+                base: AddressRegister(r0 as usize - 16),
+                offset: hi as i64,
+                value: Register(r1 as usize),
+            }),
+            49 => Ok(Self::LoadCons {
+                dst: Register(r0 as usize),
+                address: AddressRegister(r1 as usize - 16),
+            }),
             _ => Err(Trap::InvalidInstruction),
         }
     }
@@ -489,67 +540,217 @@ impl Instruction {
     fn encode(&self) -> (u64, u64) {
         match self {
             // Control flow
-            Instruction::Halt => (0, 0),
-            Instruction::Nop => (1, 0),
+            Instruction::Halt => (u64::from_le_bytes([0, 0, 0, 0, 0, 0, 0, 0]), 0),
+            Instruction::Nop => (u64::from_le_bytes([1, 0, 0, 0, 0, 0, 0, 0]), 0),
 
-            Instruction::JumpAdr { target } => (2, 0),
-            Instruction::JumpReg { target } => (7, 0),
-            Instruction::JumpImm { target } => (0, 0),
-            Instruction::JumpRel { offset } => (8, 0),
+            Instruction::JumpAdr { target } => (
+                u64::from_le_bytes([2, target.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::JumpReg { target } => {
+                (u64::from_le_bytes([3, target.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
+            }
+            Instruction::JumpImm { target } => {
+                (u64::from_le_bytes([4, 0, 0, 0, 0, 0, 0, 0]), *target)
+            }
+            Instruction::JumpRel { offset } => {
+                (u64::from_le_bytes([5, 0, 0, 0, 0, 0, 0, 0]), *offset as u64)
+            }
 
-            Instruction::JumpIfAdr { condition, target } => (3, 0),
-            Instruction::JumpIfReg { condition, target } => (5, 0),
-            Instruction::JumpIfImm { condition, target } => (5, 0),
-            Instruction::JumpIfRel { condition, offset } => (9, 0),
+            Instruction::JumpIfAdr { target, condition } => (
+                u64::from_le_bytes([6, target.0 as u8 + 16, condition.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::JumpIfReg { target, condition } => (
+                u64::from_le_bytes([7, target.0 as u8, condition.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::JumpIfImm { target, condition } => (
+                u64::from_le_bytes([8, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
+                *target,
+            ),
+            Instruction::JumpIfRel { offset, condition } => (
+                u64::from_le_bytes([9, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
+                *offset as u64,
+            ),
 
-            Instruction::JumpIfNotAdr { condition, target } => (4, 0),
-            Instruction::JumpIfNotReg { condition, target } => (6, 0),
-            Instruction::JumpIfNotImm { condition, target } => (6, 0),
-            Instruction::JumpIfNotRel { condition, offset } => (10, 0),
+            Instruction::JumpIfNotAdr { target, condition } => (
+                u64::from_le_bytes([10, target.0 as u8 + 16, condition.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::JumpIfNotReg { target, condition } => (
+                u64::from_le_bytes([11, target.0 as u8, condition.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::JumpIfNotImm { target, condition } => (
+                u64::from_le_bytes([12, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
+                *target,
+            ),
+            Instruction::JumpIfNotRel { offset, condition } => (
+                u64::from_le_bytes([13, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
+                *offset as u64,
+            ),
 
-            Instruction::CallAdr { target } => (28, 0),
-            Instruction::CallReg { target } => (29, 0),
-            Instruction::CallImm { target } => (29, 0),
-            Instruction::CallRel { offset } => (29, 0),
+            Instruction::CallAdr { target } => (
+                u64::from_le_bytes([14, target.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::CallReg { target } => (
+                u64::from_le_bytes([15, target.0 as u8, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::CallImm { target } => {
+                (u64::from_le_bytes([16, 0, 0, 0, 0, 0, 0, 0]), *target)
+            }
+            Instruction::CallRel { offset } => (
+                u64::from_le_bytes([17, 0, 0, 0, 0, 0, 0, 0]),
+                *offset as u64,
+            ),
 
-            Instruction::Return => (30, 0),
-            Instruction::MakeClosure { dst, code } => (31, 0),
+            Instruction::Return => (u64::from_le_bytes([18, 0, 0, 0, 0, 0, 0, 0]), 0),
+            Instruction::MakeClosure { dst, code } => (
+                u64::from_le_bytes([19, dst.0 as u8, code.0 as u8 + 16, 0, 0, 0, 0, 0]),
+                0,
+            ),
 
             // Comparison
-            Instruction::Eq { dst, op1, op2 } => (11, 0),
-            Instruction::Ne { dst, op1, op2 } => (12, 0),
-            Instruction::Gt { dst, op1, op2 } => (13, 0),
-            Instruction::Gte { dst, op1, op2 } => (14, 0),
-            Instruction::Lt { dst, op1, op2 } => (15, 0),
-            Instruction::Lte { dst, op1, op2 } => (16, 0),
+            Instruction::Eq { dst, op1, op2 } => (
+                u64::from_le_bytes([20, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Ne { dst, op1, op2 } => (
+                u64::from_le_bytes([21, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Gt { dst, op1, op2 } => (
+                u64::from_le_bytes([22, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Gte { dst, op1, op2 } => (
+                u64::from_le_bytes([23, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Lt { dst, op1, op2 } => (
+                u64::from_le_bytes([24, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Lte { dst, op1, op2 } => (
+                u64::from_le_bytes([25, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
 
             // Cons
-            Instruction::Cons { dst, car, cdr } => (17, 0),
-            Instruction::Car { dst, src } => (18, 0),
-            Instruction::Cdr { dst, src } => (19, 0),
-            Instruction::SetCar { dst, val } => (20, 0),
-            Instruction::SetCdr { dst, val } => (21, 0),
-            Instruction::Uncons { car, cdr, src } => (22, 0),
+            Instruction::Cons { car, cdr } => (
+                u64::from_le_bytes([26, car.0 as u8, cdr.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Car { dst, src } => (
+                u64::from_le_bytes([27, dst.0 as u8, src.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Cdr { dst, src } => (
+                u64::from_le_bytes([28, dst.0 as u8, src.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::SetCar { dst, val } => (
+                u64::from_le_bytes([29, dst.0 as u8, val.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::SetCdr { dst, val } => (
+                u64::from_le_bytes([30, dst.0 as u8, val.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Uncons { car, cdr, src } => (
+                u64::from_le_bytes([31, car.0 as u8, cdr.0 as u8, src.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
 
             // Arithmetic
-            Instruction::Add { dst, op1, op2 } => (23, 0),
-            Instruction::Sub { dst, op1, op2 } => (24, 0),
-            Instruction::Mul { dst, op1, op2 } => (25, 0),
-            Instruction::Div { dst, op1, op2 } => (26, 0),
-            Instruction::IDiv { div, rem, op1, op2 } => (27, 0),
+            Instruction::Add { dst, op1, op2 } => (
+                u64::from_le_bytes([32, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Sub { dst, op1, op2 } => (
+                u64::from_le_bytes([33, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Mul { dst, op1, op2 } => (
+                u64::from_le_bytes([34, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::Div { dst, op1, op2 } => (
+                u64::from_le_bytes([35, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::IDiv { div, rem, op1, op2 } => (
+                u64::from_le_bytes([
+                    36,
+                    div.0 as u8,
+                    rem.0 as u8,
+                    op1.0 as u8,
+                    op2.0 as u8,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
 
             // Load
-            Instruction::LoadPc { dst } => (32, 0),
-            Instruction::PushPc => (33, 0),
+            Instruction::LoadPc { dst } => (
+                u64::from_le_bytes([37, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::PushPc => (u64::from_le_bytes([38, 0, 0, 0, 0, 0, 0, 0]), 0),
 
-            Instruction::PopR { dst } => (34, 0),
-            Instruction::PushR { src } => (35, 0),
-            Instruction::PopA { dst } => (36, 0),
-            Instruction::PushA { src } => (37, 0),
+            Instruction::PopR { dst } => {
+                (u64::from_le_bytes([39, dst.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
+            }
+            Instruction::PushR { src } => {
+                (u64::from_le_bytes([40, src.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
+            }
+            Instruction::PopA { dst } => (
+                u64::from_le_bytes([41, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::PushA { src } => (
+                u64::from_le_bytes([42, src.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
 
-            Instruction::LoadChar { dst, val } => (38, 0),
-            Instruction::LoadFixnum { dst, val } => (39, 0),
-            Instruction::LoadRoot { dst, root } => (40, 0),
+            Instruction::LoadChar { dst, val } => (
+                u64::from_le_bytes([43, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
+                *val as u64,
+            ),
+            Instruction::LoadFixnum { dst, val } => (
+                u64::from_le_bytes([44, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
+                *val as u64,
+            ),
+            Instruction::LoadRoot { dst, root } => (
+                u64::from_le_bytes([45, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
+                *root as u64,
+            ),
+
+            Instruction::LoadAddress { dst, address } => (
+                u64::from_le_bytes([46, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                *address,
+            ),
+            Instruction::Store { address, value } => (
+                u64::from_le_bytes([47, address.0 as u8 + 16, value.0 as u8, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::StoreOffset {
+                base,
+                offset,
+                value,
+            } => (
+                u64::from_le_bytes([48, base.0 as u8 + 16, value.0 as u8, 0, 0, 0, 0, 0]),
+                *offset as u64,
+            ),
+            Instruction::LoadCons { dst, address } => (
+                u64::from_le_bytes([49, dst.0 as u8, address.0 as u8 + 16, 0, 0, 0, 0, 0]),
+                0,
+            ),
         }
     }
 }
@@ -674,7 +875,10 @@ impl Cpu {
             Instruction::CallImm { target: dst } => Err(Trap::Unimplemented),
             Instruction::CallRel { offset: dst } => Err(Trap::Unimplemented),
 
-            Instruction::Return => Err(Trap::Unimplemented),
+            Instruction::Return => {
+                let return_address = self.pop(memory);
+                Ok(return_address)
+            }
             Instruction::MakeClosure { dst, code } => Err(Trap::Unimplemented),
 
             // Comparison
@@ -721,7 +925,19 @@ impl Cpu {
             }
 
             // Cons
-            Instruction::Cons { dst, car, cdr } => Err(Trap::Unimplemented),
+            Instruction::Cons { car, cdr } => {
+                let next_pc = self.pc + INSTRUCTION_SIZE;
+                self.push(memory, next_pc);
+                self.push(memory, self.registers[cdr.0].into());
+                self.push(memory, self.registers[car.0].into());
+                self.push(memory, 2);
+                self.push(memory, WordType::Cons as u64);
+
+                // ALLOC_CONS_VECTOR has special semantics and it handles cleaning up
+                // the params.
+                let location = memory.read_word(MemoryLayout::ALLOC_CONS_VECTOR);
+                Ok(location)
+            }
             Instruction::Car { dst, src } => {
                 let src_obj = self.read_register_as(src, WordType::Cons)?;
 
@@ -845,6 +1061,37 @@ impl Cpu {
 
                 Ok(self.pc + INSTRUCTION_SIZE)
             }
+
+            Instruction::LoadAddress { dst, address } => {
+                self.address[dst.0] = address;
+
+                Ok(self.pc + INSTRUCTION_SIZE)
+            }
+            Instruction::Store { address, value } => {
+                let value_obj = self.registers[value.0];
+                memory.write_word(self.address[address.0], value_obj.into());
+
+                Ok(self.pc + INSTRUCTION_SIZE)
+            }
+            Instruction::StoreOffset {
+                base,
+                offset,
+                value,
+            } => {
+                let value_obj = self.registers[value.0];
+
+                memory.write_word(
+                    (self.address[base.0 as usize] as i64 + offset) as u64,
+                    value_obj.into(),
+                );
+
+                Ok(self.pc + INSTRUCTION_SIZE)
+            }
+            Instruction::LoadCons { dst, address } => {
+                self.registers[dst.0] = Word::new(WordType::Cons, self.address[address.0]);
+
+                Ok(self.pc + INSTRUCTION_SIZE)
+            }
         }
     }
 
@@ -898,7 +1145,7 @@ mod tests {
         const NIL: Word = Word::new(WordType::Symbol, 0);
         const T: Word = Word::new(WordType::Symbol, 1);
         fn new() -> Self {
-            let mut data = vec![0; 0x2000];
+            let mut data = vec![0; 0x4000];
             data[0] = TestMemory::NIL.into();
             data[1] = TestMemory::T.into();
             Self { data }
@@ -981,6 +1228,101 @@ mod tests {
         );
         cpu.full_step(&mut memory);
         assert_eq!(cpu.pc, 0x2000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cons_builds_cell() -> Result<(), String> {
+        let mut cpu = Cpu::default();
+        let mut memory = TestMemory::new();
+
+        cpu.pc = 0x1000;
+        cpu.sp = 0x200;
+
+        let cons_hook = 0x2000;
+        let cons_cell = 0x3000;
+
+        memory.write_word(MemoryLayout::ALLOC_CONS_VECTOR, cons_hook);
+
+        memory.load_instructions(
+            cpu.pc as usize,
+            vec![
+                Instruction::LoadFixnum {
+                    dst: Register(1),
+                    val: 42,
+                },
+                Instruction::LoadFixnum {
+                    dst: Register(2),
+                    val: 99,
+                },
+                // R0 <- Cons(R1, R2)
+                Instruction::Cons {
+                    car: Register(1),
+                    cdr: Register(2),
+                },
+                Instruction::Halt,
+            ],
+        );
+
+        // Fake CONS_HOOK
+        memory.load_instructions(
+            cons_hook as usize,
+            vec![
+                // A real hook would call an allocator.
+                // For testing, directly create the object.
+                Instruction::LoadAddress {
+                    dst: AddressRegister(0),
+                    address: cons_cell,
+                },
+                Instruction::Store {
+                    address: AddressRegister(0),
+                    value: Register(1),
+                },
+                Instruction::StoreOffset {
+                    base: AddressRegister(0),
+                    offset: 1,
+                    value: Register(2),
+                },
+                Instruction::PopA {
+                    dst: AddressRegister(1),
+                },
+                Instruction::PopA {
+                    dst: AddressRegister(1),
+                },
+                Instruction::PopA {
+                    dst: AddressRegister(1),
+                },
+                Instruction::PopA {
+                    dst: AddressRegister(1),
+                },
+                Instruction::LoadCons {
+                    dst: Register(0),
+                    address: AddressRegister(0),
+                },
+                Instruction::Return,
+            ],
+        );
+
+        while !cpu.halted {
+            cpu.full_step(&mut memory);
+        }
+
+        let result = cpu.registers[0];
+
+        assert_eq!(result, Word::new(WordType::Cons, cons_cell));
+
+        assert_eq!(
+            Word::try_from(memory.read_word(cons_cell)).expect("couldn't parse word"),
+            Word::new(WordType::Fixnum, 42)
+        );
+
+        assert_eq!(
+            Word::try_from(memory.read_word(cons_cell + 1)).expect("couldn't parse word"),
+            Word::new(WordType::Fixnum, 99).into()
+        );
+
+        assert!(cpu.halted);
+
         Ok(())
     }
 }

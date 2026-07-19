@@ -71,6 +71,8 @@
 
 ## Preloaded symbols
 
+On reset, program execution starts at RESET_VECTOR.
+
 The CPU requires certain Root symbols to be defined at the start of RAM:
 
 Minimally, usually in ROM:
@@ -91,6 +93,42 @@ Trap symbols:
 
 - INVALID-INSTRUCTION
 - INVALID-WORD
+- ALLOCATION-ERROR
+
+Additionally, at ALLOC_VECTOR, and ALLOC_CONS_VECTOR two functions need to be
+defined with special semantics:
+
+```c
+alloc() {
+  // Stack contains:
+  // storage_location
+  // data_hi
+  // data_lo
+  // size
+  // type <- sp
+
+  // allocate <size> WORDs into obj. {type} can be used for metadata or
+  // type optimization as needed
+  obj = allocate(size);
+
+  obj[0] = data_lo;
+  obj[1] = data_hi;
+
+  A0 = obj
+  R0 = Pointer(A0)
+
+  // before exiting, the four parameters must be discarded from the stack
+  // Afterwards, all 
+}
+```
+
+alloc_cons is a specialized version that will always have type=CONS and size=2.
+Instad of Pointer(A0) it stores Cons(A0).
+
+They MUST return the pointer at A0 and restore ALL other registers, even ones defined
+as callee-saved. On error, they MUST jump to TRAP-HAMDLER.
+
+When the CPU detects an error,
 
 ## Calling Convention
 
