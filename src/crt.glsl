@@ -15,6 +15,8 @@ vec2 warp(vec2 uv) {
 }
 
 void main() {
+  vec3 amber = vec3(0.0, 0.749, 0.0);
+
   vec2 uv = warp(Texcoord);
 
   // Rounded corners
@@ -29,7 +31,7 @@ void main() {
     outColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
-  
+
   // Fetch primary color sample
   vec4 base_color = texture(tex, uv);
 
@@ -39,8 +41,15 @@ void main() {
   vec4 final_rgb = base_color + glow;
 
   // Apply Scanline Intensity Wave (based on internal 400 vertical text lines)
-  float scanline = sin(uv.y * 440.0 * 3.14159) * 0.08;
-  final_rgb.rgb -= scanline;
+  float scanline = sin(uv.y * 440.0 * 3.14159);
 
-  outColor = final_rgb + t;
+  float hiline = pow(fract(uv.y - t / 10), 20);
+
+  float hidot = pow(smoothstep(0.9, 1, hiline) * fract(uv.x - t *5),2);
+
+  final_rgb.rgb -= amber * scanline * 0.08;
+  final_rgb.rgb += amber * hiline * 0.08;
+  final_rgb.rgb += hidot * 0.18;
+
+  outColor = final_rgb;
 }
