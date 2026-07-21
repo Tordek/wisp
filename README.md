@@ -3,11 +3,11 @@
 ## Registers
 
 - 16 GP Registers R0-R16 containing Lisp objects
-- 4 Address objects A0-3 contain raw values
-- n Special registers containing raw data:
-  - SP, pointer to head of stack
-  - PC, pointer to current instruction
-  - ENV, pointer to environment
+- 8 Address objects A0-8 contain raw values
+- Of of these, 3 are aliased:
+  - SP, pointer to head of stack - alias for A5
+  - PC, pointer to current instruction - alias for A6
+  - ENV, pointer to environment - alias for A7
 
 ## Opcodes
 
@@ -15,31 +15,61 @@
 
 - NOP
 - HALT
-- JUMP {target} - With 4 variants for {address}, {register}, {absolute}, {relative}
-- JT reg, {target} - With 4 variants for {address}, {register}, {absolute}, {relative}
-- JF reg, {target} - With 4 variants for {address}, {register}, {absolute}, {relative}
-- CALL {reg} - With 4 variants for {address}, {register}, {absolute}, {relative}
+- JUMP {target} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
+- JT reg, {target} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
+- JF reg, {target} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
+- CALL {reg} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
 - RETURN
 - MAKE_CLOSURE dst, code
 
 ### Arithmetic:
 
-- ADD, to: 4, op1: 4, op2: 4
-- MUL, to: 4, op1: 4, op2: 4
-- SUB, to: 4, op1: 4, op2: 4
-- DIV, to: 4, op1: 4, op2: 4
-- IDIV - returns 2 values
+- ADD, to: Reg, op1: Reg, op2: Reg/Imm
+- MUL, to: Reg, op1: Reg, op2: Reg/Imm
+- SUB, to: Reg, op1: Reg, op2: Reg/Imm
+- DIV, to: Reg, op1: Reg, op2: Reg/Imm
+- IDIV, div: Reg, rem: Reg, op1: Reg, op2: Reg/Imm
+- NEG, to: Reg, op: Reg
+
+- AADD, to: Adr, op1: Adr, op2: Adr/Imm
+- ASUB, to: Adr, op1: Adr, op2: Adr/Imm
+- ANEG, to: Reg, op: Reg
+
+### Bitwise
+- OR
+- AND
+- XOR
+- SHL
+- SHR
+
+- AOR
+- AAND
+- AXOR
+- ASHL
+- ASHR
 
 ### Data
 
-- LOAD reg, {literal}, Where a Literal is either NIL, T, an INTEGRAL or an ADDRESS
-- LOAD reg, {constant} Where constant is an relative position of the CONSTANTS area of the program
-- MOV toReg, fromReg
+- MOV reg, imm --- Must be a valid word.
+- MOV reg1, reg2
+- LOAD reg, adr, off -- reg = *(adr+off)
+- STORE reg, adr, off -- *(adr+off) = reg
+
+- AMOV adr, imm
+- AMOV adr1, adr2
+- ALOAD adr, src -- adr = *(src+off)
+- ASTORE dst, adr -- *(dst+off) = adr
+
+- LOADPAYLOAD adr, reg - Loads the PAYLOAD of a WORD into an ADDRESS token.
+- SETPAYLOAD reg, adr
+- LOADTAG adr, reg
+- SETTAG reg, adr
+- SETTAG reg, imm
+
 - LOADLOCAL reg, depth, slot ?
-- STORE depth, slot, reg ?
+- STORELOCAL depth, slot, reg ?
 - LOADGLOBAL reg, symbol - scoped per-program
 - LOADSGLOBAL reg, symbol - scoped for the machine
-- LDPAYLOAD {Ax}, reg - Loads the PAYLOAD of a WORD into an ADDRESS token.
 
 ### Comparison
 
@@ -50,9 +80,17 @@
 - GEQ
 - NE
 
+- AEQ
+- ALT
+- AGT
+- ALEQ
+- AGEQ
+- ANE
+
 ### Cons cells
 
 - CONS to, car, cdr
+- UNCONS car, cdr, cons
 - CAR to, cons
 - CDR to, cons
 - SET_CAR cons, value
@@ -95,8 +133,13 @@ Trap symbols:
 - INVALID-WORD
 - ALLOCATION-ERROR
 
-Additionally, at ALLOC_VECTOR, and ALLOC_CONS_VECTOR two functions need to be
-defined with special semantics:
+## Interrupts
+
+0x00-0x7f are reserved; 0x80 are user-defined.
+
+Interrupt pointers are set up at 0xf00. When ain interrupt is called, all registers
+are saved to the stack. Traps MUST exit with IRETURN, which recovers all registers
+(except A0).
 
 ```c
 alloc() {
@@ -106,6 +149,7 @@ alloc() {
   // data_lo
   // size
   // type <- sp
+  // type is a prototype for the requested object, that is a Word with the tag set as needed but empty Payload.
 
   // allocate <size> WORDs into obj. {type} can be used for metadata or
   // type optimization as needed
@@ -115,7 +159,7 @@ alloc() {
   obj[1] = data_hi;
 
   A0 = obj
-  R0 = Pointer(A0)
+  R0 = Word(type.tag, A0)
 
   // before exiting, the four parameters must be discarded from the stack
   // Afterwards, all 
@@ -123,12 +167,14 @@ alloc() {
 ```
 
 alloc_cons is a specialized version that will always have type=CONS and size=2.
-Instad of Pointer(A0) it stores Cons(A0).
 
 They MUST return the pointer at A0 and restore ALL other registers, even ones defined
 as callee-saved. On error, they MUST jump to TRAP-HAMDLER.
 
 When the CPU detects an error,
+
+
+If R0 contains a Fixnum, 
 
 ## Calling Convention
 

@@ -11,11 +11,17 @@ impl MemoryLayout {
     // Standard addresses.
     pub const NIL_ROOT: u64 = 0x0000000000000000;
     pub const T_ROOT: u64 = 0x0000000000000001;
-    pub const ALLOC_VECTOR: u64 = 0x000000000000fc0;
-    pub const ALLOC_CONS_VECTOR: u64 = 0x000000000000fd0;
-    pub const RESET_VECTOR: u64 = 0x000000000000fe0;
-    pub const TRAP_VECTOR: u64 = 0x000000000000ff0;
+
+    pub const RESET_VECTOR: u64 = 0x000000000000eff;
+    pub const INTERRUPT_TABLE: u64 = 0x000000000000f00;
     pub const CPU_RESERVED_END: u64 = 0x000000000001000;
+}
+
+pub enum InterruptTableOffset {}
+impl InterruptTableOffset {
+    pub const TRAP_VECTOR: u64 = 0x00000000000002;
+    pub const ALLOC_VECTOR: u64 = 0x00000000000003;
+    pub const ALLOC_CONS_VECTOR: u64 = 0x00000000000003;
 }
 
 pub enum SymbolLayout {}
@@ -110,41 +116,50 @@ pub struct Cpu {
     registers: [Word; 16],
 
     /// Address registers
-    address: [u64; 4],
-
-    /// Program counter
-    pc: u64,
-
-    /// Stack pointer
-    sp: u64,
-
-    /// Environment pointer
-    env: u64,
+    address: [u64; 8],
 
     pub halted: bool,
+}
+impl Cpu {
+    const SP: usize = 5;
+    const PC: usize = 6;
+    const ENV: usize = 7;
 }
 
 impl Default for Cpu {
     fn default() -> Self {
         Cpu {
             registers: [Word::undefined(); 16],
-            address: [0; 4],
-            pc: 0,
-            sp: 0,
-            env: 0,
+            address: [0; 8],
             halted: false,
         }
     }
 }
 
 #[derive(PartialEq, Eq, Debug)]
-struct Register(usize);
+pub struct Register(pub usize);
+impl Register {
+    fn encode(&self) -> u8 {
+        self.0 as u8
+    }
+    fn decode(reg: u8) -> Self {
+        Self(reg as usize)
+    }
+}
 
 #[derive(Debug)]
-struct AddressRegister(usize);
+pub struct AddressRegister(pub usize);
+impl AddressRegister {
+    fn encode(&self) -> u8 {
+        return self.0 as u8 + 16;
+    }
+    fn decode(reg: u8) -> Self {
+        Self(reg as usize - 16)
+    }
+}
 
 #[derive(Debug)]
-enum Instruction {
+pub enum Instruction {
     Halt,
     Nop,
 
@@ -306,6 +321,12 @@ enum Instruction {
     LoadPc {
         dst: AddressRegister,
     },
+    LoadSp {
+        dst: AddressRegister,
+    },
+    StoreSp {
+        src: AddressRegister,
+    },
     LoadChar {
         dst: Register,
         val: u64,
@@ -322,11 +343,22 @@ enum Instruction {
         dst: AddressRegister,
         address: u64,
     },
-    Store {
-        address: AddressRegister,
-        value: Register,
+    ReadOffsetAdr {
+        dst: AddressRegister,
+        base: AddressRegister,
+        offset: i64,
     },
-    StoreOffset {
+    ReadOffsetReg {
+        dst: Register,
+        base: AddressRegister,
+        offset: i64,
+    },
+    StoreOffsetAdr {
+        base: AddressRegister,
+        offset: i64,
+        value: AddressRegister,
+    },
+    StoreOffsetReg {
         base: AddressRegister,
         offset: i64,
         value: Register,
@@ -340,24 +372,24 @@ enum Instruction {
 // TODO: Find a real encoding/decoding.
 impl Instruction {
     fn decode(lo: u64, hi: u64) -> Result<Self, Trap> {
-        let [opcode, r0, r1, r2, r3, r4, r5, r6] = lo.to_le_bytes();
+        let [opcode, r0, r1, ..] = lo.to_le_bytes();
         match opcode {
             0 => Ok(Self::Halt),
             1 => Ok(Self::Nop),
             2 => Ok(Self::JumpAdr {
-                target: AddressRegister(hi as usize - 16),
+                target: AddressRegister::decode(r0),
             }),
             3 => Ok(Self::JumpReg {
-                target: Register(r0 as usize),
+                target: Register::decode(r0),
             }),
             4 => Ok(Self::JumpImm { target: hi }),
             5 => Ok(Self::JumpRel { offset: hi as i64 }),
             6 => Ok(Self::JumpIfAdr {
-                target: AddressRegister(hi as usize - 16),
+                target: AddressRegister::decode(r1),
                 condition: Register(r1 as usize),
             }),
             7 => Ok(Self::JumpIfReg {
-                target: Register(r0 as usize),
+                target: Register::decode(r0),
                 condition: Register(r1 as usize),
             }),
             8 => Ok(Self::JumpIfImm {
@@ -369,11 +401,11 @@ impl Instruction {
                 condition: Register(r1 as usize),
             }),
             10 => Ok(Self::JumpIfNotAdr {
-                target: AddressRegister(hi as usize - 16),
+                target: AddressRegister::decode(r1),
                 condition: Register(r1 as usize),
             }),
             11 => Ok(Self::JumpIfNotReg {
-                target: Register(r0 as usize),
+                target: Register::decode(r0),
                 condition: Register(r1 as usize),
             }),
             12 => Ok(Self::JumpIfNotImm {
@@ -385,159 +417,161 @@ impl Instruction {
                 condition: Register(r1 as usize),
             }),
             14 => Ok(Self::CallAdr {
-                target: AddressRegister(hi as usize - 16),
+                target: AddressRegister::decode(r1),
             }),
             15 => Ok(Self::CallReg {
-                target: Register(r0 as usize),
+                target: Register::decode(r0),
             }),
             16 => Ok(Self::CallImm { target: hi }),
             17 => Ok(Self::CallRel { offset: hi as i64 }),
 
             18 => Ok(Self::Return),
             19 => Ok(Self::MakeClosure {
-                dst: Register(r0 as usize),
-                code: AddressRegister(r0 as usize - 16),
+                dst: Register::decode(r0),
+                code: AddressRegister::decode(r0),
             }),
 
             20 => Ok(Self::Eq {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             21 => Ok(Self::Ne {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             22 => Ok(Self::Gt {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             23 => Ok(Self::Gte {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             24 => Ok(Self::Lt {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             25 => Ok(Self::Lte {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
 
             26 => Ok(Self::Cons {
-                car: Register(r0 as usize),
-                cdr: Register(r0 as usize),
+                car: Register::decode(r0),
+                cdr: Register::decode(r0),
             }),
             27 => Ok(Self::Car {
-                dst: Register(r0 as usize),
-                src: Register(r0 as usize),
+                dst: Register::decode(r0),
+                src: Register::decode(r0),
             }),
             28 => Ok(Self::Cdr {
-                dst: Register(r0 as usize),
-                src: Register(r0 as usize),
+                dst: Register::decode(r0),
+                src: Register::decode(r0),
             }),
             29 => Ok(Self::SetCar {
-                dst: Register(r0 as usize),
-                val: Register(r0 as usize),
+                dst: Register::decode(r0),
+                val: Register::decode(r0),
             }),
             30 => Ok(Self::SetCdr {
-                dst: Register(r0 as usize),
-                val: Register(r0 as usize),
+                dst: Register::decode(r0),
+                val: Register::decode(r0),
             }),
             31 => Ok(Self::Uncons {
-                car: Register(r0 as usize),
-                cdr: Register(r0 as usize),
-                src: Register(r0 as usize),
+                car: Register::decode(r0),
+                cdr: Register::decode(r0),
+                src: Register::decode(r0),
             }),
             32 => Ok(Self::Add {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             33 => Ok(Self::Sub {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             34 => Ok(Self::Mul {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             35 => Ok(Self::Div {
-                dst: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                dst: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             36 => Ok(Self::IDiv {
-                div: Register(r0 as usize),
-                rem: Register(r0 as usize),
-                op1: Register(r0 as usize),
-                op2: Register(r0 as usize),
+                div: Register::decode(r0),
+                rem: Register::decode(r0),
+                op1: Register::decode(r0),
+                op2: Register::decode(r0),
             }),
             37 => Ok(Self::LoadPc {
-                dst: AddressRegister(r0 as usize - 16),
+                dst: AddressRegister::decode(r0),
             }),
             38 => Ok(Self::PushPc),
-            39 => Ok(Self::PopR {
-                dst: Register(r0 as usize),
+            39 => Ok(Self::LoadSp {
+                dst: AddressRegister::decode(r0),
             }),
-            40 => Ok(Self::PushR {
-                src: Register(r0 as usize),
+            42 => Ok(Self::StoreSp {
+                src: AddressRegister::decode(r0),
             }),
-            41 => Ok(Self::PopA {
-                dst: AddressRegister(r0 as usize - 16),
+            43 => Ok(Self::PopR {
+                dst: Register::decode(r0),
             }),
-            42 => Ok(Self::PushA {
-                src: AddressRegister(r0 as usize - 16),
+            44 => Ok(Self::PushR {
+                src: Register::decode(r0),
             }),
-            43 => Ok(Self::LoadChar {
-                dst: Register(r0 as usize),
+            45 => Ok(Self::PopA {
+                dst: AddressRegister::decode(r0),
+            }),
+            46 => Ok(Self::PushA {
+                src: AddressRegister::decode(r0),
+            }),
+            47 => Ok(Self::LoadChar {
+                dst: Register::decode(r0),
                 val: hi,
             }),
-            44 => Ok(Self::LoadFixnum {
-                dst: Register(r0 as usize),
+            48 => Ok(Self::LoadFixnum {
+                dst: Register::decode(r0),
                 val: hi,
             }),
-            45 => match hi {
+            49 => match hi {
                 0 => Ok(Self::LoadRoot {
-                    dst: Register(r0 as usize),
+                    dst: Register::decode(r0),
                     root: Root::NIL,
                 }),
                 1 => Ok(Self::LoadRoot {
-                    dst: Register(r0 as usize),
+                    dst: Register::decode(r0),
                     root: Root::T,
                 }),
                 _ => Err(Trap::InvalidInstruction),
             },
-            46 => Ok(Instruction::LoadAddress {
-                dst: AddressRegister(r0 as usize - 16),
+            50 => Ok(Instruction::LoadAddress {
+                dst: AddressRegister::decode(r0),
                 address: hi,
             }),
-            47 => Ok(Instruction::Store {
-                address: AddressRegister(r0 as usize - 16),
-                value: Register(r1 as usize),
-            }),
-            48 => Ok(Self::StoreOffset {
-                base: AddressRegister(r0 as usize - 16),
+            52 => Ok(Self::StoreOffsetReg {
+                base: AddressRegister::decode(r0),
                 offset: hi as i64,
                 value: Register(r1 as usize),
             }),
-            49 => Ok(Self::LoadCons {
-                dst: Register(r0 as usize),
+            53 => Ok(Self::LoadCons {
+                dst: Register::decode(r0),
                 address: AddressRegister(r1 as usize - 16),
             }),
             _ => Err(Trap::InvalidInstruction),
         }
     }
 
-    fn encode(&self) -> (u64, u64) {
+    pub fn encode(&self) -> (u64, u64) {
         match self {
             // Control flow
             Instruction::Halt => (u64::from_le_bytes([0, 0, 0, 0, 0, 0, 0, 0]), 0),
@@ -703,52 +737,57 @@ impl Instruction {
             ),
             Instruction::PushPc => (u64::from_le_bytes([38, 0, 0, 0, 0, 0, 0, 0]), 0),
 
-            Instruction::PopR { dst } => {
-                (u64::from_le_bytes([39, dst.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
-            }
-            Instruction::PushR { src } => {
-                (u64::from_le_bytes([40, src.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
-            }
-            Instruction::PopA { dst } => (
-                u64::from_le_bytes([41, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+            Instruction::LoadSp { dst } => (
+                u64::from_le_bytes([39, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-            Instruction::PushA { src } => (
+            Instruction::StoreSp { src } => (
                 u64::from_le_bytes([42, src.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
                 0,
             ),
 
+            Instruction::PopR { dst } => {
+                (u64::from_le_bytes([43, dst.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
+            }
+            Instruction::PushR { src } => {
+                (u64::from_le_bytes([44, src.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
+            }
+            Instruction::PopA { dst } => (
+                u64::from_le_bytes([45, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::PushA { src } => (
+                u64::from_le_bytes([46, src.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+
             Instruction::LoadChar { dst, val } => (
-                u64::from_le_bytes([43, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([47, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
                 *val as u64,
             ),
             Instruction::LoadFixnum { dst, val } => (
-                u64::from_le_bytes([44, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([48, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
                 *val as u64,
             ),
             Instruction::LoadRoot { dst, root } => (
-                u64::from_le_bytes([45, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([49, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
                 *root as u64,
             ),
 
             Instruction::LoadAddress { dst, address } => (
-                u64::from_le_bytes([46, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([50, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
                 *address,
-            ),
-            Instruction::Store { address, value } => (
-                u64::from_le_bytes([47, address.0 as u8 + 16, value.0 as u8, 0, 0, 0, 0, 0]),
-                0,
             ),
             Instruction::StoreOffset {
                 base,
                 offset,
                 value,
             } => (
-                u64::from_le_bytes([48, base.0 as u8 + 16, value.0 as u8, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([52, base.0 as u8 + 16, value.0 as u8, 0, 0, 0, 0, 0]),
                 *offset as u64,
             ),
             Instruction::LoadCons { dst, address } => (
-                u64::from_le_bytes([49, dst.0 as u8, address.0 as u8 + 16, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([53, dst.0 as u8, address.0 as u8 + 16, 0, 0, 0, 0, 0]),
                 0,
             ),
         }
@@ -757,12 +796,12 @@ impl Instruction {
 
 impl Cpu {
     pub fn reset<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &M) {
-        self.pc = memory.read_word(MemoryLayout::RESET_VECTOR);
+        self.address[Cpu::PC] = memory.read_word(MemoryLayout::RESET_VECTOR);
     }
 
     fn fetch<M: Memory<MachineAddressSize, WordSize>>(&self, memory: &M) -> (u64, u64) {
-        let instruction_low = memory.read_word(self.pc);
-        let instruction_high = memory.read_word(self.pc + 1);
+        let instruction_low = memory.read_word(self.address[Cpu::PC]);
+        let instruction_high = memory.read_word(self.address[Cpu::PC] + 1);
         (instruction_low, instruction_high)
     }
 
@@ -805,20 +844,20 @@ impl Cpu {
     }
 
     fn push<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &mut M, val: u64) {
-        memory.write_word(self.sp, val);
-        self.sp += 1;
+        memory.write_word(self.address[Cpu::SP], val);
+        self.address[Cpu::SP] += 1;
     }
 
     fn pop<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &mut M) -> u64 {
-        self.sp -= 1;
-        memory.read_word(self.sp)
+        self.address[Cpu::SP] -= 1;
+        memory.read_word(self.address[Cpu::SP])
     }
     fn pop_word<M: Memory<MachineAddressSize, WordSize>>(
         &mut self,
         memory: &mut M,
     ) -> Result<Word, Trap> {
-        self.sp -= 1;
-        Self::read_word(memory, self.sp)
+        self.address[Cpu::SP] -= 1;
+        Self::read_word(memory, self.address[Cpu::SP])
     }
 
     fn execute<M: Memory<MachineAddressSize, WordSize>>(
@@ -830,9 +869,9 @@ impl Cpu {
             // Control flow
             Instruction::Halt => {
                 self.halted = true;
-                Ok(self.pc)
+                Ok(self.address[Cpu::PC])
             }
-            Instruction::Nop => Ok(self.pc + INSTRUCTION_SIZE),
+            Instruction::Nop => Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE),
 
             Instruction::JumpAdr { target } => {
                 let target_address = self.address[target.0];
@@ -847,7 +886,7 @@ impl Cpu {
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
                 if condition_value == nil {
-                    Ok(self.sp + INSTRUCTION_SIZE)
+                    Ok(self.address[Cpu::SP] + INSTRUCTION_SIZE)
                 } else {
                     Ok(target_address)
                 }
@@ -861,7 +900,7 @@ impl Cpu {
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
                 if condition_value != nil {
-                    Ok(self.sp + INSTRUCTION_SIZE)
+                    Ok(self.address[Cpu::SP] + INSTRUCTION_SIZE)
                 } else {
                     Ok(target_address)
                 }
@@ -887,51 +926,51 @@ impl Cpu {
                 let op2_obj = self.registers[op2.0];
 
                 self.registers[dst.0] = Self::to_machine_bool(memory, op1_obj == op2_obj)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Ne { dst, op1, op2 } => {
                 let op1_obj = self.registers[op1.0];
                 let op2_obj = self.registers[op2.0];
                 self.registers[dst.0] = Self::to_machine_bool(memory, op1_obj != op2_obj)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Gt { dst, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload > op2_obj.payload)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Gte { dst, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload >= op2_obj.payload)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Lt { dst, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload < op2_obj.payload)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Lte { dst, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload >= op2_obj.payload)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
 
             // Cons
             Instruction::Cons { car, cdr } => {
-                let next_pc = self.pc + INSTRUCTION_SIZE;
+                let next_pc = self.address[Cpu::PC] + INSTRUCTION_SIZE;
                 self.push(memory, next_pc);
                 self.push(memory, self.registers[cdr.0].into());
                 self.push(memory, self.registers[car.0].into());
-                self.push(memory, 2);
-                self.push(memory, WordType::Cons as u64);
+                self.push(memory, Word::new(WordType::Fixnum, 2).into());
+                self.push(memory, Word::new(WordType::Cons, 0).into());
 
                 // ALLOC_CONS_VECTOR has special semantics and it handles cleaning up
                 // the params.
@@ -943,28 +982,28 @@ impl Cpu {
 
                 self.registers[dst.0] =
                     Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Cdr { dst, src } => {
                 let src_obj = self.read_register_as(src, WordType::Cons)?;
 
                 self.registers[dst.0] =
                     Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::SetCar { dst, val } => {
                 let dst_obj = self.read_register_as(dst, WordType::Cons)?;
                 let val_obj = self.registers[val.0];
 
                 memory.write_word(dst_obj.payload + ConsLayout::CAR_OFFSET, val_obj.into());
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::SetCdr { dst, val } => {
                 let dst_obj = self.read_register_as(dst, WordType::Cons)?;
                 let val_obj = self.registers[val.0];
 
                 memory.write_word(dst_obj.payload + ConsLayout::CDR_OFFSET, val_obj.into());
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Uncons { car, cdr, src } => {
                 let src_obj = self.read_register_as(src, WordType::Cons)?;
@@ -973,7 +1012,7 @@ impl Cpu {
                     Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
                 self.registers[cdr.0] =
                     Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
 
             // Arithmetic
@@ -982,28 +1021,28 @@ impl Cpu {
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload + op2_obj.payload);
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Sub { dst, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload - op2_obj.payload);
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Mul { dst, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload * op2_obj.payload);
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Div { dst, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
                 let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload / op2_obj.payload);
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::IDiv { div, rem, op1, op2 } => {
                 let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
@@ -1011,67 +1050,75 @@ impl Cpu {
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[div.0] = Word::new(Fixnum, op1_obj.payload / op2_obj.payload);
                 self.registers[rem.0] = Word::new(Fixnum, op1_obj.payload % op2_obj.payload);
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
 
             // Load
             Instruction::LoadPc { dst } => {
-                let next_pc = self.pc + INSTRUCTION_SIZE;
+                let next_pc = self.address[Cpu::PC] + INSTRUCTION_SIZE;
                 self.address[dst.0] = next_pc;
                 Ok(next_pc)
             }
             Instruction::PushPc => {
-                let next_pc = self.pc + INSTRUCTION_SIZE;
+                let next_pc = self.address[Cpu::PC] + INSTRUCTION_SIZE;
                 self.push(memory, next_pc);
                 Ok(next_pc)
+            }
+            Instruction::LoadSp { dst } => {
+                self.address[dst.0] = self.address[Cpu::SP];
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
+            }
+            Instruction::StoreSp { src } => {
+                self.address[Cpu::SP] = self.address[src.0];
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
 
             Instruction::PopR { dst } => {
                 let result = self.pop_word(memory)?;
                 self.registers[dst.0] = result;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::PushR { src } => {
                 self.push(memory, self.registers[src.0].into());
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::PopA { dst } => {
                 let result = self.pop(memory);
                 self.address[dst.0] = result;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::PushA { src } => {
                 self.push(memory, self.address[src.0]);
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
 
             Instruction::LoadChar { dst, val } => {
                 let num = Word::new(WordType::Character, val);
                 self.registers[dst.0] = num;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::LoadFixnum { dst, val } => {
                 let num = Word::new(WordType::Fixnum, val);
                 self.registers[dst.0] = num;
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::LoadRoot { dst, root } => {
                 let root_obj = Self::read_word(memory, root as u64)?;
                 self.registers[dst.0] = root_obj;
 
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
 
             Instruction::LoadAddress { dst, address } => {
                 self.address[dst.0] = address;
 
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::Store { address, value } => {
                 let value_obj = self.registers[value.0];
                 memory.write_word(self.address[address.0], value_obj.into());
 
-                Ok(self.pc + INSTRUCTION_SIZE)
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
             }
             Instruction::StoreOffset {
                 base,
@@ -1085,13 +1132,12 @@ impl Cpu {
                     value_obj.into(),
                 );
 
-                Ok(self.pc + INSTRUCTION_SIZE)
-            }
-            Instruction::LoadCons { dst, address } => {
-                self.registers[dst.0] = Word::new(WordType::Cons, self.address[address.0]);
+                Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
+            } // Instruction::LoadCons { dst, address } => {
+              //     self.registers[dst.0] = Word::new(WordType::Cons, self.address[address.0]);
 
-                Ok(self.pc + INSTRUCTION_SIZE)
-            }
+              //     Ok(self.address[Cpu::PC] + INSTRUCTION_SIZE)
+              // }
         }
     }
 
@@ -1103,7 +1149,7 @@ impl Cpu {
         let instruction = Instruction::decode(lo, hi)?;
 
         let next_pc = self.execute(instruction, memory)?;
-        self.pc = next_pc;
+        self.address[Cpu::PC] = next_pc;
         Ok(())
     }
 
@@ -1111,9 +1157,9 @@ impl Cpu {
         match self.step(memory) {
             Ok(()) => {}
             Err(trap) => {
-                self.address[0] = self.pc;
+                self.address[0] = self.address[Cpu::PC];
                 self.registers[0] = Word::new(WordType::Fixnum, trap as u64);
-                self.pc = memory.read_word(MemoryLayout::TRAP_VECTOR);
+                self.address[Cpu::PC] = memory.read_word(MemoryLayout::TRAP_VECTOR);
             }
         };
     }
@@ -1167,10 +1213,10 @@ mod tests {
     fn test_halt() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
-        cpu.pc = 0x1000;
-        memory.load_instructions(cpu.pc as usize, vec![Instruction::Halt]);
+        cpu.address[Cpu::PC] = 0x1000;
+        memory.load_instructions(cpu.address[Cpu::PC] as usize, vec![Instruction::Halt]);
         cpu.full_step(&mut memory);
-        assert_eq!(cpu.pc, 0x1000);
+        assert_eq!(cpu.address[Cpu::PC], 0x1000);
         assert!(cpu.halted);
         Ok(())
     }
@@ -1179,10 +1225,10 @@ mod tests {
     fn test_nop() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
-        cpu.pc = 0x1000;
-        memory.load_instructions(cpu.pc as usize, vec![Instruction::Nop]);
+        cpu.address[Cpu::PC] = 0x1000;
+        memory.load_instructions(cpu.address[Cpu::PC] as usize, vec![Instruction::Nop]);
         cpu.full_step(&mut memory);
-        assert_eq!(cpu.pc, 0x1002);
+        assert_eq!(cpu.address[Cpu::PC], 0x1002);
         Ok(())
     }
 
@@ -1190,9 +1236,9 @@ mod tests {
     fn test_multiple_nop() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
-        cpu.pc = 0x1000;
+        cpu.address[Cpu::PC] = 0x1000;
         memory.load_instructions(
-            cpu.pc as usize,
+            cpu.address[Cpu::PC] as usize,
             vec![
                 Instruction::Nop,
                 Instruction::Nop,
@@ -1209,7 +1255,7 @@ mod tests {
         while !cpu.halted {
             cpu.full_step(&mut memory);
         }
-        assert_eq!(cpu.pc, 0x1010);
+        assert_eq!(cpu.address[Cpu::PC], 0x1010);
         assert!(cpu.halted);
         Ok(())
     }
@@ -1218,16 +1264,16 @@ mod tests {
     fn test_jump_adr() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
-        cpu.pc = 0x1000;
+        cpu.address[Cpu::PC] = 0x1000;
         cpu.address[0] = 0x2000;
         memory.load_instructions(
-            cpu.pc as usize,
+            cpu.address[Cpu::PC] as usize,
             vec![Instruction::JumpAdr {
                 target: AddressRegister(0),
             }],
         );
         cpu.full_step(&mut memory);
-        assert_eq!(cpu.pc, 0x2000);
+        assert_eq!(cpu.address[Cpu::PC], 0x2000);
         Ok(())
     }
 
@@ -1236,8 +1282,7 @@ mod tests {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
 
-        cpu.pc = 0x1000;
-        cpu.sp = 0x200;
+        cpu.address[Cpu::PC] = 0x1000;
 
         let cons_hook = 0x2000;
         let cons_cell = 0x3000;
@@ -1245,8 +1290,15 @@ mod tests {
         memory.write_word(MemoryLayout::ALLOC_CONS_VECTOR, cons_hook);
 
         memory.load_instructions(
-            cpu.pc as usize,
+            cpu.address[Cpu::PC] as usize,
             vec![
+                Instruction::LoadAddress {
+                    dst: AddressRegister(0),
+                    address: 0x800,
+                },
+                Instruction::StoreSp {
+                    src: AddressRegister(0),
+                },
                 Instruction::LoadFixnum {
                     dst: Register(1),
                     val: 42,
@@ -1274,8 +1326,9 @@ mod tests {
                     dst: AddressRegister(0),
                     address: cons_cell,
                 },
-                Instruction::Store {
-                    address: AddressRegister(0),
+                Instruction::StoreOffset {
+                    base: AddressRegister(0),
+                    offset: 0,
                     value: Register(1),
                 },
                 Instruction::StoreOffset {
