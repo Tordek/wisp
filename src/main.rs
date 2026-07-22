@@ -1,30 +1,12 @@
-// mod cpu;
-// mod machine;
-// mod memory;
-
-// use crate::{
-//     cpu::Cpu,
-//     machine::{WispMachine, WispMemory},
-// };
-
-// fn main() {
-//     let mut machine = WispMachine::new(Cpu::default(), WispMemory::new(2 << 24));
-
-//     machine.reset();
-
-//     while !machine.halted {
-//         machine.step();
-//     }
-// }
+mod cpu;
+mod machine;
+mod memory;
 
 mod gpu;
 
 use std::time::Instant;
 
 use sdl2::video::GLProfile;
-use std::ffi::CString;
-
-use crate::gpu::Gpu;
 
 fn main() -> Result<(), String> {
     let sdl_context = sdl2::init()?;
@@ -46,15 +28,26 @@ fn main() -> Result<(), String> {
     let _context = window.gl_create_context()?;
     gl::load_with(|s| video_subsystem.gl_get_proc_address(s) as *const _);
 
-    let mut gpu = Gpu::new().map_err(|_| "")?;
+    let gpu = gpu::Gpu::new().map_err(|_| "")?;
 
     let start = Instant::now();
     let mut event_pump = sdl_context.event_pump()?;
+
+    let mut machine =
+        machine::WispMachine::new(cpu::Cpu::default(), machine::WispMemory::new(2 << 24));
+
+    machine.reset();
+
     'running: loop {
         for event in event_pump.poll_iter() {
             if let sdl2::event::Event::Quit { .. } = event {
                 break 'running;
             }
+        }
+
+        for _ in 1..1_000_000 {
+            // Run 1 million cycles per draw.
+            machine.step();
         }
         // --- STEP A: EMULATOR WRITE ---
         // Write text pixels out directly into your native 720x400 byte buffer

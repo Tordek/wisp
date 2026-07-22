@@ -1,8 +1,6 @@
-use std::ops::Add;
-
 use crate::{
     cpu::{
-        AddressRegister, ConsLayout, Cpu, INSTRUCTION_SIZE, Instruction, MemoryLayout, Register,
+        AddressRegister, Cpu, Instruction, InterruptTableOffset, MemoryLayout, Register,
         SymbolLayout, Word, WordType,
     },
     memory::Memory,
@@ -101,7 +99,7 @@ impl<'a> Cursor<'a> {
         for (idx, instruction) in instructions.iter().enumerate() {
             let (lo, hi) = instruction.encode();
             self.write_at(
-                address.offset(idx as u64 * INSTRUCTION_SIZE),
+                address.offset(idx as u64 * Cpu::INSTRUCTION_SIZE),
                 &[lo.to_le_bytes(), hi.to_le_bytes()].concat(),
             )
         }
@@ -114,9 +112,7 @@ impl<'a> Cursor<'a> {
         }
     }
 }
-struct FirmwareHelper {
-    cursor: MachineAddress,
-}
+struct FirmwareHelper {}
 impl FirmwareHelper {
     const BOOTSTRAP_HOOK: MachineAddress = MachineAddress(MemoryLayout::CPU_RESERVED_END);
     const BOOTSTRAP_ALLOC_HOOK: MachineAddress = MachineAddress(0x600);
@@ -151,15 +147,15 @@ impl FirmwareHelper {
             &Self::BOOTSTRAP_HOOK.0,
         );
         cursor.write_word_at(
-            MachineAddress(MemoryLayout::ALLOC_VECTOR),
+            MachineAddress(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR),
             &Self::BOOTSTRAP_ALLOC_HOOK.0,
         );
         cursor.write_word_at(
-            MachineAddress(MemoryLayout::ALLOC_CONS_VECTOR),
+            MachineAddress(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR),
             &Self::BOOTSTRAP_ALLOC_HOOK.0,
         );
         cursor.write_word_at(
-            MachineAddress(MemoryLayout::ALLOC_CONS_VECTOR),
+            MachineAddress(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR),
             &Self::BOOTSTRAP_TRAP_HOOK.0,
         );
 
@@ -181,52 +177,43 @@ impl FirmwareHelper {
         );
 
         // Default allocator:
+        let free_ptr = MachineAddress(0x3fff);
+        cursor.write_word_at(free_ptr, &Self::BOOTSTRAP_SCRATCH_ALLOC.0);
         cursor.write_instructions_at(
             Self::BOOTSTRAP_ALLOC_HOOK,
             &[
-                // Store prototype
+                // Discard type information.
                 Instruction::PopR { dst: Register(0) },
-                // Read Free pointer
+                // A1 = freeptr
                 Instruction::LoadAddress {
-                    dst: AddressRegister(2),
-                    address: 0x2fff,
+                    dst: AddressRegister(1),
+                    address: free_ptr.0,
                 },
+                // A0 = *freeptr
                 Instruction::ReadOffsetAdr {
-                    dst: AddressRegister(1),
-                    base: AddressRegister(2),
+                    dst: AddressRegister(0),
+                    base: AddressRegister(1),
                     offset: 0,
-                }, // A0 = *freeptr;
-                // Advance free pointer
-                Instruction::ReadOffsetAdr {
-                    dst: AddressRegister(1),
-                    base: AddressRegister(2),
-                    offset: 0,
-                }, // A1 = *freeptr;
-                Instruction::PopR { dst: Register(1) }, // R1 = Size
-                Instruction::LoadPayload {
+                },
+                // A2 = length
+                Instruction::PopR { dst: Register(0) },
+                Instruction::GetPayload {
+                    dst: AddressRegister(2),
+                    src: Register(0),
+                },
+                // A3 = *freeptr + len
+                Instruction::AAdd {
                     dst: AddressRegister(3),
-                    src: Register(1),
-                }, // A3 = R1.payload
-                Instruction::AddA {
-                    dst: AddressRegister(1),
-                    op1: AddressRegister(1),
-                    op2: AddressRegister(3),
-                }, // A1 += A3;
-                Instruction::StoreA { dst: A2, value: A1 }, // *freeptr = A1
-                Instruction::PopR { dst: Register(1) }, // R1 = car
-                Instruction::StoreOffset {
-                    base: AddressRegister(0),
-                    offset: ConsLayout::CAR_OFFSET as i64,
-                    value: Register(1),
-                }, // *A0 = CAR
-                Instruction::PopR { dst: Register(2) }, // R1 = car
-                Instruction::StoreOffset {
-                    base: AddressRegister(0),
-                    offset: ConsLayout::CDR_OFFSET as i64,
-                    value: Register(1),
-                }, // *(A0+1) = CDR
-                // TODO: Restore A1, A2, R1, R2.
-                Instruction::Return,
+                    op1: AddressRegister(0),
+                    op2: AddressRegister(2),
+                },
+                // *freeptr = A3
+                Instruction::StoreOffsetAdr {
+                    base: AddressRegister(1),
+                    offset: 0,
+                    value: AddressRegister(3),
+                },
+                Instruction::IReturn { count: 1 },
             ],
         );
 

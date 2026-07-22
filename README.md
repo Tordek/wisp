@@ -60,14 +60,15 @@
 - ALOAD adr, src -- adr = *(src+off)
 - ASTORE dst, adr -- *(dst+off) = adr
 
-- LOADPAYLOAD adr, reg - Loads the PAYLOAD of a WORD into an ADDRESS token.
+- MOVAR adr, reg
+- MOVRA reg, adr
+
+- GETPAYLOAD adr, reg - Loads the PAYLOAD of a WORD into an ADDRESS token.
 - SETPAYLOAD reg, adr
-- LOADTAG adr, reg
+- GETTAG adr, reg
 - SETTAG reg, adr
 - SETTAG reg, imm
 
-- LOADLOCAL reg, depth, slot ?
-- STORELOCAL depth, slot, reg ?
 - LOADGLOBAL reg, symbol - scoped per-program
 - LOADSGLOBAL reg, symbol - scoped for the machine
 
