@@ -63,11 +63,13 @@ struct Cursor<'a> {
 }
 impl<'a> Cursor<'a> {
     fn write_word_at(&mut self, address: MachineAddress, data: &u64) {
-        self.memory[address.to_raw().0..].copy_from_slice(&data.to_le_bytes());
+        self.memory[address.to_raw().0..address.to_raw().offset(8).0]
+            .copy_from_slice(&data.to_le_bytes());
     }
 
     fn write_at(&mut self, address: MachineAddress, data: &[u8]) {
-        self.memory[address.to_raw().0..].copy_from_slice(data);
+        self.memory[address.to_raw().0..address.to_raw().offset(data.len()).0]
+            .copy_from_slice(data);
     }
 
     fn write_aligned(&mut self, data: &[u8]) -> MachineAddress {
@@ -121,8 +123,9 @@ impl FirmwareHelper {
     const BOOTSTRAP_STACK_POSITION: MachineAddress = MachineAddress(0x2000); // Grows backwards
     const BOOTSTRAP_SCRATCH_ALLOC: MachineAddress = MachineAddress(0x2000); // Grows forwards
 
-    fn make_firmware() -> [u8; 0x4000] {
-        let mut firmware = [0; 0x4000];
+    fn make_firmware() -> [u8; 0x20000] {
+        let mut firmware = [0; 0x20000];
+
         // Starting at 0x3000, place constant symbols.
         let mut cursor = Cursor::new(Self::BOOTSTRAP_OBJECTS, &mut firmware);
         let nil_symbol = cursor.write_aligned_symbol("nil", Word::undefined());
