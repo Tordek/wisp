@@ -45,7 +45,7 @@ void main() {
 
   float hiline = pow(fract(uv.y - t / 10), 20);
 
-  float hidot = pow(smoothstep(0.9, 1, hiline) * fract(uv.x - t *5),2);
+  float hidot = pow(smoothstep(0.9, 1.0, hiline) * fract(uv.x - t * 5), 2);
 
   final_rgb.rgb -= amber * scanline * 0.08;
   final_rgb.rgb += amber * hiline * 0.08;
