@@ -165,7 +165,7 @@ impl Instruction {
             Opcode::Sub => Ok(Self::Sub(ThreeRegs::decode(r1, r2, r3, hi)?)),
             Opcode::Mul => Ok(Self::Mul(ThreeRegs::decode(r1, r2, r3, hi)?)),
             Opcode::IDiv => Ok(Self::IDiv {
-                div: Register::decode(r1),
+                div: Register::decode(01),
                 rem: Register::decode(r1),
                 op1: Register::decode(r2),
                 op2: Some(Register::decode(r3)),
@@ -178,24 +178,24 @@ impl Instruction {
                 src: Register::decode(r1),
             }),
             Opcode::PopA => Ok(Self::PopA {
-                dst: AddressRegister::decode(r1)?,
+                dst: AddressRegister::decode(r0)?,
             }),
             Opcode::PushA => Ok(Self::PushA {
-                src: AddressRegister::decode(r1)?,
+                src: AddressRegister::decode(r0)?,
             }),
             Opcode::LoadRoot => match hi {
                 0 => Ok(Self::LoadRoot {
-                    dst: Register::decode(r1),
+                    dst: Register::decode(r0),
                     root: Root::NIL,
                 }),
                 1 => Ok(Self::LoadRoot {
-                    dst: Register::decode(r1),
+                    dst: Register::decode(r0),
                     root: Root::T,
                 }),
                 _ => Err(Trap::InvalidInstruction),
             },
             Opcode::LoadAddress => Ok(Instruction::LoadAddress {
-                dst: AddressRegister::decode(r1)?,
+                dst: AddressRegister::decode(r0)?,
                 address: hi,
             }),
             Opcode::StoreReg => Ok(Self::StoreReg {

@@ -129,18 +129,23 @@ impl Gpu {
             vao,
         })
     }
-    pub unsafe fn render(&self, elapsed_millis: u32) {
-        let mut vga_framebuffer = vec![0u8; TEX_W * TEX_H * 3];
+    pub unsafe fn render(&self, vga_ram: &[u8], elapsed_millis: u32) {
+        let mut vga_framebuffer = vec![0u8; 720 * 400 * 3];
         vga_framebuffer.fill(0);
-        draw_text(
-            &mut vga_framebuffer,
-            DEAD_H,
-            DEAD_V,
-            "The quick brown fox jumps over the lazy dog",
-            255,
-            255,
-            255,
-        );
+        for i in 0..(25*80) {
+            let position = 0x18000 + 2 * i;
+            let attributes = vga_ram[position];
+            let character = vga_ram[position + 1];
+
+            draw_char(
+                &mut vga_framebuffer,
+                (i % 80) * 9,
+                (i / 80) * 16,
+                character,
+                attributes,
+                (elapsed_millis / 1000) & 1 == 1,
+            )
+        }
         unsafe {
             gl::Clear(gl::COLOR_BUFFER_BIT);
 
@@ -237,32 +242,59 @@ unsafe fn link_program(vertex_shader: u32, fragment_shader: u32) -> Result<u32, 
     }
 }
 
-fn draw_char(fb: &mut [u8], x: usize, y: usize, c: char, r: u8, g: u8, b: u8) {
+fn draw_char(fb: &mut [u8], x: usize, y: usize, c: u8, attributes: u8, t: bool) {
     let glyph = &FONT[(c as usize) * 16..][..16];
     for (row, bits) in glyph.iter().enumerate() {
         for col in 0..8 {
-            if bits & (1 << (7 - col)) != 0 {
-                put_pixel(fb, x + col, y + row, r, g, b);
-            }
+            put_pixel(
+                fb,
+                x + col,
+                y + row,
+                bits & (1 << (7 - col)) != 0,
+                t,
+                attributes,
+            );
         }
-    }
-}
-fn draw_text(fb: &mut [u8], x: usize, y: usize, text: &str, r: u8, g: u8, b: u8) {
-    let mut cx = x;
-
-    for ch in text.chars() {
-        draw_char(fb, cx, y, ch, r, g, b);
-        cx += 8;
+        put_pixel(fb, x + 8, y + row, bits & (1) != 0, t, attributes);
     }
 }
 
-fn put_pixel(fb: &mut [u8], x: usize, y: usize, r: u8, g: u8, b: u8) {
+fn put_pixel(fb: &mut [u8], x: usize, y: usize, on: bool, t: bool, attributes: u8) {
     if x >= 720 || y >= 400 {
         return;
     }
 
     let i = (y * 720 + x) * 3;
+    let (r, g, b) = vga_color(on, t, attributes);
     fb[i] = r;
     fb[i + 1] = g;
     fb[i + 2] = b;
+}
+
+fn vga_color(on: bool, t: bool, color: u8) -> (u8, u8, u8) {
+    let c = if on && !(color & 0x80 == 0x80 && t) {
+        color & 0x0f
+    } else {
+        (color >> 4) & 0x07
+    };
+    match c {
+        0 => (9,4,4),
+        1 => (191, 63, 52),
+        2 => (2, 125, 45),
+        3 => (190, 157, 57),
+        4 => (35, 111, 178),
+        5 => (153, 88, 119),
+        6 => (3, 121, 118),
+        7 => (205, 205, 205),
+
+        8 => (104, 97, 94),
+        9 => (230, 78, 64),
+        10 => (2, 152, 56),
+        11 => (233, 190, 40),
+        12 => (44, 135, 214),
+        13 => (184, 107, 144),
+        14 => (4, 146, 142),
+        15 => (246, 246, 246),
+        _ => (0, 0, 0),
+    }
 }

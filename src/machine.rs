@@ -237,9 +237,15 @@ impl WispMemory {
     }
 
     pub fn new(size: usize) -> Self {
-        Self {
-            bytes: vec![0; size],
+        let mut bytes = vec![0 as u8; size];
+        for i in 0xb0000..0xc0000 {
+            bytes[i] = (64 + i >> 1) as u8;
         }
+        for i in 0..80 {
+            bytes[0xb8000 + i * 2] = if i % 2 == 1 { 0x07 as u8 } else { 0x87 };
+            bytes[0xb8000 + i * 2 + 1] = 0x41;
+        }
+        Self { bytes }
     }
 }
 
@@ -261,6 +267,10 @@ impl WispMachine {
         if self.cpu.halted {
             self.halted = true;
         }
+    }
+
+    pub fn get_vga_ram(&self) -> &[u8] {
+        &self.ram.bytes[0xa0000..0xc0000]
     }
 
     pub fn new(cpu: Cpu, ram: WispMemory) -> Self {

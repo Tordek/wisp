@@ -60,7 +60,7 @@ fn main() -> Result<(), String> {
 
         let elapsed_millis = start.elapsed().as_millis();
         unsafe {
-            gpu.render(elapsed_millis as u32);
+            gpu.render(machine.get_vga_ram(), elapsed_millis as u32);
         }
         window.gl_swap_window();
     }
