@@ -1,6 +1,11 @@
-use crate::cpu::{AddressRegister, Instruction, Register, Root, Trap};
+use int_enum::IntEnum;
 
-impl Register {
+use crate::cpu::{
+    self, AddressRegister, Instruction, JumpAddressing, Register, Root, ThreeAddrs, ThreeRegs,
+    Trap, TwoRegs, Word,
+};
+
+impl cpu::Register {
     fn encode(&self) -> u8 {
         self.0 as u8
     }
@@ -11,368 +16,367 @@ impl Register {
 
 impl AddressRegister {
     fn encode(&self) -> u8 {
-        return self.0 as u8 + 16;
+        self.0 as u8 + 16
     }
-    fn decode(reg: u8) -> Self {
-        Self(reg as usize - 16)
+    fn try_decode(reg: u8) -> Option<Self> {
+        if reg - 16 < 8 {
+            Some(Self(reg as usize - 16))
+        } else {
+            None
+        }
+    }
+    fn decode(reg: u8) -> Result<Self, Trap> {
+        if reg - 16 < 8 {
+            Ok(Self(reg as usize - 16))
+        } else {
+            Err(Trap::InvalidInstruction)
+        }
+    }
+}
+
+impl TwoRegs {
+    fn decode(r1: u8, r2: u8) -> TwoRegs {
+        TwoRegs {
+            dst: Register(r1 as usize),
+            src: Register(r2 as usize),
+        }
+    }
+}
+
+impl ThreeRegs {
+    fn decode(r1: u8, r2: u8, r3: u8, imm: u64) -> Result<ThreeRegs, Trap> {
+        Ok(ThreeRegs {
+            dst: Register(r1 as usize),
+
+            op1: Register(r2 as usize),
+            op2: Some(Register(r3 as usize)),
+            imm: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
+        })
+    }
+}
+
+impl cpu::JumpAddressing {
+    fn decode(cond: u8, adr: u8, offset: u64) -> Self {
+        if adr < 16 {
+            cpu::JumpAddressing::Register {
+                condition: Register(cond as usize),
+                adr: Register(adr as usize),
+            }
+        } else {
+            cpu::JumpAddressing::AddressRegister {
+                condition: AddressRegister(cond as usize - 16),
+                adr: AddressRegister::try_decode(adr),
+                offset: offset as i64,
+            }
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(IntEnum)]
+enum Opcode {
+    Halt,
+    Nop,
+    Jump,
+    JumpIf,
+    JumpIfNot,
+    Int,
+    IReturn,
+    PushA,
+    PopA,
+    LoadLiteral,
+    LoadRoot,
+    LoadAddress,
+    ReadReg,
+    StoreReg,
+    ReadOffsetAdr,
+    StoreOffsetAdr,
+    MovAdr,
+    MovAR,
+    MovRA,
+    AAdd,
+    ASub,
+    SetTag,
+    GetTag,
+    SetPayload,
+    GetPayload,
+    Uncons,
+    Car,
+    Cdr,
+    SetCar,
+    SetCdr,
+    Add,
+    Mul,
+    IDiv,
+    Sub,
+    Eq,
+    Ne,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    PushR,
+    PopR,
+    MakeClosure,
+    Call,
+    Return,
+}
+
+impl Default for Register {
+    fn default() -> Self {
+        Register(0)
     }
 }
 
 // TODO: Find a real encoding/decoding.
 impl Instruction {
     pub fn decode(lo: u64, hi: u64) -> Result<Self, Trap> {
-        let [opcode, r0, r1, ..] = lo.to_le_bytes();
-        match opcode {
-            255 => Ok(Self::Halt),
-            1 => Ok(Self::Nop),
-            2 => Ok(Self::JumpAdr {
-                target: AddressRegister::decode(r0),
-            }),
-            3 => Ok(Self::JumpReg {
-                target: Register::decode(r0),
-            }),
-            4 => Ok(Self::JumpImm { target: hi }),
-            5 => Ok(Self::JumpRel { offset: hi as i64 }),
-            6 => Ok(Self::JumpIfAdr {
-                target: AddressRegister::decode(r1),
-                condition: Register(r1 as usize),
-            }),
-            7 => Ok(Self::JumpIfReg {
-                target: Register::decode(r0),
-                condition: Register(r1 as usize),
-            }),
-            8 => Ok(Self::JumpIfImm {
-                target: hi,
-                condition: Register(r1 as usize),
-            }),
-            9 => Ok(Self::JumpIfRel {
-                offset: hi as i64,
-                condition: Register(r1 as usize),
-            }),
-            10 => Ok(Self::JumpIfNotAdr {
-                target: AddressRegister::decode(r1),
-                condition: Register(r1 as usize),
-            }),
-            11 => Ok(Self::JumpIfNotReg {
-                target: Register::decode(r0),
-                condition: Register(r1 as usize),
-            }),
-            12 => Ok(Self::JumpIfNotImm {
-                target: hi,
-                condition: Register(r1 as usize),
-            }),
-            13 => Ok(Self::JumpIfNotRel {
-                offset: hi as i64,
-                condition: Register(r1 as usize),
-            }),
-            14 => Ok(Self::CallAdr {
-                target: AddressRegister::decode(r1),
-            }),
-            15 => Ok(Self::CallReg {
-                target: Register::decode(r0),
-            }),
-            16 => Ok(Self::CallImm { target: hi }),
-            17 => Ok(Self::CallRel { offset: hi as i64 }),
+        let [opcode, r0, r1, r2, r3, ..] = lo.to_le_bytes();
+        match Opcode::try_from(opcode).map_err(|_| Trap::InvalidInstruction)? {
+            Opcode::Nop => Ok(Self::Nop),
+            Opcode::Jump => Ok(Self::Jump(JumpAddressing::decode(r0, r1, hi))),
+            Opcode::JumpIf => Ok(Self::JumpIf(JumpAddressing::decode(r0, r1, hi))),
+            Opcode::JumpIfNot => Ok(Self::JumpIfNot(JumpAddressing::decode(r0, r1, hi))),
+            Opcode::Call => Ok(Self::Call(JumpAddressing::decode(r0, r1, hi))),
 
-            18 => Ok(Self::Return),
-            19 => Ok(Self::MakeClosure {
-                dst: Register::decode(r0),
-                code: AddressRegister::decode(r0),
+            Opcode::Return => Ok(Self::Return),
+            Opcode::MakeClosure => Ok(Self::MakeClosure {
+                dst: Register::decode(r1),
+                code: AddressRegister::try_decode(r1).expect("Shit happened!"),
             }),
 
-            20 => Ok(Self::Eq {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            21 => Ok(Self::Ne {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            22 => Ok(Self::Gt {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            23 => Ok(Self::Gte {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            24 => Ok(Self::Lt {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            25 => Ok(Self::Lte {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
+            Opcode::Eq => Ok(Self::Eq(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Ne => Ok(Self::Ne(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Gt => Ok(Self::Gt(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Gte => Ok(Self::Gte(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Lt => Ok(Self::Lt(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Lte => Ok(Self::Lte(ThreeRegs::decode(r1, r2, r3, hi)?)),
 
-            26 => Ok(Self::Cons {
-                car: Register::decode(r0),
+            Opcode::Car => Ok(Self::Car(TwoRegs::decode(r1, r2))),
+            Opcode::Cdr => Ok(Self::Cdr(TwoRegs::decode(r1, r2))),
+            Opcode::SetCar => Ok(Self::SetCar(TwoRegs::decode(r1, r2))),
+            Opcode::SetCdr => Ok(Self::SetCdr(TwoRegs::decode(r1, r2))),
+            Opcode::Uncons => Ok(Self::Uncons {
+                car: Register::decode(r1),
                 cdr: Register::decode(r1),
+                src: Register::decode(r1),
             }),
-            27 => Ok(Self::Car {
-                dst: Register::decode(r0),
-                src: Register::decode(r0),
+            Opcode::Add => Ok(Self::Add(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Sub => Ok(Self::Sub(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Mul => Ok(Self::Mul(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::IDiv => Ok(Self::IDiv {
+                div: Register::decode(r1),
+                rem: Register::decode(r1),
+                op1: Register::decode(r2),
+                op2: Some(Register::decode(r3)),
+                imm: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
             }),
-            28 => Ok(Self::Cdr {
-                dst: Register::decode(r0),
-                src: Register::decode(r0),
+            Opcode::PopR => Ok(Self::PopR {
+                dst: Register::decode(r1),
             }),
-            29 => Ok(Self::SetCar {
-                dst: Register::decode(r0),
-                val: Register::decode(r0),
+            Opcode::PushR => Ok(Self::PushR {
+                src: Register::decode(r1),
             }),
-            30 => Ok(Self::SetCdr {
-                dst: Register::decode(r0),
-                val: Register::decode(r0),
+            Opcode::PopA => Ok(Self::PopA {
+                dst: AddressRegister::decode(r1)?,
             }),
-            31 => Ok(Self::Uncons {
-                car: Register::decode(r0),
-                cdr: Register::decode(r0),
-                src: Register::decode(r0),
+            Opcode::PushA => Ok(Self::PushA {
+                src: AddressRegister::decode(r1)?,
             }),
-            32 => Ok(Self::Add {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            33 => Ok(Self::Sub {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            34 => Ok(Self::Mul {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            35 => Ok(Self::Div {
-                dst: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            36 => Ok(Self::IDiv {
-                div: Register::decode(r0),
-                rem: Register::decode(r0),
-                op1: Register::decode(r0),
-                op2: Register::decode(r0),
-            }),
-            37 => Ok(Self::LoadPc {
-                dst: AddressRegister::decode(r0),
-            }),
-            38 => Ok(Self::PushPc),
-            39 => Ok(Self::LoadSp {
-                dst: AddressRegister::decode(r0),
-            }),
-            42 => Ok(Self::StoreSp {
-                src: AddressRegister::decode(r0),
-            }),
-            43 => Ok(Self::PopR {
-                dst: Register::decode(r0),
-            }),
-            44 => Ok(Self::PushR {
-                src: Register::decode(r0),
-            }),
-            45 => Ok(Self::PopA {
-                dst: AddressRegister::decode(r0),
-            }),
-            46 => Ok(Self::PushA {
-                src: AddressRegister::decode(r0),
-            }),
-            47 => Ok(Self::LoadChar {
-                dst: Register::decode(r0),
-                val: hi,
-            }),
-            48 => Ok(Self::LoadFixnum {
-                dst: Register::decode(r0),
-                val: hi,
-            }),
-            49 => match hi {
+            Opcode::LoadRoot => match hi {
                 0 => Ok(Self::LoadRoot {
-                    dst: Register::decode(r0),
+                    dst: Register::decode(r1),
                     root: Root::NIL,
                 }),
                 1 => Ok(Self::LoadRoot {
-                    dst: Register::decode(r0),
+                    dst: Register::decode(r1),
                     root: Root::T,
                 }),
                 _ => Err(Trap::InvalidInstruction),
             },
-            50 => Ok(Instruction::LoadAddress {
-                dst: AddressRegister::decode(r0),
+            Opcode::LoadAddress => Ok(Instruction::LoadAddress {
+                dst: AddressRegister::decode(r1)?,
                 address: hi,
             }),
-            52 => Ok(Self::StoreOffsetReg {
-                base: AddressRegister::decode(r0),
-                offset: hi as i64,
-                value: Register(r1 as usize),
+            Opcode::StoreReg => Ok(Self::StoreReg {
+                base: Register::decode(r1),
+                src: Register(r1 as usize),
             }),
-            53 => Ok(Self::LoadCons {
-                dst: Register::decode(r0),
-                address: AddressRegister(r1 as usize - 16),
-            }),
-            254 => Ok(Self::IReturn { count: hi }),
-            _ => Err(Trap::InvalidInstruction),
+            Opcode::IReturn => Ok(Self::IReturn { count: hi }),
+            Opcode::AAdd => Ok(Instruction::AAdd(cpu::ThreeAddrs {
+                dst: AddressRegister::decode(r0)?,
+                op1: AddressRegister::decode(r1)?,
+                op2: AddressRegister::try_decode(r2),
+                imm: hi,
+            })),
+            Opcode::ASub => Ok(Instruction::ASub(cpu::ThreeAddrs {
+                dst: AddressRegister::decode(r0)?,
+                op1: AddressRegister::decode(r1)?,
+                op2: AddressRegister::try_decode(r2),
+                imm: hi,
+            })),
+            Opcode::GetPayload => Err(Trap::TypeError),
+            Opcode::GetTag => Err(Trap::TypeError),
+            Opcode::Halt => Err(Trap::TypeError),
+            Opcode::Int => Err(Trap::TypeError),
+            Opcode::LoadLiteral => Err(Trap::TypeError),
+            Opcode::MovAR => Err(Trap::TypeError),
+            Opcode::MovRA => Err(Trap::TypeError),
+            Opcode::ReadOffsetAdr => Err(Trap::TypeError),
+            Opcode::ReadReg => Err(Trap::TypeError),
+            Opcode::SetPayload => Err(Trap::TypeError),
+            Opcode::SetTag => Err(Trap::TypeError),
+            Opcode::StoreOffsetAdr => Err(Trap::TypeError),
+            Opcode::MovAdr => Err(Trap::TypeError),
+        }
+    }
+
+    fn encode_op_jump_cond(opcode: Opcode, target: &JumpAddressing) -> (u64, u64) {
+        match target {
+            JumpAddressing::AddressRegister {
+                condition,
+                adr: None,
+                offset,
+            } => (
+                u64::from_le_bytes([opcode.into(), condition.encode(), 24, 0, 0, 0, 0, 0]),
+                *offset as u64,
+            ),
+            JumpAddressing::AddressRegister {
+                condition,
+                adr: Some(AddressRegister(r)),
+                offset,
+            } => (
+                u64::from_le_bytes([
+                    opcode.into(),
+                    condition.encode(),
+                    (r + 16) as u8,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                *offset as u64,
+            ),
+            JumpAddressing::Register { condition, adr } => (
+                u64::from_le_bytes([
+                    opcode.into(),
+                    condition.encode(),
+                    adr.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+        }
+    }
+
+    fn encode_three_adrs(opcode: Opcode, target: &ThreeAddrs) -> (u64, u64) {
+        match target {
+            &ThreeAddrs {
+                dst,
+                op1,
+                op2: None,
+                imm,
+            } => (
+                u64::from_le_bytes([opcode.into(), dst.encode(), op1.encode(), 24, 0, 0, 0, 0]),
+                imm.into(),
+            ),
+            &ThreeAddrs {
+                dst,
+                op1,
+                op2: Some(op2),
+                imm,
+            } => (
+                u64::from_le_bytes([
+                    opcode.into(),
+                    dst.encode(),
+                    op1.encode(),
+                    op2.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                imm.into(),
+            ),
+        }
+    }
+    fn encode_three_regs(opcode: Opcode, target: &ThreeRegs) -> (u64, u64) {
+        match target {
+            &ThreeRegs {
+                dst,
+                op1,
+                op2: None,
+                imm,
+            } => (
+                u64::from_le_bytes([opcode.into(), dst.encode(), op1.encode(), 24, 0, 0, 0, 0]),
+                imm.into(),
+            ),
+            &ThreeRegs {
+                dst,
+                op1,
+                op2: Some(op2),
+                imm,
+            } => (
+                u64::from_le_bytes([
+                    opcode.into(),
+                    dst.encode(),
+                    op1.encode(),
+                    op2.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                imm.into(),
+            ),
+        }
+    }
+    fn encode_two_regs(opcode: Opcode, target: &TwoRegs) -> (u64, u64) {
+        match target {
+            &TwoRegs { dst, src } => (
+                u64::from_le_bytes([opcode.into(), dst.encode(), src.encode(), 24, 0, 0, 0, 0]),
+                0,
+            ),
         }
     }
 
     pub fn encode(&self) -> (u64, u64) {
         match self {
             // Control flow
-            Instruction::Halt => (u64::from_le_bytes([255, 0, 0, 0, 0, 0, 0, 0]), 0),
-            Instruction::Nop => (u64::from_le_bytes([1, 0, 0, 0, 0, 0, 0, 0]), 0),
-
-            Instruction::JumpAdr { target } => (
-                u64::from_le_bytes([2, target.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+            Instruction::Halt => (
+                u64::from_le_bytes([Opcode::Halt.into(), 0, 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-            Instruction::JumpReg { target } => {
-                (u64::from_le_bytes([3, target.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
+            Instruction::Nop => (
+                u64::from_le_bytes([Opcode::Nop.into(), 0, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+
+            Instruction::Jump(addressing) => Self::encode_op_jump_cond(Opcode::Jump, addressing),
+            Instruction::JumpIf(addressing) => {
+                Self::encode_op_jump_cond(Opcode::JumpIf, addressing)
             }
-            Instruction::JumpImm { target } => {
-                (u64::from_le_bytes([4, 0, 0, 0, 0, 0, 0, 0]), *target)
+            Instruction::JumpIfNot(addressing) => {
+                Self::encode_op_jump_cond(Opcode::JumpIf, addressing)
             }
-            Instruction::JumpRel { offset } => {
-                (u64::from_le_bytes([5, 0, 0, 0, 0, 0, 0, 0]), *offset as u64)
-            }
+            Instruction::Call(addressing) => Self::encode_op_jump_cond(Opcode::Call, addressing),
 
-            Instruction::JumpIfAdr { target, condition } => (
-                u64::from_le_bytes([6, target.0 as u8 + 16, condition.0 as u8, 0, 0, 0, 0, 0]),
+            Instruction::Return => (
+                u64::from_le_bytes([Opcode::Return.into(), 0, 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-            Instruction::JumpIfReg { target, condition } => (
-                u64::from_le_bytes([7, target.0 as u8, condition.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::JumpIfImm { target, condition } => (
-                u64::from_le_bytes([8, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
-                *target,
-            ),
-            Instruction::JumpIfRel { offset, condition } => (
-                u64::from_le_bytes([9, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
-                *offset as u64,
-            ),
-
-            Instruction::JumpIfNotAdr { target, condition } => (
-                u64::from_le_bytes([10, target.0 as u8 + 16, condition.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::JumpIfNotReg { target, condition } => (
-                u64::from_le_bytes([11, target.0 as u8, condition.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::JumpIfNotImm { target, condition } => (
-                u64::from_le_bytes([12, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
-                *target,
-            ),
-            Instruction::JumpIfNotRel { offset, condition } => (
-                u64::from_le_bytes([13, condition.0 as u8, 0, 0, 0, 0, 0, 0]),
-                *offset as u64,
-            ),
-
-            Instruction::CallAdr { target } => (
-                u64::from_le_bytes([14, target.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::CallReg { target } => (
-                u64::from_le_bytes([15, target.0 as u8, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::CallImm { target } => {
-                (u64::from_le_bytes([16, 0, 0, 0, 0, 0, 0, 0]), *target)
-            }
-            Instruction::CallRel { offset } => (
-                u64::from_le_bytes([17, 0, 0, 0, 0, 0, 0, 0]),
-                *offset as u64,
-            ),
-
-            Instruction::Return => (u64::from_le_bytes([18, 0, 0, 0, 0, 0, 0, 0]), 0),
             Instruction::MakeClosure { dst, code } => (
-                u64::from_le_bytes([19, dst.0 as u8, code.0 as u8 + 16, 0, 0, 0, 0, 0]),
-                0,
-            ),
-
-            // Comparison
-            Instruction::Eq { dst, op1, op2 } => (
-                u64::from_le_bytes([20, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Ne { dst, op1, op2 } => (
-                u64::from_le_bytes([21, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Gt { dst, op1, op2 } => (
-                u64::from_le_bytes([22, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Gte { dst, op1, op2 } => (
-                u64::from_le_bytes([23, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Lt { dst, op1, op2 } => (
-                u64::from_le_bytes([24, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Lte { dst, op1, op2 } => (
-                u64::from_le_bytes([25, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-
-            // Cons
-            Instruction::Cons { car, cdr } => (
-                u64::from_le_bytes([26, car.0 as u8, cdr.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Car { dst, src } => (
-                u64::from_le_bytes([27, dst.0 as u8, src.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Cdr { dst, src } => (
-                u64::from_le_bytes([28, dst.0 as u8, src.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::SetCar { dst, val } => (
-                u64::from_le_bytes([29, dst.0 as u8, val.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::SetCdr { dst, val } => (
-                u64::from_le_bytes([30, dst.0 as u8, val.0 as u8, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Uncons { car, cdr, src } => (
-                u64::from_le_bytes([31, car.0 as u8, cdr.0 as u8, src.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-
-            // Arithmetic
-            Instruction::Add { dst, op1, op2 } => (
-                u64::from_le_bytes([32, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Sub { dst, op1, op2 } => (
-                u64::from_le_bytes([33, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Mul { dst, op1, op2 } => (
-                u64::from_le_bytes([34, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Div { dst, op1, op2 } => (
-                u64::from_le_bytes([35, dst.0 as u8, op1.0 as u8, op2.0 as u8, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::IDiv { div, rem, op1, op2 } => (
                 u64::from_le_bytes([
-                    36,
-                    div.0 as u8,
-                    rem.0 as u8,
-                    op1.0 as u8,
-                    op2.0 as u8,
+                    Opcode::MakeClosure.into(),
+                    dst.encode(),
+                    code.encode(),
+                    0,
+                    0,
                     0,
                     0,
                     0,
@@ -380,78 +384,283 @@ impl Instruction {
                 0,
             ),
 
-            // Load
-            Instruction::LoadPc { dst } => (
-                u64::from_le_bytes([37, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::PushPc => (u64::from_le_bytes([38, 0, 0, 0, 0, 0, 0, 0]), 0),
+            // Comparison
+            Instruction::Eq(regs) => Self::encode_three_regs(Opcode::Eq, regs),
+            Instruction::Ne(regs) => Self::encode_three_regs(Opcode::Ne, regs),
+            Instruction::Gt(regs) => Self::encode_three_regs(Opcode::Gt, regs),
+            Instruction::Gte(regs) => Self::encode_three_regs(Opcode::Gte, regs),
+            Instruction::Lt(regs) => Self::encode_three_regs(Opcode::Lt, regs),
+            Instruction::Lte(regs) => Self::encode_three_regs(Opcode::Lte, regs),
 
-            Instruction::LoadSp { dst } => (
-                u64::from_le_bytes([39, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::StoreSp { src } => (
-                u64::from_le_bytes([42, src.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+            // Cons
+            Instruction::Car(regs) => Self::encode_two_regs(Opcode::Car, regs),
+            Instruction::Cdr(regs) => Self::encode_two_regs(Opcode::Cdr, regs),
+            Instruction::SetCar(regs) => Self::encode_two_regs(Opcode::SetCar, regs),
+            Instruction::SetCdr(regs) => Self::encode_two_regs(Opcode::SetCdr, regs),
+            Instruction::Uncons { car, cdr, src } => (
+                u64::from_le_bytes([
+                    Opcode::Uncons.into(),
+                    car.encode(),
+                    cdr.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
                 0,
             ),
 
-            Instruction::PopR { dst } => {
-                (u64::from_le_bytes([43, dst.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
-            }
-            Instruction::PushR { src } => {
-                (u64::from_le_bytes([44, src.0 as u8, 0, 0, 0, 0, 0, 0]), 0)
-            }
+            // Arithmetic
+            Instruction::Add(regs) => Self::encode_three_regs(Opcode::Add, regs),
+            Instruction::Sub(regs) => Self::encode_three_regs(Opcode::Sub, regs),
+            Instruction::Mul(regs) => Self::encode_three_regs(Opcode::Mul, regs),
+
+            Instruction::IDiv {
+                div,
+                rem,
+                op1,
+                op2,
+                imm,
+            } => (
+                u64::from_le_bytes([
+                    Opcode::IDiv.into(),
+                    div.encode(),
+                    rem.encode(),
+                    op1.encode(),
+                    op2.unwrap_or_default().encode(),
+                    0,
+                    0,
+                    0,
+                ]),
+                u64::from(*imm),
+            ),
+
+            Instruction::PopR { dst } => (
+                u64::from_le_bytes([Opcode::PopR.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::PushR { src } => (
+                u64::from_le_bytes([Opcode::PushR.into(), src.encode(), 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
             Instruction::PopA { dst } => (
-                u64::from_le_bytes([45, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([Opcode::PopA.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
             ),
             Instruction::PushA { src } => (
-                u64::from_le_bytes([46, src.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([Opcode::PushA.into(), src.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
             ),
 
-            Instruction::LoadChar { dst, val } => (
-                u64::from_le_bytes([47, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
-                *val as u64,
-            ),
-            Instruction::LoadFixnum { dst, val } => (
-                u64::from_le_bytes([48, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
-                *val as u64,
-            ),
             Instruction::LoadRoot { dst, root } => (
-                u64::from_le_bytes([49, dst.0 as u8, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([Opcode::LoadRoot.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 *root as u64,
             ),
 
             Instruction::LoadAddress { dst, address } => (
-                u64::from_le_bytes([50, dst.0 as u8 + 16, 0, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([Opcode::LoadAddress.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 *address,
             ),
-            Instruction::LoadCons { dst, address } => (
-                u64::from_le_bytes([53, dst.0 as u8, address.0 as u8 + 16, 0, 0, 0, 0, 0]),
+            Instruction::ReadOffsetAdr {
+                dst,
+                base: None,
+                offset,
+            } => (
+                u64::from_le_bytes([
+                    Opcode::ReadOffsetAdr.into(),
+                    dst.encode(),
+                    24,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                *offset as u64,
+            ),
+            Instruction::ReadOffsetAdr {
+                dst,
+                base: Some(adr),
+                offset,
+            } => (
+                u64::from_le_bytes([
+                    Opcode::ReadOffsetAdr.into(),
+                    dst.encode(),
+                    adr.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                *offset as u64,
+            ),
+            Instruction::ReadReg { dst, base } => (
+                u64::from_le_bytes([
+                    Opcode::LoadAddress.into(),
+                    dst.encode(),
+                    base.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
                 0,
             ),
-            Instruction::ReadOffsetAdr { dst, base, offset } => (0, 0),
-            Instruction::ReadOffsetReg { dst, base, offset } => (0, 0),
             Instruction::StoreOffsetAdr {
-                base,
+                base: None,
                 offset,
                 value,
-            } => (0, 0),
-            Instruction::StoreOffsetReg {
-                base,
-                offset,
-                value,
-            } => (0, 0),
-            Instruction::IReturn { count } => (
-                u64::from_le_bytes([254, 0, 0, 0, 0, 0, 0, 0]),
-                *count as u64,
+            } => (
+                u64::from_le_bytes([
+                    Opcode::StoreOffsetAdr.into(),
+                    24,
+                    value.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                *offset as u64,
             ),
-            Instruction::MovAR { dst, src } => (0, 0),
-            Instruction::MovRA { dst, src } => (0, 0),
-            Instruction::AAdd { dst, op1, op2 } => (0, 0),
-            Instruction::GetPayload { dst, src } => (0, 0),
+            Instruction::StoreOffsetAdr {
+                base: Some(base),
+                offset,
+                value,
+            } => (
+                u64::from_le_bytes([
+                    Opcode::StoreOffsetAdr.into(),
+                    base.encode(),
+                    value.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                *offset as u64,
+            ),
+            Instruction::StoreReg { base, src } => (
+                u64::from_le_bytes([
+                    Opcode::StoreReg.into(),
+                    base.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+            Instruction::IReturn { count } => (
+                u64::from_le_bytes([Opcode::IReturn.into(), 0, 0, 0, 0, 0, 0, 0]),
+                *count,
+            ),
+            Instruction::MovAR { dst, src } => (
+                u64::from_le_bytes([
+                    Opcode::MovAR.into(),
+                    dst.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+            Instruction::MovRA { dst, src } => (
+                u64::from_le_bytes([
+                    Opcode::MovRA.into(),
+                    dst.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+            Instruction::AAdd(regs) => Self::encode_three_adrs(Opcode::AAdd, regs),
+            Instruction::ASub(regs) => Self::encode_three_adrs(Opcode::ASub, regs),
+            Instruction::GetPayload { dst, src } => (
+                u64::from_le_bytes([
+                    Opcode::GetPayload.into(),
+                    dst.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+            Instruction::GetTag { src, dst } => (
+                u64::from_le_bytes([
+                    Opcode::GetTag.into(),
+                    src.encode(),
+                    dst.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+            Instruction::Int(count) => (
+                u64::from_le_bytes([Opcode::Int.into(), 0, 0, 0, 0, 0, 0, 0]),
+                *count,
+            ),
+            Instruction::LoadLiteral { dst, val } => (
+                u64::from_le_bytes([Opcode::LoadLiteral.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
+                (*val).into(),
+            ),
+            Instruction::MovAdr { dst, src } => (
+                u64::from_le_bytes([
+                    Opcode::MovAdr.into(),
+                    dst.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+            Instruction::SetPayload { dst, src } => (
+                u64::from_le_bytes([
+                    Opcode::SetPayload.into(),
+                    dst.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
+            Instruction::SetTag { src, dst } => (
+                u64::from_le_bytes([
+                    Opcode::SetTag.into(),
+                    src.encode(),
+                    dst.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
         }
     }
 }

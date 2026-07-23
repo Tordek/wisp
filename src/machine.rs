@@ -1,7 +1,7 @@
 use crate::{
     cpu::{
         AddressRegister, Cpu, Instruction, InterruptTableOffset, MemoryLayout, Register,
-        SymbolLayout, Word, WordType,
+        SymbolLayout, ThreeAddrs, Word, WordType,
     },
     memory::Memory,
 };
@@ -171,7 +171,8 @@ impl FirmwareHelper {
                     dst: AddressRegister(0),
                     address: Self::BOOTSTRAP_STACK_POSITION.0,
                 },
-                Instruction::StoreSp {
+                Instruction::MovAdr {
+                    dst: AddressRegister(Cpu::SP),
                     src: AddressRegister(0),
                 },
                 // Halt
@@ -195,7 +196,7 @@ impl FirmwareHelper {
                 // A0 = *freeptr
                 Instruction::ReadOffsetAdr {
                     dst: AddressRegister(0),
-                    base: AddressRegister(1),
+                    base: Some(AddressRegister(1)),
                     offset: 0,
                 },
                 // A2 = length
@@ -205,14 +206,15 @@ impl FirmwareHelper {
                     src: Register(0),
                 },
                 // A3 = *freeptr + len
-                Instruction::AAdd {
+                Instruction::AAdd(ThreeAddrs {
                     dst: AddressRegister(3),
                     op1: AddressRegister(0),
-                    op2: AddressRegister(2),
-                },
+                    op2: Some(AddressRegister(2)),
+                    imm: 0,
+                }),
                 // *freeptr = A3
                 Instruction::StoreOffsetAdr {
-                    base: AddressRegister(1),
+                    base: Some(AddressRegister(1)),
                     offset: 0,
                     value: AddressRegister(3),
                 },

@@ -2,7 +2,7 @@ mod encoding;
 
 use int_enum::IntEnum;
 
-use crate::{cpu::WordType::Fixnum, memory::Memory};
+use crate::memory::Memory;
 
 type MachineAddressSize = u64;
 type WordSize = u64;
@@ -89,18 +89,21 @@ impl Word {
     }
 }
 
+#[derive(Debug)]
+pub enum WordParseError {
+    InvalidPrefix,
+}
 impl TryFrom<u64> for Word {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         const DATA_MASK: u64 = 0x00FF_FFFF_FFFF_FFFF;
         let raw_tag = value >> 56;
         let payload = value & DATA_MASK;
         Ok(Word {
-            tag: WordType::try_from(raw_tag as u8)?,
+            tag: WordType::try_from(raw_tag as u8).map_err(|_| WordParseError::InvalidPrefix)?,
             payload,
         })
     }
-
-    type Error = u8;
+    type Error = WordParseError;
 }
 impl From<Word> for u64 {
     fn from(value: Word) -> u64 {
@@ -122,9 +125,9 @@ pub struct Cpu {
     pub halted: bool,
 }
 impl Cpu {
-    const SP: usize = 5;
-    const PC: usize = 6;
-    const ENV: usize = 7;
+    pub const SP: usize = 5;
+    pub const PC: usize = 6;
+    pub const ENV: usize = 7;
     pub const INSTRUCTION_SIZE: u64 = 2;
 }
 
@@ -138,241 +141,227 @@ impl Default for Cpu {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Register(pub usize);
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct AddressRegister(pub usize);
 
 #[derive(Debug)]
+pub enum JumpAddressing {
+    /// Jumping relative to current PC is done by JUMPing to [adr=PC=0x06]+offset
+    AddressRegister {
+        condition: AddressRegister,
+        adr: Option<AddressRegister>,
+        offset: i64,
+    },
+    Register {
+        condition: Register,
+        adr: Register,
+    },
+}
+
+#[derive(Debug)]
+pub struct ThreeRegs {
+    pub dst: Register,
+    pub op1: Register,
+    pub op2: Option<Register>,
+    pub imm: Word,
+}
+
+#[derive(Debug)]
+pub struct ThreeAddrs {
+    pub dst: AddressRegister,
+    pub op1: AddressRegister,
+    pub op2: Option<AddressRegister>,
+    pub imm: u64,
+}
+
+#[derive(Debug)]
+struct TwoRegs {
+    dst: Register,
+    src: Register,
+}
+
+#[derive(Debug)]
+struct TwoAddrs {
+    src: AddressRegister,
+    dst: AddressRegister,
+}
+
+#[derive(Debug)]
 pub enum Instruction {
+    // Lower level
+    /// Halts execution
     Halt,
+
+    /// Do nothing.
     Nop,
 
-    JumpAdr {
-        target: AddressRegister,
-    },
-    JumpReg {
-        target: Register,
-    },
-    JumpImm {
-        target: u64,
-    },
-    JumpRel {
-        offset: i64,
-    },
-    JumpIfAdr {
-        condition: Register,
-        target: AddressRegister,
-    },
-    JumpIfReg {
-        condition: Register,
-        target: Register,
-    },
-    JumpIfImm {
-        condition: Register,
-        target: u64,
-    },
-    JumpIfRel {
-        condition: Register,
-        offset: i64,
-    },
-    JumpIfNotAdr {
-        condition: Register,
-        target: AddressRegister,
-    },
-    JumpIfNotReg {
-        condition: Register,
-        target: Register,
-    },
-    JumpIfNotImm {
-        condition: Register,
-        target: u64,
-    },
-    JumpIfNotRel {
-        condition: Register,
-        offset: i64,
-    },
-    CallAdr {
-        target: AddressRegister,
-    },
-    CallReg {
-        target: Register,
-    },
-    CallImm {
-        target: u64,
-    },
-    CallRel {
-        offset: i64,
-    },
-    Cons {
-        car: Register,
-        cdr: Register,
-    },
-    Uncons {
-        car: Register,
-        cdr: Register,
-        src: Register,
-    },
-    Car {
-        dst: Register,
-        src: Register,
-    },
-    Cdr {
-        dst: Register,
-        src: Register,
-    },
-    SetCar {
-        dst: Register,
-        val: Register,
-    },
-    SetCdr {
-        dst: Register,
-        val: Register,
-    },
-    Add {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Mul {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    IDiv {
-        div: Register,
-        rem: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Div {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Sub {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Return,
+    /// Jumps unconditionally
+    Jump(JumpAddressing),
+
+    /// Jump if its Register is 't
+    JumpIf(JumpAddressing),
+
+    /// Jump if its Register is 'nil
+    JumpIfNot(JumpAddressing),
+
+    /// PUSHes all Registers and Addresses to the stack, then the PC, and jumps.
+    /// For some internal INTs (<0x80, like CONS) it may perform additional work.
+    Int(u64),
+
+    /// POPs the PC and and all Registers lower than (count) are restored.
+    /// All registers are popped, but the count indicates which ones are kept.
+    /// For some internal INTs, it may perform additional work.
     IReturn {
         count: u64,
     },
-    MakeClosure {
-        dst: Register,
-        code: AddressRegister,
-    },
-    Eq {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Ne {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Gt {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Gte {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Lt {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    Lte {
-        dst: Register,
-        op1: Register,
-        op2: Register,
-    },
-    PushR {
-        src: Register,
-    },
+
+    /// Push raw data onto the stack.
     PushA {
         src: AddressRegister,
     },
-    PopR {
-        dst: Register,
-    },
+    /// Pop raw data from the stack.
     PopA {
         dst: AddressRegister,
     },
-    PushPc,
-    LoadPc {
-        dst: AddressRegister,
-    },
-    LoadSp {
-        dst: AddressRegister,
-    },
-    StoreSp {
-        src: AddressRegister,
-    },
-    LoadChar {
+    /// Load a literal WORD onto a register. Validate it.
+    LoadLiteral {
         dst: Register,
-        val: u64,
+        val: Word,
     },
-    LoadFixnum {
-        dst: Register,
-        val: u64,
-    },
+    /// Load one of the Root components like 't
     LoadRoot {
         dst: Register,
         root: Root,
     },
+    /// Load a raw Word
     LoadAddress {
         dst: AddressRegister,
         address: u64,
     },
+    /// Read from a pointer
+    ReadReg {
+        dst: Register,
+        base: Register,
+    },
+    /// Write to a pointer
+    StoreReg {
+        base: Register,
+        src: Register,
+    },
+    MovAdr {
+        dst: AddressRegister,
+        src: AddressRegister,
+    },
+    /// Read from an arbitrary position in memory
     ReadOffsetAdr {
         dst: AddressRegister,
-        base: AddressRegister,
+        base: Option<AddressRegister>,
         offset: i64,
     },
-    ReadOffsetReg {
-        dst: Register,
-        base: AddressRegister,
-        offset: i64,
-    },
+    /// Write to an arbitrary position in memory
     StoreOffsetAdr {
-        base: AddressRegister,
+        base: Option<AddressRegister>,
         offset: i64,
         value: AddressRegister,
     },
-    StoreOffsetReg {
-        base: AddressRegister,
-        offset: i64,
-        value: Register,
-    },
-    LoadCons {
-        dst: Register,
-        address: AddressRegister,
-    },
+    /// Copy a Register into an Address pointer
     MovAR {
         dst: AddressRegister,
         src: Register,
     },
+    /// Copy an Address pointer into a Register - Will validate
     MovRA {
         dst: Register,
         src: AddressRegister,
     },
-    AAdd {
+    AAdd(ThreeAddrs),
+    ASub(ThreeAddrs),
+    SetTag {
+        src: Register,
         dst: AddressRegister,
-        op1: AddressRegister,
-        op2: AddressRegister,
+    },
+    GetTag {
+        src: Register,
+        dst: AddressRegister,
+    },
+    SetPayload {
+        dst: AddressRegister,
+        src: Register,
     },
     GetPayload {
         dst: AddressRegister,
         src: Register,
     },
+
+    // Higher level
+    // Cons { -- CONS does not exist - it is only an alias for INT 0x02
+    //     car: Register,
+    //     cdr: Register,
+    // },
+    /// Optimization for destructuring both parts of a cons.
+    Uncons {
+        car: Register,
+        cdr: Register,
+        src: Register,
+    },
+    /// Gets the first part of a cons - typechecks.
+    Car(TwoRegs),
+    /// Gets the second part of a cons - typechecks.
+    Cdr(TwoRegs),
+    /// Sets the first part of a cons - typechecks.
+    SetCar(TwoRegs),
+    /// Sets the second part of a cons - typechecks.
+    SetCdr(TwoRegs),
+    /// Calculates dst <- op1 + (op2 + imm)
+    Add(ThreeRegs),
+    /// Calculates dst <- op1 * (op2 + imm)
+    Mul(ThreeRegs),
+    /// Calculates div <- op1 / (op2 + imm), rem <- op1 % (op2 + imm)
+    IDiv {
+        div: Register,
+        rem: Register,
+        op1: Register,
+        op2: Option<Register>,
+        imm: Word,
+    },
+    /// Calculates dst <- op1 - (op2 + imm) - typechecks, only fixnums.
+    Sub(ThreeRegs),
+    /// Calculates dst <- op1 == (op2 + imm)
+    ///! It traps if imm is not 0 when the operands are not fixnum.
+    Eq(ThreeRegs),
+    /// Calculates dst <- op1 !- (op2 + imm)
+    ///! It traps if imm is not 0 when the operands are not fixnum.
+    Ne(ThreeRegs),
+    /// Calculates dst <- op1 > (op2 + imm) - typechecks, only fixnums.
+    Gt(ThreeRegs),
+    /// Calculates dst <- op1 < (op2 + imm) - typechecks, only fixnums.
+    Gte(ThreeRegs),
+    /// Calculates dst <- op1 >= (op2 + imm) - typechecks, only fixnums.
+    Lt(ThreeRegs),
+    /// Calculates dst <- op1 <= (op2 + imm) - typechecks, only fixnums.
+    Lte(ThreeRegs),
+
+    /// I have no idea what this does yet.
+    MakeClosure {
+        dst: Register,
+        code: AddressRegister,
+    },
+    /// Push a word onto the stack
+    PushR {
+        src: Register,
+    },
+    /// Pop a word onto the stack - and validate it's a word.
+    PopR {
+        dst: Register,
+    },
+
+    /// PUSHes PC on the stack and jumps
+    Call(JumpAddressing),
+    /// POPs PC from the stack
+    Return,
 }
 
 impl Cpu {
@@ -441,6 +430,48 @@ impl Cpu {
         Self::read_word(memory, self.address[Cpu::SP])
     }
 
+    fn reg_with_offset(&self, op: Option<Register>, off: Word) -> Result<Word, Trap> {
+        match (op, off) {
+            (None, off) => Ok(off),
+            (
+                Some(r),
+                Word {
+                    tag: WordType::Fixnum,
+                    payload: 0,
+                },
+            ) => Ok(self.registers[r.0]),
+            (
+                Some(r),
+                Word {
+                    tag: WordType::Fixnum,
+                    payload: offset,
+                },
+            ) => match self.registers[r.0] {
+                Word {
+                    tag: WordType::Fixnum,
+                    payload,
+                } => Ok(Word::new(WordType::Fixnum, payload + offset)),
+                _ => Err(Trap::TypeError),
+            },
+            _ => Err(Trap::TypeError),
+        }
+    }
+
+    fn addr_with_offset(&self, op: Option<AddressRegister>, off: i64) -> u64 {
+        match op {
+            Some(AddressRegister(r)) => (self.address[r] as i64 + off) as u64,
+            None => off as u64,
+        }
+    }
+
+    fn ensure(w: Word, word_type: WordType) -> Result<Word, Trap> {
+        if w.tag == word_type {
+            Ok(w)
+        } else {
+            Err(Trap::TypeError)
+        }
+    }
+
     fn execute<M: Memory<MachineAddressSize, WordSize>>(
         &mut self,
         instruction: Instruction,
@@ -454,46 +485,50 @@ impl Cpu {
             }
             Instruction::Nop => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
 
-            Instruction::JumpAdr { target } => {
-                let target_address = self.address[target.0];
-                Ok(target_address)
+            Instruction::Jump(JumpAddressing::AddressRegister {
+                adr,
+                condition: _,
+                offset,
+            }) => Ok(self.addr_with_offset(adr, offset)),
+            Instruction::Jump(JumpAddressing::Register { condition: _, adr }) => {
+                Err(Trap::Unimplemented)
             }
-            Instruction::JumpReg { target } => Err(Trap::Unimplemented),
-            Instruction::JumpImm { target } => Err(Trap::Unimplemented),
-            Instruction::JumpRel { offset } => Err(Trap::Unimplemented),
 
-            Instruction::JumpIfAdr { condition, target } => {
-                let target_address = self.address[target.0];
+            Instruction::JumpIf(JumpAddressing::AddressRegister {
+                condition,
+                adr,
+                offset,
+            }) => {
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
                 if condition_value == nil {
                     Ok(self.address[Cpu::SP] + Cpu::INSTRUCTION_SIZE)
                 } else {
-                    Ok(target_address)
+                    Ok(self.addr_with_offset(adr, offset))
                 }
             }
-            Instruction::JumpIfReg { condition, target } => Err(Trap::Unimplemented),
-            Instruction::JumpIfRel { condition, offset } => Err(Trap::Unimplemented),
-            Instruction::JumpIfImm { condition, target } => Err(Trap::Unimplemented),
+            Instruction::JumpIf(JumpAddressing::Register { condition, adr }) => {
+                Err(Trap::Unimplemented)
+            }
 
-            Instruction::JumpIfNotAdr { condition, target } => {
-                let target_address = self.address[target.0];
+            Instruction::JumpIfNot(JumpAddressing::AddressRegister {
+                condition,
+                adr,
+                offset,
+            }) => {
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
                 if condition_value != nil {
                     Ok(self.address[Cpu::SP] + Cpu::INSTRUCTION_SIZE)
                 } else {
-                    Ok(target_address)
+                    Ok(self.addr_with_offset(adr, offset))
                 }
             }
-            Instruction::JumpIfNotReg { condition, target } => Err(Trap::Unimplemented),
-            Instruction::JumpIfNotImm { condition, target } => Err(Trap::Unimplemented),
-            Instruction::JumpIfNotRel { condition, offset } => Err(Trap::Unimplemented),
+            Instruction::JumpIfNot(JumpAddressing::Register { condition, adr }) => {
+                Err(Trap::Unimplemented)
+            }
 
-            Instruction::CallReg { target: dst } => Err(Trap::Unimplemented),
-            Instruction::CallAdr { target: dst } => Err(Trap::Unimplemented),
-            Instruction::CallImm { target: dst } => Err(Trap::Unimplemented),
-            Instruction::CallRel { offset: dst } => Err(Trap::Unimplemented),
+            Instruction::Call(target) => Err(Trap::Unimplemented),
 
             Instruction::Return => {
                 let return_address = self.pop(memory);
@@ -502,54 +537,78 @@ impl Cpu {
             Instruction::MakeClosure { dst, code } => Err(Trap::Unimplemented),
 
             // Comparison
-            Instruction::Eq { dst, op1, op2 } => {
+            Instruction::Eq(ThreeRegs { dst, op1, op2, imm }) => {
                 let op1_obj = self.registers[op1.0];
-                let op2_obj = self.registers[op2.0];
+                let op2_obj = match op2 {
+                    Some(op) => match self.registers[op.0] {
+                        Word {
+                            tag: WordType::Fixnum,
+                            payload,
+                        } => Ok(Word::new(
+                            WordType::Fixnum,
+                            payload + Word::try_from(imm).map_err(|_| Trap::TypeError)?.payload,
+                        )),
+                        word => {
+                            if imm == Word::new(WordType::Fixnum, 0) {
+                                Ok(word)
+                            } else {
+                                Err(Trap::TypeError)
+                            }
+                        }
+                    },
+                    None => Word::try_from(imm).map_err(|_| Trap::TypeError),
+                }?;
 
                 self.registers[dst.0] = Self::to_machine_bool(memory, op1_obj == op2_obj)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Ne { dst, op1, op2 } => {
+            Instruction::Ne(ThreeRegs { dst, op1, op2, imm }) => {
                 let op1_obj = self.registers[op1.0];
-                let op2_obj = self.registers[op2.0];
+                let op2_obj = self.reg_with_offset(op2, imm)?;
                 self.registers[dst.0] = Self::to_machine_bool(memory, op1_obj != op2_obj)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Gt { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
+            Instruction::Gt(ThreeRegs { dst, op1, op2, imm }) => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload > op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Gte { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
+            Instruction::Gte(ThreeRegs { dst, op1, op2, imm }) => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload >= op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Lt { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
+            Instruction::Lt(ThreeRegs { dst, op1, op2, imm }) => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload < op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Lte { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
+            Instruction::Lte(ThreeRegs { dst, op1, op2, imm }) => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload >= op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
 
             // Cons
-            Instruction::Cons { car, cdr } => {
+            Instruction::Int(interruption) => {
                 let next_pc = self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE;
-                self.push(memory, self.registers[car.0].into());
-                self.push(memory, self.registers[cdr.0].into());
-                self.push(memory, 0x02);
+                match interruption {
+                    0x02 => {
+                        /// CONS takes its params as R0 and R1
+                        self.push(memory, self.registers[0].into());
+                        self.push(memory, self.registers[1].into());
+                    }
+                    _ => (),
+                }
+                self.push(memory, interruption);
                 for i in 0..4 {
                     self.push(memory, self.registers[i].into());
                     self.push(memory, self.address[i].into());
@@ -566,161 +625,6 @@ impl Cpu {
                 );
                 Ok(location)
             }
-            Instruction::Car { dst, src } => {
-                let src_obj = self.read_register_as(src, WordType::Cons)?;
-
-                self.registers[dst.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::Cdr { dst, src } => {
-                let src_obj = self.read_register_as(src, WordType::Cons)?;
-
-                self.registers[dst.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::SetCar { dst, val } => {
-                let dst_obj = self.read_register_as(dst, WordType::Cons)?;
-                let val_obj = self.registers[val.0];
-
-                memory.write_word(dst_obj.payload + ConsLayout::CAR_OFFSET, val_obj.into());
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::SetCdr { dst, val } => {
-                let dst_obj = self.read_register_as(dst, WordType::Cons)?;
-                let val_obj = self.registers[val.0];
-
-                memory.write_word(dst_obj.payload + ConsLayout::CDR_OFFSET, val_obj.into());
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::Uncons { car, cdr, src } => {
-                let src_obj = self.read_register_as(src, WordType::Cons)?;
-
-                self.registers[car.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
-                self.registers[cdr.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-
-            // Arithmetic
-            Instruction::Add { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
-                // TODO: When fetching numbers, extend the sign bit.
-                self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload + op2_obj.payload);
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::Sub { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
-                // TODO: When fetching numbers, extend the sign bit.
-                self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload - op2_obj.payload);
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::Mul { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
-                // TODO: When fetching numbers, extend the sign bit.
-                self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload * op2_obj.payload);
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::Div { dst, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
-                // TODO: When fetching numbers, extend the sign bit.
-                self.registers[dst.0] = Word::new(Fixnum, op1_obj.payload / op2_obj.payload);
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::IDiv { div, rem, op1, op2 } => {
-                let op1_obj = self.read_register_as(op1, WordType::Fixnum)?;
-                let op2_obj = self.read_register_as(op2, WordType::Fixnum)?;
-                // TODO: When fetching numbers, extend the sign bit.
-                self.registers[div.0] = Word::new(Fixnum, op1_obj.payload / op2_obj.payload);
-                self.registers[rem.0] = Word::new(Fixnum, op1_obj.payload % op2_obj.payload);
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-
-            // Load
-            Instruction::LoadPc { dst } => {
-                let next_pc = self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE;
-                self.address[dst.0] = next_pc;
-                Ok(next_pc)
-            }
-            Instruction::PushPc => {
-                let next_pc = self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE;
-                self.push(memory, next_pc);
-                Ok(next_pc)
-            }
-            Instruction::LoadSp { dst } => {
-                self.address[dst.0] = self.address[Cpu::SP];
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::StoreSp { src } => {
-                self.address[Cpu::SP] = self.address[src.0];
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-
-            Instruction::PopR { dst } => {
-                let result = self.pop_word(memory)?;
-                self.registers[dst.0] = result;
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::PushR { src } => {
-                self.push(memory, self.registers[src.0].into());
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::PopA { dst } => {
-                let result = self.pop(memory);
-                self.address[dst.0] = result;
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::PushA { src } => {
-                self.push(memory, self.address[src.0]);
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-
-            Instruction::LoadChar { dst, val } => {
-                let num = Word::new(WordType::Character, val);
-                self.registers[dst.0] = num;
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::LoadFixnum { dst, val } => {
-                let num = Word::new(WordType::Fixnum, val);
-                self.registers[dst.0] = num;
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::LoadRoot { dst, root } => {
-                let root_obj = Self::read_word(memory, root as u64)?;
-                self.registers[dst.0] = root_obj;
-
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-
-            Instruction::LoadAddress { dst, address } => {
-                self.address[dst.0] = address;
-
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::StoreOffsetAdr {
-                base,
-                offset,
-                value,
-            } => {
-                let value_obj = self.registers[value.0];
-
-                memory.write_word(
-                    (self.address[base.0 as usize] as i64 + offset) as u64,
-                    value_obj.into(),
-                );
-
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            } // Instruction::LoadCons { dst, address } => {
-            //     self.registers[dst.0] = Word::new(WordType::Cons, self.address[address.0]);
-
-            //     Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            // }
             Instruction::IReturn { count } => {
                 let return_address = self.pop(memory);
 
@@ -748,28 +652,155 @@ impl Cpu {
                 }
                 Ok(return_address)
             }
-            Instruction::LoadCons { dst, address } => {
+            Instruction::Car(TwoRegs { dst, src }) => {
+                let src_obj = self.read_register_as(src, WordType::Cons)?;
+
+                self.registers[dst.0] =
+                    Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::Cdr(TwoRegs { dst, src }) => {
+                let src_obj = self.read_register_as(src, WordType::Cons)?;
+
+                self.registers[dst.0] =
+                    Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::SetCar(TwoRegs { dst, src }) => {
+                let dst_obj = self.read_register_as(dst, WordType::Cons)?;
+                let val_obj = self.registers[src.0];
+
+                memory.write_word(dst_obj.payload + ConsLayout::CAR_OFFSET, val_obj.into());
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::SetCdr(TwoRegs { dst, src }) => {
+                let dst_obj = self.read_register_as(dst, WordType::Cons)?;
+                let val_obj = self.registers[src.0];
+
+                memory.write_word(dst_obj.payload + ConsLayout::CDR_OFFSET, val_obj.into());
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::Uncons { car, cdr, src } => {
+                let src_obj = self.read_register_as(src, WordType::Cons)?;
+
+                self.registers[car.0] =
+                    Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
+                self.registers[cdr.0] =
+                    Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+
+            // Arithmetic
+            Instruction::Add(ThreeRegs { dst, op1, op2, imm }) => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
+                // TODO: When fetching numbers, extend the sign bit.
+                self.registers[dst.0] =
+                    Word::new(WordType::Fixnum, op1_obj.payload + op2_obj.payload);
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::Sub(ThreeRegs { dst, op1, op2, imm }) => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
+                // TODO: When fetching numbers, extend the sign bit.
+                self.registers[dst.0] =
+                    Word::new(WordType::Fixnum, op1_obj.payload - op2_obj.payload);
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::Mul(ThreeRegs { dst, op1, op2, imm }) => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
+                // TODO: When fetching numbers, extend the sign bit.
+                self.registers[dst.0] =
+                    Word::new(WordType::Fixnum, op1_obj.payload * op2_obj.payload);
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::IDiv {
+                div,
+                rem,
+                op1,
+                op2,
+                imm,
+            } => {
+                let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
+                let op2_obj = self.reg_with_offset(op2, imm)?;
+                // TODO: When fetching numbers, extend the sign bit.
+                self.registers[div.0] =
+                    Word::new(WordType::Fixnum, op1_obj.payload / op2_obj.payload);
+                self.registers[rem.0] =
+                    Word::new(WordType::Fixnum, op1_obj.payload % op2_obj.payload);
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+
+            Instruction::PopR { dst } => {
+                let result = self.pop_word(memory)?;
+                self.registers[dst.0] = result;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::PushR { src } => {
+                self.push(memory, self.registers[src.0].into());
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::PopA { dst } => {
+                let result = self.pop(memory);
+                self.address[dst.0] = result;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::PushA { src } => {
+                self.push(memory, self.address[src.0]);
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+
+            Instruction::LoadRoot { dst, root } => {
+                let root_obj = Self::read_word(memory, root as u64)?;
+                self.registers[dst.0] = root_obj;
+
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+
+            Instruction::LoadAddress { dst, address } => {
+                self.address[dst.0] = address;
+
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::StoreOffsetAdr {
+                base,
+                offset,
+                value,
+            } => {
+                let value_obj = self.registers[value.0];
+
+                memory.write_word(self.addr_with_offset(base, offset), value_obj.into());
+
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::ReadOffsetAdr { dst, base, offset } => {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::ReadOffsetReg { dst, base, offset } => {
+            Instruction::ReadReg { dst, base } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
+            Instruction::StoreReg { base, src: value } => {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::StoreOffsetReg {
-                base,
-                offset,
-                value,
-            } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
             Instruction::MovAR { dst, src } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
             Instruction::MovRA { dst, src } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
-            Instruction::AAdd { dst, op1, op2 } => {
+            Instruction::AAdd(ThreeAddrs { dst, op1, op2, imm }) => {
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::ASub(ThreeAddrs { dst, op1, op2, imm }) => {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::GetPayload { dst, src } => {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
+            Instruction::GetTag { src, dst } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
+            Instruction::LoadLiteral { dst, val } => {
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::SetPayload { dst, src } => {
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::SetTag { src, dst } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
+            Instruction::MovAdr { dst, src } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
         }
     }
 
@@ -806,6 +837,8 @@ pub enum Trap {
 
 #[cfg(test)]
 mod tests {
+    use crate::cpu::WordType::Fixnum;
+
     use super::*;
 
     struct TestMemory {
@@ -901,9 +934,11 @@ mod tests {
         cpu.address[0] = 0x2000;
         memory.load_instructions(
             cpu.address[Cpu::PC] as usize,
-            vec![Instruction::JumpAdr {
-                target: AddressRegister(0),
-            }],
+            vec![Instruction::Jump(JumpAddressing::AddressRegister {
+                condition: AddressRegister(0),
+                adr: Some(AddressRegister(0)),
+                offset: 0,
+            })],
         );
         cpu.full_step(&mut memory);
         assert_eq!(cpu.address[Cpu::PC], 0x2000);
@@ -937,22 +972,19 @@ mod tests {
                     dst: AddressRegister(0),
                     address: 0x800,
                 },
-                Instruction::StoreSp {
+                Instruction::MovAdr {
+                    dst: AddressRegister(Cpu::SP),
                     src: AddressRegister(0),
                 },
-                Instruction::LoadFixnum {
+                Instruction::LoadLiteral {
+                    dst: Register(0),
+                    val: Word::new(Fixnum, 42).into(),
+                },
+                Instruction::LoadLiteral {
                     dst: Register(1),
-                    val: 42,
+                    val: Word::new(Fixnum, 99).into(),
                 },
-                Instruction::LoadFixnum {
-                    dst: Register(2),
-                    val: 99,
-                },
-                // R0 <- Cons(R1, R2)
-                Instruction::Cons {
-                    car: Register(1),
-                    cdr: Register(2),
-                },
+                Instruction::Int(0x02), // CONS
                 Instruction::Nop,
                 Instruction::Halt,
             ],
