@@ -141,7 +141,7 @@ pub struct Cpu {
     /// Common registers.
     registers: [Word; 16],
 
-    /// Address registers
+    /// Machine registers
     address: [u64; 8],
 
     pub halted: bool,
@@ -167,14 +167,14 @@ impl Default for Cpu {
 pub struct Register(pub usize);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct AddressRegister(pub usize);
+pub struct MachineRegister(pub usize);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum JumpAddressing {
     /// Jumping relative to current PC is done by JUMPing to [adr=PC=0x06]+offset
-    AddressRegister {
-        condition: AddressRegister,
-        adr: Option<AddressRegister>,
+    MachineRegister {
+        condition: MachineRegister,
+        adr: Option<MachineRegister>,
         offset: i64,
     },
     Register {
@@ -192,32 +192,32 @@ pub struct ThreeRegs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct ThreeAddrs {
-    pub dst: AddressRegister,
-    pub op1: AddressRegister,
-    pub op2: Option<AddressRegister>,
+pub struct ThreeMachs {
+    pub dst: MachineRegister,
+    pub op1: MachineRegister,
+    pub op2: Option<MachineRegister>,
     pub imm: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct TwoRegs {
+pub struct TwoRegs {
     dst: Register,
     src: Register,
 }
 
 #[derive(Debug)]
-struct TwoAddrs {
-    src: AddressRegister,
-    dst: AddressRegister,
+pub struct TwoMachs {
+    src: MachineRegister,
+    dst: MachineRegister,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Location {
     Register(Register),
-    Address(AddressRegister),
+    Machine(MachineRegister),
     IndirectRegister(Register),
-    IndirectAddress(AddressRegister, i64),
-    Absolute(i64),
+    IndirectMachine(MachineRegister, i64),
+    Absolute(u64),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -238,7 +238,7 @@ pub enum Instruction {
     /// Jump if its Register is 'nil
     JumpIfNot(JumpAddressing),
 
-    /// PUSHes all Registers and Addresses to the stack, then the PC, and jumps.
+    /// PUSHes all Registers and Machinees to the stack, then the PC, and jumps.
     /// For some internal INTs (<0x80, like CONS) it may perform additional work.
     Int(u64),
 
@@ -249,11 +249,11 @@ pub enum Instruction {
 
     /// Push raw data onto the stack.
     PushA {
-        src: AddressRegister,
+        src: MachineRegister,
     },
     /// Pop raw data from the stack.
     PopA {
-        dst: AddressRegister,
+        dst: MachineRegister,
     },
     /// Load a literal WORD onto a register. Validate it.
     LoadLiteral {
@@ -261,30 +261,30 @@ pub enum Instruction {
         val: Word,
     },
     /// Load a raw Word
-    LoadAddress {
-        dst: AddressRegister,
+    LoadMachine {
+        dst: MachineRegister,
         val: u64,
     },
     Mov {
         dst: Location,
         src: Location,
     },
-    AAdd(ThreeAddrs),
-    ASub(ThreeAddrs),
+    AAdd(ThreeMachs),
+    ASub(ThreeMachs),
     SetTag {
         dst: Register,
-        src: AddressRegister,
+        src: MachineRegister,
     },
     GetTag {
-        dst: AddressRegister,
+        dst: MachineRegister,
         src: Register,
     },
     SetPayload {
         dst: Register,
-        src: AddressRegister,
+        src: MachineRegister,
     },
     GetPayload {
-        dst: AddressRegister,
+        dst: MachineRegister,
         src: Register,
     },
 
@@ -339,7 +339,7 @@ pub enum Instruction {
     /// I have no idea what this does yet.
     MakeClosure {
         dst: Register,
-        code: AddressRegister,
+        code: MachineRegister,
     },
     /// Push a word onto the stack
     PushR {
@@ -450,9 +450,9 @@ impl Cpu {
         }
     }
 
-    fn addr_with_offset(&self, op: Option<AddressRegister>, off: i64) -> u64 {
+    fn addr_with_offset(&self, op: Option<MachineRegister>, off: i64) -> u64 {
         match op {
-            Some(AddressRegister(r)) => (self.address[r] as i64 + off) as u64,
+            Some(MachineRegister(r)) => (self.address[r] as i64 + off) as u64,
             None => off as u64,
         }
     }
@@ -478,7 +478,7 @@ impl Cpu {
             }
             Instruction::Nop => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
 
-            Instruction::Jump(JumpAddressing::AddressRegister {
+            Instruction::Jump(JumpAddressing::MachineRegister {
                 adr,
                 condition: _,
                 offset,
@@ -487,7 +487,7 @@ impl Cpu {
                 Err(Trap::Unimplemented)
             }
 
-            Instruction::JumpIf(JumpAddressing::AddressRegister {
+            Instruction::JumpIf(JumpAddressing::MachineRegister {
                 condition,
                 adr,
                 offset,
@@ -504,7 +504,7 @@ impl Cpu {
                 Err(Trap::Unimplemented)
             }
 
-            Instruction::JumpIfNot(JumpAddressing::AddressRegister {
+            Instruction::JumpIfNot(JumpAddressing::MachineRegister {
                 condition,
                 adr,
                 offset,
@@ -722,34 +722,26 @@ impl Cpu {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
 
-            Instruction::LoadAddress { dst, val: address } => {
+            Instruction::LoadMachine { dst, val: address } => {
                 self.address[dst.0] = address;
 
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::AAdd(ThreeAddrs { dst, op1, op2, imm }) => {
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::ASub(ThreeAddrs { dst, op1, op2, imm }) => {
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::GetPayload { dst, src } => {
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::GetTag { src, dst } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
+            Instruction::AAdd(ThreeMachs { dst, op1, op2, imm }) => todo!(),
+            Instruction::ASub(ThreeMachs { dst, op1, op2, imm }) => todo!(),
+            Instruction::GetPayload { dst, src } => todo!(),
+            Instruction::GetTag { src, dst } => todo!(),
             Instruction::LoadLiteral { dst, val } => {
                 self.registers[dst.0] = val;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::SetPayload { dst, src } => {
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::SetTag { src, dst } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
+            Instruction::SetPayload { dst, src } => todo!(),
+            Instruction::SetTag { src, dst } => todo!(),
             Instruction::Mov { dst, src } => {
                 let value = match src {
                     Location::Absolute(a) => memory.read_word(a as u64),
-                    Location::Address(AddressRegister(r)) => self.address[r],
-                    Location::IndirectAddress(AddressRegister(r), off) => {
+                    Location::Machine(MachineRegister(r)) => self.address[r],
+                    Location::IndirectMachine(MachineRegister(r), off) => {
                         memory.read_word((self.address[r] as i64 + off) as u64)
                     }
                     Location::IndirectRegister(Register(r)) => {
@@ -759,8 +751,8 @@ impl Cpu {
                 };
                 match dst {
                     Location::Absolute(a) => memory.write_word(a as u64, value),
-                    Location::Address(AddressRegister(r)) => self.address[r] = value,
-                    Location::IndirectAddress(AddressRegister(r), off) => {
+                    Location::Machine(MachineRegister(r)) => self.address[r] = value,
+                    Location::IndirectMachine(MachineRegister(r), off) => {
                         memory.write_word((self.address[r] as i64 + off) as u64, value)
                     }
                     Location::IndirectRegister(Register(r)) => {
@@ -907,9 +899,9 @@ mod tests {
         cpu.address[0] = 0x2000;
         memory.load_instructions(
             cpu.address[Cpu::PC] as usize,
-            vec![Instruction::Jump(JumpAddressing::AddressRegister {
-                condition: AddressRegister(0),
-                adr: Some(AddressRegister(0)),
+            vec![Instruction::Jump(JumpAddressing::MachineRegister {
+                condition: MachineRegister(0),
+                adr: Some(MachineRegister(0)),
                 offset: 0,
             })],
         );

@@ -1,8 +1,5 @@
 use crate::{
-    cpu::{
-        AddressRegister, Cpu, Instruction, InterruptTableOffset, Location::Address, MemoryLayout,
-        Register, SymbolLayout, ThreeAddrs, Word, WordType,
-    },
+    cpu::{Cpu, Instruction, InterruptTableOffset, MemoryLayout, SymbolLayout, Word},
     memory::Memory,
     parse_asm,
 };
@@ -133,10 +130,10 @@ impl FirmwareHelper {
         let t_symbol = cursor.write_aligned_symbol("t", Word::undefined());
 
         // At 0x0000, place root objects.
-        let nil = Word::new(WordType::Symbol, nil_symbol.0);
+        let nil = Word::symbol(nil_symbol.0);
         cursor.write_word_at(MachineAddress(MemoryLayout::NIL_ROOT), &nil.into());
 
-        let t = Word::new(WordType::Symbol, t_symbol.0);
+        let t = Word::symbol(t_symbol.0);
         cursor.write_word_at(MachineAddress(MemoryLayout::T_ROOT), &t.into());
 
         // Finalize objects
@@ -166,19 +163,11 @@ impl FirmwareHelper {
         // Bootstrap program:
         cursor.write_instructions_at(
             Self::BOOTSTRAP_HOOK,
-            &[
-                // Set Stack Pointer at 0x2000
-                Instruction::LoadAddress {
-                    dst: AddressRegister(0),
-                    val: Self::BOOTSTRAP_STACK_POSITION.0,
-                },
-                Instruction::Mov {
-                    dst: Address(AddressRegister(Cpu::SP)),
-                    src: Address(AddressRegister(0)),
-                },
-                // Halt
-                Instruction::Halt,
-            ],
+            &parse_asm! {
+                MOV A Cpu::SP, Self::BOOTSTRAP_STACK_POSITION.0;
+                HALT;
+            }
+            .as_slice(),
         );
 
         // Default allocator:

@@ -1,8 +1,8 @@
 use int_enum::IntEnum;
 
 use crate::cpu::{
-    self, AddressRegister, Instruction, JumpAddressing, Location, Register, ThreeAddrs, ThreeRegs,
-    Trap, TwoRegs, Word, encoding::Opcode::LoadLiteral,
+    self, Instruction, JumpAddressing, Location, MachineRegister, Register, ThreeMachs, ThreeRegs,
+    Trap, TwoRegs, Word,
 };
 
 impl cpu::Register {
@@ -17,7 +17,7 @@ impl cpu::Register {
     const NONE: u8 = 0x55;
 }
 
-impl AddressRegister {
+impl MachineRegister {
     fn encode(&self) -> u8 {
         self.0 as u8 + 16
     }
@@ -65,9 +65,9 @@ impl cpu::JumpAddressing {
                 adr: Register(adr as usize),
             }
         } else {
-            cpu::JumpAddressing::AddressRegister {
-                condition: AddressRegister(cond as usize - 16),
-                adr: AddressRegister::try_decode(adr),
+            cpu::JumpAddressing::MachineRegister {
+                condition: MachineRegister(cond as usize - 16),
+                adr: MachineRegister::try_decode(adr),
                 offset: offset as i64,
             }
         }
@@ -78,25 +78,25 @@ impl cpu::Location {
     fn encode(&self) -> (u8, u64) {
         match self {
             Self::Absolute(a) => (Register::NONE, *a as u64),
-            Self::Address(r) => (r.encode(), 0),
+            Self::Machine(r) => (r.encode(), 0),
             Self::Register(r) => (r.encode(), 0),
-            Self::IndirectAddress(a, d) => (a.encode() + 24, *d as u64),
+            Self::IndirectMachine(a, d) => (a.encode() + 24, *d as u64),
             Self::IndirectRegister(a) => (a.encode() + 24, 0),
         }
     }
 
     fn decode(reg: u8, off: u64) -> Result<Self, Trap> {
         if reg == Register::NONE {
-            Ok(Self::Absolute(off as i64))
+            Ok(Self::Absolute(off))
         } else if reg < 16 {
             Ok(Self::Register(Register::decode(reg)))
         } else if reg < 24 {
-            Ok(Self::Address(AddressRegister::decode(reg)?))
+            Ok(Self::Machine(MachineRegister::decode(reg)?))
         } else if reg < 40 {
             Ok(Self::IndirectRegister(Register::decode(reg - 24)))
         } else {
-            Ok(Self::IndirectAddress(
-                AddressRegister::decode(reg - 24)?,
+            Ok(Self::IndirectMachine(
+                MachineRegister::decode(reg - 24)?,
                 off as i64,
             ))
         }
@@ -116,7 +116,7 @@ enum Opcode {
     PushA,
     PopA,
     LoadLiteral,
-    LoadAddress,
+    LoadMachine,
     Mov,
     AAdd,
     ASub,
@@ -166,7 +166,7 @@ impl Instruction {
             Opcode::Return => Ok(Self::Return),
             Opcode::MakeClosure => Ok(Self::MakeClosure {
                 dst: Register::decode(r1),
-                code: AddressRegister::try_decode(r1).expect("Shit happened!"),
+                code: MachineRegister::try_decode(r1).expect("Shit happened!"),
             }),
 
             Opcode::Eq => Ok(Self::Eq(ThreeRegs::decode(r1, r2, r3, hi)?)),
@@ -202,26 +202,26 @@ impl Instruction {
                 src: Register::decode(r1),
             }),
             Opcode::PopA => Ok(Self::PopA {
-                dst: AddressRegister::decode(r0)?,
+                dst: MachineRegister::decode(r0)?,
             }),
             Opcode::PushA => Ok(Self::PushA {
-                src: AddressRegister::decode(r0)?,
+                src: MachineRegister::decode(r0)?,
             }),
-            Opcode::LoadAddress => Ok(Instruction::LoadAddress {
-                dst: AddressRegister::decode(r0)?,
+            Opcode::LoadMachine => Ok(Instruction::LoadMachine {
+                dst: MachineRegister::decode(r0)?,
                 val: hi,
             }),
             Opcode::IReturn => Ok(Self::IReturn),
-            Opcode::AAdd => Ok(Instruction::AAdd(cpu::ThreeAddrs {
-                dst: AddressRegister::decode(r0)?,
-                op1: AddressRegister::decode(r1)?,
-                op2: AddressRegister::try_decode(r2),
+            Opcode::AAdd => Ok(Instruction::AAdd(cpu::ThreeMachs {
+                dst: MachineRegister::decode(r0)?,
+                op1: MachineRegister::decode(r1)?,
+                op2: MachineRegister::try_decode(r2),
                 imm: hi,
             })),
-            Opcode::ASub => Ok(Instruction::ASub(cpu::ThreeAddrs {
-                dst: AddressRegister::decode(r0)?,
-                op1: AddressRegister::decode(r1)?,
-                op2: AddressRegister::try_decode(r2),
+            Opcode::ASub => Ok(Instruction::ASub(cpu::ThreeMachs {
+                dst: MachineRegister::decode(r0)?,
+                op1: MachineRegister::decode(r1)?,
+                op2: MachineRegister::try_decode(r2),
                 imm: hi,
             })),
             Opcode::GetPayload => todo!(),
@@ -245,7 +245,7 @@ impl Instruction {
 
     fn encode_op_jump_cond(opcode: Opcode, target: &JumpAddressing) -> (u64, u64) {
         match target {
-            JumpAddressing::AddressRegister {
+            JumpAddressing::MachineRegister {
                 condition,
                 adr: None,
                 offset,
@@ -262,9 +262,9 @@ impl Instruction {
                 ]),
                 *offset as u64,
             ),
-            JumpAddressing::AddressRegister {
+            JumpAddressing::MachineRegister {
                 condition,
-                adr: Some(AddressRegister(r)),
+                adr: Some(MachineRegister(r)),
                 offset,
             } => (
                 u64::from_le_bytes([
@@ -295,9 +295,9 @@ impl Instruction {
         }
     }
 
-    fn encode_three_adrs(opcode: Opcode, target: &ThreeAddrs) -> (u64, u64) {
+    fn encode_three_adrs(opcode: Opcode, target: &ThreeMachs) -> (u64, u64) {
         match target {
-            &ThreeAddrs {
+            &ThreeMachs {
                 dst,
                 op1,
                 op2: None,
@@ -315,7 +315,7 @@ impl Instruction {
                 ]),
                 imm.into(),
             ),
-            &ThreeAddrs {
+            &ThreeMachs {
                 dst,
                 op1,
                 op2: Some(op2),
@@ -500,8 +500,8 @@ impl Instruction {
                 u64::from_le_bytes([Opcode::PushA.into(), src.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-            Instruction::LoadAddress { dst, val: address } => (
-                u64::from_le_bytes([Opcode::LoadAddress.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
+            Instruction::LoadMachine { dst, val: address } => (
+                u64::from_le_bytes([Opcode::LoadMachine.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 *address,
             ),
             Instruction::IReturn => (

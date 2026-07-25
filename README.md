@@ -3,7 +3,7 @@
 ## Registers
 
 - 16 GP Registers R0-R16 containing Lisp objects
-- 8 Address objects A0-8 contain raw values
+- 8 Machine objects A0-8 contain raw values
 - Of of these, 3 are aliased:
   - SP, pointer to head of stack - alias for A5
   - PC, pointer to current instruction - alias for A6
@@ -15,7 +15,7 @@
 
 The generally higher-level calls that compiled Lisp code should use.
 
-Reg refers to any Word register; Adr refers to any Address register, including
+Reg refers to any Word register; Adr refers to any Machine register, including
 SP, PC and ENV.
 
 In the 4-operand versions of instructions, the evaluated expression is generally
@@ -125,7 +125,7 @@ to <- op1 <op> (op2 + imm)
 - MOVAR adr, reg
 - MOVRA reg, adr
 
-- GETPAYLOAD adr, reg - Loads the PAYLOAD of a WORD into an ADDRESS register.
+- GETPAYLOAD adr, reg - Loads the PAYLOAD of a WORD into an MACHINE register.
 - SETPAYLOAD reg, adr
 - GETTAG adr, reg
 - SETTAG reg, adr
@@ -165,7 +165,7 @@ similar to this:
 
 ```rust
 // Params in R0, R1
-fn alloc(size: Word, typ: Word) -> (Word, Address) {
+fn alloc(size: Word, typ: Word) -> (Word, Machine) {
   let address = allocate(size);
   // Returns in R0, A0
   ireturn(Word::pointer(address), address);
@@ -203,4 +203,4 @@ On return, R7 indicates how many of the parameters contain values.
 - R8-11 are temp variables, may be clobbered. Caller-saved.
 - R12-15 are temp variables, may not be clobbered. Callee-saved.
 
-- A0-3 are Address registers, able to hold raw data, usually pointers.
+- A0-3 are Machine registers, able to hold raw data, usually pointers.
