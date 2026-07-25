@@ -1,47 +1,47 @@
 mod assembler;
 mod encoding;
 
+use crate::memory::Memory;
 use int_enum::IntEnum;
 
-use crate::memory::Memory;
-
-type MachineAddressSize = u64;
+type Address = usize;
 type WordSize = u64;
+const WORD_SIZE: usize = 8;
 
 pub enum MemoryLayout {}
 impl MemoryLayout {
     // Standard addresses.
-    pub const NIL_ROOT: u64 = 0x0000000000000000;
-    pub const T_ROOT: u64 = 0x0000000000000001;
+    pub const NIL_ROOT: Address = 0x0000000000000000;
+    pub const T_ROOT: Address = 0x0000000000000008;
 
-    pub const RESET_VECTOR: u64 = 0x000000000000ef0;
-    pub const INTERRUPT_TABLE: u64 = 0x000000000000f00;
-    pub const CPU_RESERVED_END: u64 = 0x000000000001000;
+    pub const RESET_VECTOR: Address = 0x000000000007ef0;
+    pub const INTERRUPT_TABLE: Address = 0x000000000007f00;
+    pub const CPU_RESERVED_END: Address = 0x000000000008000;
 }
 
 pub enum InterruptTableOffset {}
 impl InterruptTableOffset {
-    pub const TRAP_VECTOR: u64 = 0x00000000000001;
-    pub const ALLOC_VECTOR: u64 = 0x00000000000002;
-    pub const ALLOC_CONS_VECTOR: u64 = 0x00000000000003;
+    pub const TRAP_VECTOR: Address = 0x00000000000000;
+    pub const ALLOC_VECTOR: Address = 0x000000000000010;
+    pub const ALLOC_CONS_VECTOR: Address = 0x000000000000018;
 }
 
 pub enum SymbolLayout {}
 impl SymbolLayout {
-    pub const NAME_OFFSET: u64 = 0;
-    pub const PLIST_OFFSET: u64 = 1;
+    pub const NAME_OFFSET: Address = 0;
+    pub const PLIST_OFFSET: Address = 8;
 }
 
 pub enum StringLayout {}
 impl StringLayout {
-    pub const LENGTH_OFFSET: u64 = 0;
-    pub const DATA_OFFSET: u64 = 1;
+    pub const LENGTH_OFFSET: Address = 0;
+    pub const DATA_OFFSET: Address = 8;
 }
 
 pub enum ConsLayout {}
 impl ConsLayout {
-    pub const CAR_OFFSET: u64 = 0;
-    pub const CDR_OFFSET: u64 = 1;
+    pub const CAR_OFFSET: Address = 0;
+    pub const CDR_OFFSET: Address = 8;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,7 +71,7 @@ pub enum WordType {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct Word {
     tag: WordType,
-    payload: u64,
+    payload: WordSize,
 }
 
 impl Word {
@@ -82,7 +82,7 @@ impl Word {
         }
     }
 
-    pub const fn new(tag: WordType, payload: u64) -> Self {
+    pub const fn new(tag: WordType, payload: WordSize) -> Self {
         Self {
             tag,
             payload: payload & 0x00ff_ffff_ffff_ffff,
@@ -90,23 +90,15 @@ impl Word {
     }
 
     // Convenience methods
-    pub const fn nil() -> Self {
-        Self::symbol(0)
-    }
-
-    pub const fn t() -> Self {
-        Self::symbol(1)
-    }
-
-    pub const fn symbol(value: u64) -> Self {
+    pub const fn symbol(value: WordSize) -> Self {
         Self::new(WordType::Symbol, value)
     }
 
-    pub const fn fixnum(value: u64) -> Self {
+    pub const fn fixnum(value: WordSize) -> Self {
         Self::new(WordType::Fixnum, value)
     }
 
-    pub const fn cons(address: u64) -> Self {
+    pub const fn cons(address: WordSize) -> Self {
         Self::new(WordType::Cons, address)
     }
 }
@@ -115,9 +107,9 @@ impl Word {
 pub enum WordParseError {
     InvalidPrefix,
 }
-impl TryFrom<u64> for Word {
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        const DATA_MASK: u64 = 0x00FF_FFFF_FFFF_FFFF;
+impl TryFrom<WordSize> for Word {
+    fn try_from(value: WordSize) -> Result<Self, Self::Error> {
+        const DATA_MASK: WordSize = 0x00FF_FFFF_FFFF_FFFF;
         let raw_tag = value >> 56;
         let payload = value & DATA_MASK;
         Ok(Word {
@@ -127,12 +119,12 @@ impl TryFrom<u64> for Word {
     }
     type Error = WordParseError;
 }
-impl From<Word> for u64 {
-    fn from(value: Word) -> u64 {
+impl From<Word> for WordSize {
+    fn from(value: Word) -> WordSize {
         let tag = value.tag;
         let payload = value.payload;
 
-        (tag as u8 as u64) << 56 | payload
+        (tag as u8 as WordSize) << 56 | payload
     }
 }
 
@@ -142,15 +134,16 @@ pub struct Cpu {
     registers: [Word; 16],
 
     /// Machine registers
-    address: [u64; 8],
+    address: [Address; 8],
 
     pub halted: bool,
 }
 impl Cpu {
-    pub const SP: usize = 5;
-    pub const PC: usize = 6;
-    pub const ENV: usize = 7;
-    pub const INSTRUCTION_SIZE: u64 = 2;
+    pub const SP: Address = 5;
+    pub const PC: Address = 6;
+    pub const ENV: Address = 7;
+    pub const WORD_SIZE: Address = 8;
+    pub const INSTRUCTION_SIZE: Address = 2 * Self::WORD_SIZE;
 }
 
 impl Default for Cpu {
@@ -164,10 +157,10 @@ impl Default for Cpu {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct Register(pub usize);
+pub struct Register(pub Address);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct MachineRegister(pub usize);
+pub struct MachineRegister(pub Address);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum JumpAddressing {
@@ -195,8 +188,15 @@ pub struct ThreeRegs {
 pub struct ThreeMachs {
     pub dst: MachineRegister,
     pub op1: MachineRegister,
+    // TODO: Convert to OffsetAddress.
     pub op2: Option<MachineRegister>,
-    pub imm: u64,
+    pub imm: Address,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct OffsetAddress {
+    base: Option<MachineRegister>,
+    off: Address,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -217,7 +217,12 @@ pub enum Location {
     Machine(MachineRegister),
     IndirectRegister(Register),
     IndirectMachine(MachineRegister, i64),
-    Absolute(u64),
+    Absolute(Address),
+}
+
+pub struct ByteAddressing {
+    base: MachineRegister,
+    offset: MachineRegister,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -240,7 +245,7 @@ pub enum Instruction {
 
     /// PUSHes all Registers and Machinees to the stack, then the PC, and jumps.
     /// For some internal INTs (<0x80, like CONS) it may perform additional work.
-    Int(u64),
+    Int(WordSize),
 
     /// POPs the PC and and all Registers lower than (count) are restored.
     /// All registers are popped, but the count indicates which ones are kept.
@@ -263,7 +268,7 @@ pub enum Instruction {
     /// Load a raw Word
     LoadMachine {
         dst: MachineRegister,
-        val: u64,
+        val: Address,
     },
     Mov {
         dst: Location,
@@ -335,7 +340,10 @@ pub enum Instruction {
     Lt(ThreeRegs),
     /// Calculates dst <- op1 <= (op2 + imm) - typechecks, only fixnums.
     Lte(ThreeRegs),
-
+    // Mov8 {
+    //     dst: ByteAddressing,
+    //     src: ByteAddressing,
+    // },
     /// I have no idea what this does yet.
     MakeClosure {
         dst: Register,
@@ -349,6 +357,18 @@ pub enum Instruction {
     PopR {
         dst: Register,
     },
+    /// while (count--) *dst++ = *src++
+    MemCpy {
+        dst: MachineRegister,
+        src: MachineRegister,
+        count: u64,
+    },
+    /// while (count--) *dst++ = src
+    MemSet {
+        dst: MachineRegister,
+        src: MachineRegister,
+        count: u64,
+    },
 
     /// PUSHes PC on the stack and jumps
     Call(JumpAddressing),
@@ -358,22 +378,19 @@ pub enum Instruction {
 }
 
 impl Cpu {
-    pub fn reset<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &M) {
-        self.address[Cpu::PC] = memory.read_word(MemoryLayout::RESET_VECTOR);
+    pub fn reset(&mut self, memory: &mut [u8]) {
+        self.address[Cpu::PC] = memory.read_word(MemoryLayout::RESET_VECTOR) as Address;
     }
 
-    fn fetch<M: Memory<MachineAddressSize, WordSize>>(&self, memory: &M) -> (u64, u64) {
+    fn fetch(&self, memory: &[u8]) -> (WordSize, WordSize) {
         let instruction_low = memory.read_word(self.address[Cpu::PC]);
-        let instruction_high = memory.read_word(self.address[Cpu::PC] + 1);
+        let instruction_high = memory.read_word(self.address[Cpu::PC] + WORD_SIZE);
         (instruction_low, instruction_high)
     }
 
-    fn read_word<M: Memory<MachineAddressSize, WordSize>>(
-        memory: &M,
-        address: MachineAddressSize,
-    ) -> Result<Word, Trap> {
+    fn read_word(memory: &[u8], address: Address) -> Result<Word, Trap> {
         memory
-            .read_word(address)
+            .read_word(address as Address)
             .try_into()
             .map_err(|_| Trap::TypeError)
     }
@@ -388,17 +405,14 @@ impl Cpu {
         Ok(src_obj)
     }
 
-    fn nil<M: Memory<MachineAddressSize, WordSize>>(memory: &M) -> Result<Word, Trap> {
+    fn nil(memory: &[u8]) -> Result<Word, Trap> {
         Self::read_word(memory, MemoryLayout::NIL_ROOT)
     }
-    fn t<M: Memory<MachineAddressSize, WordSize>>(memory: &M) -> Result<Word, Trap> {
+    fn t(memory: &[u8]) -> Result<Word, Trap> {
         Self::read_word(memory, MemoryLayout::T_ROOT)
     }
 
-    fn to_machine_bool<M: Memory<MachineAddressSize, WordSize>>(
-        memory: &M,
-        val: bool,
-    ) -> Result<Word, Trap> {
+    fn to_machine_bool(memory: &mut [u8], val: bool) -> Result<Word, Trap> {
         if val {
             Self::t(memory)
         } else {
@@ -406,20 +420,17 @@ impl Cpu {
         }
     }
 
-    fn push<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &mut M, val: u64) {
+    fn push(&mut self, memory: &mut [u8], val: WordSize) {
         memory.write_word(self.address[Cpu::SP], val);
-        self.address[Cpu::SP] -= 1;
+        self.address[Cpu::SP] -= WORD_SIZE;
     }
 
-    fn pop<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &mut M) -> u64 {
-        self.address[Cpu::SP] += 1;
+    fn pop(&mut self, memory: &mut [u8]) -> WordSize {
+        self.address[Cpu::SP] += WORD_SIZE;
         memory.read_word(self.address[Cpu::SP])
     }
-    fn pop_word<M: Memory<MachineAddressSize, WordSize>>(
-        &mut self,
-        memory: &mut M,
-    ) -> Result<Word, Trap> {
-        self.address[Cpu::SP] += 1;
+    fn pop_word(&mut self, memory: &mut [u8]) -> Result<Word, Trap> {
+        self.address[Cpu::SP] += WORD_SIZE;
         Self::read_word(memory, self.address[Cpu::SP])
     }
 
@@ -450,10 +461,10 @@ impl Cpu {
         }
     }
 
-    fn addr_with_offset(&self, op: Option<MachineRegister>, off: i64) -> u64 {
+    fn addr_with_offset(&self, op: Option<MachineRegister>, off: i64) -> Address {
         match op {
-            Some(MachineRegister(r)) => (self.address[r] as i64 + off) as u64,
-            None => off as u64,
+            Some(MachineRegister(r)) => (self.address[r] as i64 + off) as Address,
+            None => off as Address,
         }
     }
 
@@ -465,11 +476,7 @@ impl Cpu {
         }
     }
 
-    fn execute<M: Memory<MachineAddressSize, WordSize>>(
-        &mut self,
-        instruction: Instruction,
-        memory: &mut M,
-    ) -> Result<u64, Trap> {
+    fn execute(&mut self, instruction: Instruction, memory: &mut [u8]) -> Result<Address, Trap> {
         match instruction {
             // Control flow
             Instruction::Halt => {
@@ -525,7 +532,7 @@ impl Cpu {
 
             Instruction::Return => {
                 let return_address = self.pop(memory);
-                Ok(return_address)
+                Ok(return_address as Address)
             }
             Instruction::MakeClosure { dst, code } => Err(Trap::Unimplemented),
 
@@ -605,10 +612,11 @@ impl Cpu {
                     _ => (),
                 }
 
-                self.push(memory, interruption);
-                self.push(memory, next_pc);
-                let location = memory.read_word(MemoryLayout::INTERRUPT_TABLE + interruption);
-                Ok(location)
+                self.push(memory, interruption as WordSize);
+                self.push(memory, next_pc as WordSize);
+                let location = memory
+                    .read_word(MemoryLayout::INTERRUPT_TABLE + interruption as Address * WORD_SIZE);
+                Ok(location as Address)
             }
             Instruction::IReturn => {
                 let return_address = self.pop(memory);
@@ -619,45 +627,51 @@ impl Cpu {
                     let car = self.pop(memory);
                     memory.write_word(self.address[0] + ConsLayout::CAR_OFFSET, car);
                     memory.write_word(self.address[0] + ConsLayout::CDR_OFFSET, cdr);
-                    self.registers[0] = Word::cons(self.address[0]);
+                    self.registers[0] = Word::cons(self.address[0] as WordSize);
                 }
-                Ok(return_address)
+                Ok(return_address as Address)
             }
             Instruction::Car(TwoRegs { dst, src }) => {
                 let src_obj = self.read_register_as(src, WordType::Cons)?;
 
                 self.registers[dst.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
+                    Self::read_word(memory, src_obj.payload as Address + ConsLayout::CAR_OFFSET)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::Cdr(TwoRegs { dst, src }) => {
                 let src_obj = self.read_register_as(src, WordType::Cons)?;
 
                 self.registers[dst.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
+                    Self::read_word(memory, src_obj.payload as Address + ConsLayout::CDR_OFFSET)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::SetCar(TwoRegs { dst, src }) => {
                 let dst_obj = self.read_register_as(dst, WordType::Cons)?;
                 let val_obj = self.registers[src.0];
 
-                memory.write_word(dst_obj.payload + ConsLayout::CAR_OFFSET, val_obj.into());
+                memory.write_word(
+                    dst_obj.payload as Address + ConsLayout::CAR_OFFSET,
+                    val_obj.into(),
+                );
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::SetCdr(TwoRegs { dst, src }) => {
                 let dst_obj = self.read_register_as(dst, WordType::Cons)?;
                 let val_obj = self.registers[src.0];
 
-                memory.write_word(dst_obj.payload + ConsLayout::CDR_OFFSET, val_obj.into());
+                memory.write_word(
+                    dst_obj.payload as Address + ConsLayout::CDR_OFFSET,
+                    val_obj.into(),
+                );
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::Uncons { car, cdr, src } => {
                 let src_obj = self.read_register_as(src, WordType::Cons)?;
 
                 self.registers[car.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CAR_OFFSET)?;
+                    Self::read_word(memory, src_obj.payload as Address + ConsLayout::CAR_OFFSET)?;
                 self.registers[cdr.0] =
-                    Self::read_word(memory, src_obj.payload + ConsLayout::CDR_OFFSET)?;
+                    Self::read_word(memory, src_obj.payload as Address + ConsLayout::CDR_OFFSET)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
 
@@ -714,11 +728,11 @@ impl Cpu {
             }
             Instruction::PopA { dst } => {
                 let result = self.pop(memory);
-                self.address[dst.0] = result;
+                self.address[dst.0] = result as Address;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::PushA { src } => {
-                self.push(memory, self.address[src.0]);
+                self.push(memory, self.address[src.0] as WordSize);
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
 
@@ -739,24 +753,24 @@ impl Cpu {
             Instruction::SetTag { src, dst } => todo!(),
             Instruction::Mov { dst, src } => {
                 let value = match src {
-                    Location::Absolute(a) => memory.read_word(a as u64),
-                    Location::Machine(MachineRegister(r)) => self.address[r],
+                    Location::Absolute(a) => memory.read_word(a as Address),
+                    Location::Machine(MachineRegister(r)) => self.address[r] as WordSize,
                     Location::IndirectMachine(MachineRegister(r), off) => {
-                        memory.read_word((self.address[r] as i64 + off) as u64)
+                        memory.read_word((self.address[r] as i64 + off) as Address)
                     }
                     Location::IndirectRegister(Register(r)) => {
-                        memory.read_word(self.registers[r].payload)
+                        memory.read_word(self.registers[r].payload as Address)
                     }
                     Location::Register(Register(r)) => self.registers[r].into(),
                 };
                 match dst {
-                    Location::Absolute(a) => memory.write_word(a as u64, value),
-                    Location::Machine(MachineRegister(r)) => self.address[r] = value,
+                    Location::Absolute(a) => memory.write_word(a as Address, value),
+                    Location::Machine(MachineRegister(r)) => self.address[r] = value as Address,
                     Location::IndirectMachine(MachineRegister(r), off) => {
-                        memory.write_word((self.address[r] as i64 + off) as u64, value)
+                        memory.write_word((self.address[r] as i64 + off) as Address, value)
                     }
                     Location::IndirectRegister(Register(r)) => {
-                        memory.write_word(self.registers[r].payload, value)
+                        memory.write_word(self.registers[r].payload as Address, value)
                     }
                     Location::Register(Register(r)) => {
                         self.registers[r] = Word::try_from(value).map_err(|_| Trap::TypeError)?
@@ -764,13 +778,26 @@ impl Cpu {
                 }
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
+            Instruction::MemCpy { dst, src, count } => {
+                let srcadd = self.address[src.0];
+                let dstadd = self.address[dst.0];
+                for i in 0..count {
+                    memory[srcadd + i as usize] = memory[dstadd + i as usize]
+                }
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::MemSet { dst, src, count } => {
+                let srcadd = self.address[src.0];
+                let dstadd = self.address[dst.0];
+                for i in 0..count {
+                    memory[dstadd + i as usize] = memory[srcadd as usize]
+                }
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
         }
     }
 
-    pub fn step<M: Memory<MachineAddressSize, WordSize>>(
-        &mut self,
-        memory: &mut M,
-    ) -> Result<(), Trap> {
+    pub fn step(&mut self, memory: &mut [u8]) -> Result<(), Trap> {
         let (lo, hi) = self.fetch(memory);
         let instruction = Instruction::decode(lo, hi)?;
 
@@ -780,14 +807,15 @@ impl Cpu {
         Ok(())
     }
 
-    pub fn full_step<M: Memory<MachineAddressSize, WordSize>>(&mut self, memory: &mut M) {
+    pub fn full_step(&mut self, memory: &mut [u8]) {
         match self.step(memory) {
             Ok(()) => {}
             Err(trap) => {
                 self.address[0] = self.address[Cpu::PC];
-                self.registers[0] = Word::new(WordType::Fixnum, trap as u64);
+                self.registers[0] = Word::new(WordType::Fixnum, trap as WordSize);
                 self.address[Cpu::PC] = memory
-                    .read_word(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR);
+                    .read_word(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR)
+                    as Address;
             }
         };
     }
@@ -806,35 +834,23 @@ mod tests {
 
     use super::*;
 
-    struct TestMemory {
-        data: Vec<u64>,
-    }
-    impl Memory<MachineAddressSize, WordSize> for TestMemory {
-        fn read_word(&self, addr: MachineAddressSize) -> WordSize {
-            self.data[addr as usize]
-        }
-        fn write_word(&mut self, addr: MachineAddressSize, data: WordSize) {
-            self.data[addr as usize] = data
-        }
-    }
+    struct TestMemory {}
 
     impl TestMemory {
-        const NIL: Word = Word::new(WordType::Symbol, 0);
-        const T: Word = Word::new(WordType::Symbol, 1);
-        fn new() -> Self {
-            let mut data = vec![0; 0x4000];
-            data[0] = TestMemory::NIL.into();
-            data[1] = TestMemory::T.into();
-            Self { data }
+        fn new() -> Vec<u8> {
+            let mut data = vec![0 as u8; 0x10000];
+            data.as_mut_slice().write_word(0, Word::symbol(0).into());
+            data.as_mut_slice().write_word(8, Word::symbol(1).into());
+            data
         }
 
-        fn load_instructions(&mut self, start: usize, instructions: Vec<Instruction>) {
-            let mut pos = start;
+        fn load_instructions(data: &mut [u8], start: Address, instructions: Vec<Instruction>) {
+            let mut pos = 0;
             for instr in instructions {
                 let (lo, hi) = instr.encode();
-                self.data[pos] = lo;
+                data.write_word(start + pos * Cpu::WORD_SIZE, lo);
                 pos += 1;
-                self.data[pos] = hi;
+                data.write_word(start + pos * Cpu::WORD_SIZE, hi);
                 pos += 1;
             }
         }
@@ -845,8 +861,12 @@ mod tests {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
         cpu.address[Cpu::PC] = 0x1000;
-        memory.load_instructions(cpu.address[Cpu::PC] as usize, vec![Instruction::Halt]);
-        cpu.full_step(&mut memory);
+        TestMemory::load_instructions(
+            &mut memory,
+            cpu.address[Cpu::PC] as Address,
+            vec![Instruction::Halt],
+        );
+        cpu.full_step(memory.as_mut_slice());
         assert_eq!(cpu.address[Cpu::PC], 0x1000);
         assert!(cpu.halted);
         Ok(())
@@ -857,9 +877,13 @@ mod tests {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
         cpu.address[Cpu::PC] = 0x1000;
-        memory.load_instructions(cpu.address[Cpu::PC] as usize, vec![Instruction::Nop]);
-        cpu.full_step(&mut memory);
-        assert_eq!(cpu.address[Cpu::PC], 0x1002);
+        TestMemory::load_instructions(
+            &mut memory,
+            cpu.address[Cpu::PC] as Address,
+            vec![Instruction::Nop],
+        );
+        cpu.full_step(memory.as_mut_slice());
+        assert_eq!(cpu.address[Cpu::PC], 0x1010);
         Ok(())
     }
 
@@ -868,25 +892,26 @@ mod tests {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
         cpu.address[Cpu::PC] = 0x1000;
-        memory.load_instructions(
-            cpu.address[Cpu::PC] as usize,
-            vec![
-                Instruction::Nop,
-                Instruction::Nop,
-                Instruction::Nop,
-                Instruction::Nop,
-                Instruction::Nop,
-                Instruction::Nop,
-                Instruction::Nop,
-                Instruction::Nop,
-                Instruction::Halt,
-            ],
+        TestMemory::load_instructions(
+            &mut memory,
+            cpu.address[Cpu::PC] as Address,
+            parse_asm! {
+                NOP;
+                NOP;
+                NOP;
+                NOP;
+                NOP;
+                NOP;
+                NOP;
+                NOP;
+                HALT;
+            },
         );
 
         while !cpu.halted {
-            cpu.full_step(&mut memory);
+            cpu.full_step(memory.as_mut_slice());
         }
-        assert_eq!(cpu.address[Cpu::PC], 0x1010);
+        assert_eq!(cpu.address[Cpu::PC], 0x1080);
         assert!(cpu.halted);
         Ok(())
     }
@@ -897,15 +922,16 @@ mod tests {
         let mut memory = TestMemory::new();
         cpu.address[Cpu::PC] = 0x1000;
         cpu.address[0] = 0x2000;
-        memory.load_instructions(
-            cpu.address[Cpu::PC] as usize,
+        TestMemory::load_instructions(
+            &mut memory,
+            cpu.address[Cpu::PC] as Address,
             vec![Instruction::Jump(JumpAddressing::MachineRegister {
                 condition: MachineRegister(0),
                 adr: Some(MachineRegister(0)),
                 offset: 0,
             })],
         );
-        cpu.full_step(&mut memory);
+        cpu.full_step(memory.as_mut_slice());
         assert_eq!(cpu.address[Cpu::PC], 0x2000);
         Ok(())
     }
@@ -921,21 +947,22 @@ mod tests {
         let trap_hook = 0x2100;
         let cons_cell = 0x3000;
 
-        memory.write_word(
+        memory.as_mut_slice().write_word(
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
             cons_hook,
         );
-        memory.write_word(
+        memory.as_mut_slice().write_word(
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_CONS_VECTOR,
             cons_hook,
         );
-        memory.write_word(
+        memory.as_mut_slice().write_word(
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR,
             trap_hook,
         );
 
-        memory.load_instructions(
-            cpu.address[Cpu::PC] as usize,
+        TestMemory::load_instructions(
+            &mut memory,
+            cpu.address[Cpu::PC] as Address,
             parse_asm! {
                 MOV A Cpu::SP, 0x800;
                 MOV R 0, Word::fixnum(42);
@@ -958,34 +985,41 @@ mod tests {
         );
 
         // Fake CONS_HOOK
-        memory.load_instructions(
-            cons_hook as usize,
+        TestMemory::load_instructions(
+            &mut memory,
+            cons_hook as Address,
             parse_asm! {
                 MOV A 0, cons_cell;
                 IRETURN;
             },
         );
 
-        memory.load_instructions(
-            trap_hook as usize,
+        TestMemory::load_instructions(
+            &mut memory,
+            trap_hook as Address,
             parse_asm! {
                 HALT;
             },
         );
 
         while !cpu.halted {
-            cpu.step(&mut memory).map_err(|t| format!("Trap {:?}", t))?;
+            cpu.full_step(memory.as_mut_slice());
         }
 
-        assert_eq!(cpu.registers[0], Word::new(WordType::Cons, cons_cell));
+        assert_eq!(
+            cpu.registers[0],
+            Word::new(WordType::Cons, cons_cell as u64)
+        );
 
         assert_eq!(
-            Word::try_from(memory.read_word(cons_cell)).expect("couldn't parse word"),
+            Word::try_from(memory.as_mut_slice().read_word(cons_cell))
+                .expect("couldn't parse word"),
             Word::new(WordType::Fixnum, 42)
         );
 
         assert_eq!(
-            Word::try_from(memory.read_word(cons_cell + 1)).expect("couldn't parse word"),
+            Word::try_from(memory.as_mut_slice().read_word(cons_cell + WORD_SIZE))
+                .expect("couldn't parse word"),
             Word::new(WordType::Fixnum, 99).into()
         );
 

@@ -33,8 +33,8 @@ fn main() -> Result<(), String> {
     let start = Instant::now();
     let mut event_pump = sdl_context.event_pump()?;
 
-    let mut machine =
-        machine::WispMachine::new(cpu::Cpu::default(), machine::WispMemory::new(2 << 24));
+    let mut mem = vec![0; 2 << 24];
+    let mut machine = machine::WispMachine::new(cpu::Cpu::default(), &mut mem);
 
     machine.reset();
 

@@ -684,7 +684,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -698,7 +698,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -712,7 +712,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -726,7 +726,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -740,7 +740,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -754,7 +754,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -768,7 +768,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -782,7 +782,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -796,7 +796,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -810,7 +810,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -824,7 +824,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -838,7 +838,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -852,7 +852,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -866,7 +866,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -880,7 +880,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -894,7 +894,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -908,7 +908,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -922,7 +922,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -936,7 +936,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -950,7 +950,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -964,7 +964,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -978,7 +978,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -992,7 +992,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -1006,7 +1006,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -1020,7 +1020,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $crate::cpu::Word::fixnum(0),
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -1034,7 +1034,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: Some($crate::cpu::Register($p3)),
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -1048,7 +1048,7 @@ macro_rules! parse_asm {
                     op1: $crate::cpu::Register($p2),
                     op2: None,
                     imm: $imm,
-                }  
+                }
             )
         ];
         insts.extend(parse_asm!($($rest)*));

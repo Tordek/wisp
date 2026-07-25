@@ -4,176 +4,125 @@ use crate::{
     parse_asm,
 };
 
-type MachineAddressSize = u64;
-type WordSize = u64;
-
-#[derive(Clone, Copy)]
-struct RawAddress(usize);
-#[derive(Clone, Copy)]
-struct MachineAddress(MachineAddressSize);
-
-pub struct WispMemory {
-    bytes: Vec<u8>,
+struct Cursor {
+    position: usize,
 }
-
-impl Memory<MachineAddressSize, WordSize> for WispMemory {
-    fn read_word(&self, position: MachineAddressSize) -> WordSize {
-        let start = MachineAddress(position).to_raw();
-        let end = MachineAddress(position).offset(1).to_raw();
-        let bytes: [u8; WispMemory::WORD_SIZE] = self.bytes[start.0..end.0].try_into().unwrap();
-        u64::from_le_bytes(bytes)
+impl Cursor {
+    fn write_at(&mut self, target: &mut [u8], address: usize, data: &[u8]) {
+        target[address..address + (data.len())].copy_from_slice(data);
     }
 
-    fn write_word(&mut self, position: MachineAddressSize, value: WordSize) {
-        let start = MachineAddress(position).to_raw();
-        let end = MachineAddress(position).offset(1).to_raw();
-        self.bytes[start.0..end.0].copy_from_slice(&value.to_le_bytes());
-    }
-}
-
-impl MachineAddress {
-    const fn to_raw(&self) -> RawAddress {
-        RawAddress(self.0 as usize * WispMemory::WORD_SIZE)
-    }
-
-    const fn offset(&self, offset: MachineAddressSize) -> MachineAddress {
-        MachineAddress(self.0 + offset)
-    }
-}
-
-impl RawAddress {
-    const fn to_machine(&self) -> MachineAddress {
-        MachineAddress((self.0 / WispMemory::WORD_SIZE) as MachineAddressSize)
-    }
-
-    const fn offset(&self, offset: usize) -> RawAddress {
-        RawAddress(self.0 + offset)
-    }
-
-    const fn offset_aligned(&self, offset: usize) -> RawAddress {
-        RawAddress((self.0 + offset).next_multiple_of(8))
-    }
-}
-
-struct Cursor<'a> {
-    position: MachineAddress,
-    memory: &'a mut [u8],
-}
-impl<'a> Cursor<'a> {
-    fn write_word_at(&mut self, address: MachineAddress, data: &u64) {
-        self.memory[address.to_raw().0..address.to_raw().offset(8).0]
-            .copy_from_slice(&data.to_le_bytes());
-    }
-
-    fn write_at(&mut self, address: MachineAddress, data: &[u8]) {
-        self.memory[address.to_raw().0..address.to_raw().offset(data.len()).0]
-            .copy_from_slice(data);
-    }
-
-    fn write_aligned(&mut self, data: &[u8]) -> MachineAddress {
+    fn write_aligned(&mut self, target: &mut [u8], data: &[u8], alignment: usize) -> usize {
         let start = self.position;
-        self.write_at(self.position, data);
-        self.position = self
-            .position
-            .to_raw()
-            .offset_aligned(data.len())
-            .to_machine();
+        self.write_at(target, self.position, data);
+        self.position = (self.position + data.len()).next_multiple_of(alignment);
         start
     }
 
-    fn write_aligned_string(&mut self, data: &str) -> MachineAddress {
+    fn write_aligned_string(&mut self, target: &mut [u8], data: &str) -> usize {
         let len = data.len() as u64;
-        let start = self.write_aligned(&len.to_le_bytes());
-        self.write_aligned(data.as_bytes());
+        let start = self.write_aligned(target, &len.to_le_bytes(), Cpu::WORD_SIZE);
+        self.write_aligned(target, data.as_bytes(), Cpu::WORD_SIZE);
         start
     }
 
-    fn write_aligned_symbol(&mut self, name: &str, plist: Word) -> MachineAddress {
-        let name_address = self.write_aligned_string(name);
-        let symbol_address = self.write_aligned(&name_address.0.to_le_bytes());
-        self.write_aligned(&(u64::from(plist)).to_le_bytes());
+    fn write_aligned_symbol(&mut self, target: &mut [u8], name: &str, plist: Word) -> usize {
+        let name_address = self.write_aligned_string(target, name);
+        let symbol_address =
+            self.write_aligned(target, &name_address.to_le_bytes(), Cpu::WORD_SIZE);
+        self.write_aligned(target, &(u64::from(plist)).to_le_bytes(), Cpu::WORD_SIZE);
         symbol_address
     }
 
-    fn write_instructions_at(&mut self, address: MachineAddress, instructions: &[Instruction]) {
+    fn write_instructions_at(
+        &mut self,
+        target: &mut [u8],
+        address: usize,
+        instructions: &[Instruction],
+    ) {
         for (idx, instruction) in instructions.iter().enumerate() {
             let (lo, hi) = instruction.encode();
             self.write_at(
-                address.offset(idx as u64 * Cpu::INSTRUCTION_SIZE),
+                target,
+                address + (idx * Cpu::INSTRUCTION_SIZE),
                 &[lo.to_le_bytes(), hi.to_le_bytes()].concat(),
             )
         }
     }
 
-    fn new(start: MachineAddress, memory: &'a mut [u8]) -> Self {
-        Self {
-            position: start,
-            memory,
-        }
+    fn new(start: usize) -> Self {
+        Self { position: start }
     }
 }
 struct FirmwareHelper {}
 impl FirmwareHelper {
-    const BOOTSTRAP_HOOK: MachineAddress = MachineAddress(MemoryLayout::CPU_RESERVED_END);
-    const BOOTSTRAP_ALLOC_HOOK: MachineAddress = MachineAddress(0x600);
-    const BOOTSTRAP_TRAP_HOOK: MachineAddress = MachineAddress(0x800);
-    const BOOTSTRAP_OBJECTS: MachineAddress = MachineAddress(0x3000);
-    const BOOTSTRAP_STACK_POSITION: MachineAddress = MachineAddress(0x2000); // Grows backwards
-    const BOOTSTRAP_SCRATCH_ALLOC: MachineAddress = MachineAddress(0x2000); // Grows forwards
+    const BOOTSTRAP_HOOK: usize = MemoryLayout::CPU_RESERVED_END;
+    const BOOTSTRAP_ALLOC_HOOK: usize = 0x600;
+    const BOOTSTRAP_TRAP_HOOK: usize = 0x800;
+    const BOOTSTRAP_OBJECTS: usize = 0x3000;
+    const BOOTSTRAP_STACK_POSITION: usize = 0x2000; // Grows backwards
+    const BOOTSTRAP_SCRATCH_ALLOC: usize = 0x2000; // Grows forwards
 
-    fn make_firmware() -> [u8; 0x20000] {
-        let mut firmware = [0; 0x20000];
+    fn make_firmware() -> Vec<u8> {
+        let mut firmware = vec![0; 0x20000];
 
         // Starting at 0x3000, place constant symbols.
-        let mut cursor = Cursor::new(Self::BOOTSTRAP_OBJECTS, &mut firmware);
-        let nil_symbol = cursor.write_aligned_symbol("nil", Word::undefined());
-        let t_symbol = cursor.write_aligned_symbol("t", Word::undefined());
+        let mut cursor = Cursor::new(Self::BOOTSTRAP_OBJECTS);
+        let nil_symbol = cursor.write_aligned_symbol(&mut firmware, "nil", Word::undefined());
+        let t_symbol = cursor.write_aligned_symbol(&mut firmware, "t", Word::undefined());
 
         // At 0x0000, place root objects.
-        let nil = Word::symbol(nil_symbol.0);
-        cursor.write_word_at(MachineAddress(MemoryLayout::NIL_ROOT), &nil.into());
+        let nil = Word::symbol(nil_symbol as u64);
+        firmware
+            .as_mut_slice()
+            .write_word(MemoryLayout::NIL_ROOT, nil.into());
 
-        let t = Word::symbol(t_symbol.0);
-        cursor.write_word_at(MachineAddress(MemoryLayout::T_ROOT), &t.into());
+        let t = Word::symbol(t_symbol as u64);
+        firmware
+            .as_mut_slice()
+            .write_word(MemoryLayout::T_ROOT, t.into());
 
         // Finalize objects
-        let nil_plist = nil_symbol.offset(MachineAddress(SymbolLayout::PLIST_OFFSET).0);
-        cursor.write_word_at(nil_plist, &nil.into());
-        let t_plist = t_symbol.offset(MachineAddress(SymbolLayout::PLIST_OFFSET).0);
-        cursor.write_word_at(t_plist, &nil.into());
+        let nil_plist = nil_symbol + (SymbolLayout::PLIST_OFFSET);
+        firmware.as_mut_slice().write_word(nil_plist, nil.into());
+        let t_plist = t_symbol + (SymbolLayout::PLIST_OFFSET);
+        firmware.as_mut_slice().write_word(t_plist, nil.into());
 
         // Set Vectors.
-        cursor.write_word_at(
-            MachineAddress(MemoryLayout::RESET_VECTOR),
-            &Self::BOOTSTRAP_HOOK.0,
+        firmware
+            .as_mut_slice()
+            .write_word(MemoryLayout::RESET_VECTOR, Self::BOOTSTRAP_HOOK as u64);
+        firmware.as_mut_slice().write_word(
+            MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
+            Self::BOOTSTRAP_ALLOC_HOOK as u64,
         );
-        cursor.write_word_at(
-            MachineAddress(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR),
-            &Self::BOOTSTRAP_ALLOC_HOOK.0,
+        firmware.as_mut_slice().write_word(
+            MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
+            Self::BOOTSTRAP_ALLOC_HOOK as u64,
         );
-        cursor.write_word_at(
-            MachineAddress(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR),
-            &Self::BOOTSTRAP_ALLOC_HOOK.0,
-        );
-        cursor.write_word_at(
-            MachineAddress(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR),
-            &Self::BOOTSTRAP_TRAP_HOOK.0,
+        firmware.as_mut_slice().write_word(
+            MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR,
+            Self::BOOTSTRAP_TRAP_HOOK as u64,
         );
 
         // Bootstrap program:
         cursor.write_instructions_at(
+            &mut firmware,
             Self::BOOTSTRAP_HOOK,
             &parse_asm! {
-                MOV A Cpu::SP, Self::BOOTSTRAP_STACK_POSITION.0;
+                MOV A Cpu::SP, Self::BOOTSTRAP_STACK_POSITION;
                 HALT;
             }
             .as_slice(),
         );
 
         // Default allocator:
-        let free_ptr = MachineAddress(0x3fff);
-        cursor.write_word_at(free_ptr, &Self::BOOTSTRAP_SCRATCH_ALLOC.0);
+        let free_ptr = 0x3fff;
+        firmware
+            .as_mut_slice()
+            .write_word(free_ptr, Self::BOOTSTRAP_SCRATCH_ALLOC as u64);
         cursor.write_instructions_at(
+            &mut firmware,
             Self::BOOTSTRAP_ALLOC_HOOK,
             // Equivalent to:
             // A0 = *freeptr;
@@ -183,7 +132,7 @@ impl FirmwareHelper {
                 PUSH A 2;
                 PUSH A 3;
                 PUSH R 1;
-                MOV A 1, free_ptr.0;
+                MOV A 1, free_ptr;
                 MOV A 0, [A 1];
                 GETPAYLOAD A 2, R 1;
                 ADD A 3, A 0, A 2;
@@ -199,6 +148,7 @@ impl FirmwareHelper {
 
         // Default trap
         cursor.write_instructions_at(
+            &mut firmware,
             Self::BOOTSTRAP_TRAP_HOOK,
             &parse_asm! {
                 HALT;
@@ -210,37 +160,17 @@ impl FirmwareHelper {
     }
 }
 
-impl WispMemory {
-    const WORD_SIZE: usize = 8;
-
-    fn write_bytes(&mut self, start: RawAddress, bytes: &[u8]) {
-        self.bytes[start.0..start.offset(bytes.len()).0].copy_from_slice(bytes);
-    }
-
-    pub fn new(size: usize) -> Self {
-        let mut bytes = vec![0 as u8; size];
-        for i in 0xb0000..0xc0000 {
-            bytes[i] = (64 + i >> 1) as u8;
-        }
-        for i in 0..80 {
-            bytes[0xb8000 + i * 2] = if i % 2 == 1 { 0x07 as u8 } else { 0x87 };
-            bytes[0xb8000 + i * 2 + 1] = 0x41;
-        }
-        Self { bytes }
-    }
-}
-
-pub struct WispMachine {
+pub struct WispMachine<'a> {
     cpu: Cpu,
 
-    ram: WispMemory,
+    ram: &'a mut [u8],
 
     pub halted: bool,
 }
 
-impl WispMachine {
+impl<'a> WispMachine<'a> {
     pub fn reset(&mut self) {
-        self.cpu.reset(&self.ram);
+        self.cpu.reset(self.ram);
     }
 
     pub fn step(&mut self) {
@@ -251,19 +181,18 @@ impl WispMachine {
     }
 
     pub fn get_vga_ram(&self) -> &[u8] {
-        &self.ram.bytes[0xa0000..0xc0000]
+        &self.ram[0xa0000..0xc0000]
     }
 
-    pub fn new(cpu: Cpu, ram: WispMemory) -> Self {
-        let mut machine = Self {
+    pub fn new(cpu: Cpu, ram: &'a mut [u8]) -> Self {
+        let machine = Self {
             cpu,
             ram,
             halted: false,
         };
 
-        machine
-            .ram
-            .write_bytes(RawAddress(0), &FirmwareHelper::make_firmware());
+        let firmware = FirmwareHelper::make_firmware();
+        machine.ram[0..firmware.len()].copy_from_slice(&firmware[..]);
         machine
     }
 }

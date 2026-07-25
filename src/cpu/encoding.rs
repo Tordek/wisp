@@ -87,7 +87,7 @@ impl cpu::Location {
 
     fn decode(reg: u8, off: u64) -> Result<Self, Trap> {
         if reg == Register::NONE {
-            Ok(Self::Absolute(off))
+            Ok(Self::Absolute(off as usize))
         } else if reg < 16 {
             Ok(Self::Register(Register::decode(reg)))
         } else if reg < 24 {
@@ -209,20 +209,20 @@ impl Instruction {
             }),
             Opcode::LoadMachine => Ok(Instruction::LoadMachine {
                 dst: MachineRegister::decode(r0)?,
-                val: hi,
+                val: hi as usize,
             }),
             Opcode::IReturn => Ok(Self::IReturn),
             Opcode::AAdd => Ok(Instruction::AAdd(cpu::ThreeMachs {
                 dst: MachineRegister::decode(r0)?,
                 op1: MachineRegister::decode(r1)?,
                 op2: MachineRegister::try_decode(r2),
-                imm: hi,
+                imm: hi as usize,
             })),
             Opcode::ASub => Ok(Instruction::ASub(cpu::ThreeMachs {
                 dst: MachineRegister::decode(r0)?,
                 op1: MachineRegister::decode(r1)?,
                 op2: MachineRegister::try_decode(r2),
-                imm: hi,
+                imm: hi as usize,
             })),
             Opcode::GetPayload => todo!(),
             Opcode::GetTag => todo!(),
@@ -313,7 +313,7 @@ impl Instruction {
                     0,
                     0,
                 ]),
-                imm.into(),
+                (imm as u64).into(),
             ),
             &ThreeMachs {
                 dst,
@@ -331,7 +331,7 @@ impl Instruction {
                     0,
                     0,
                 ]),
-                imm.into(),
+                (imm as u64).into(),
             ),
         }
     }
@@ -502,7 +502,7 @@ impl Instruction {
             ),
             Instruction::LoadMachine { dst, val: address } => (
                 u64::from_le_bytes([Opcode::LoadMachine.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
-                *address,
+                *address as u64,
             ),
             Instruction::IReturn => (
                 u64::from_le_bytes([Opcode::IReturn.into(), 0, 0, 0, 0, 0, 0, 0]),
@@ -581,6 +581,8 @@ impl Instruction {
                 ]),
                 0,
             ),
+            Instruction::MemCpy { dst, src, count } => todo!(),
+            Instruction::MemSet { dst, src, count } => todo!(),
         }
     }
 }
