@@ -111,6 +111,20 @@ impl FirmwareHelper {
             Self::BOOTSTRAP_HOOK,
             &parse_asm! {
                 MOV A Cpu::SP, Self::BOOTSTRAP_STACK_POSITION;
+                MOV A 0, 0x6c076c0765074807; //'Hell'
+                MOV [0xB8000], A 0;
+                MOV A 0, 0x7207660720076f07; //'o fr'
+                MOV [0xB8008], A 0;
+                MOV A 0, 0x610720076d076f07; //'om a'
+                MOV [0xB8010], A 0;
+                MOV A 0, 0x530749074C072007; //' LIS'
+                MOV [0xB8018], A 0;
+                MOV A 0, 0x41074D0720075007; //'P MA'
+                MOV [0xB8020], A 0;
+                MOV A 0, 0x4e07490748074307; //'CHIN'
+                MOV [0xB8028], A 0;
+                MOV A 0, 0x2007200721074507; //'E!!!'
+                MOV [0xB8030], A 0;
                 HALT;
             }
             .as_slice(),

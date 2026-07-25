@@ -1106,8 +1106,7 @@ macro_rules! parse_asm {
 }
 
 mod test {
-    #[test]
-    fn test_assembler_macro() {
+    fn scaffold() -> (Vec<crate::cpu::Instruction>, Vec<crate::cpu::Instruction>) {
         let asm = parse_asm! {
             HALT;
             NOP;
@@ -1213,7 +1212,7 @@ mod test {
             MAKECLOSURE R 5, A 6;
         };
 
-        let expected = [
+        let expected = vec![
             crate::cpu::Instruction::Halt,
             crate::cpu::Instruction::Nop,
             crate::cpu::Instruction::Return,
@@ -1625,8 +1624,45 @@ mod test {
                 code: crate::cpu::MachineRegister(6),
             },
         ];
-        for i in 0..asm.len() {
-            assert_eq!((i, &asm[i]), (i, &expected[i]));
+        (asm, expected)
+    }
+
+    #[test]
+    fn test_assembler_macro() {
+        let (actual, expected) = scaffold();
+
+        for i in 0..actual.len() {
+            assert_eq!((i, &actual[i]), (i, &expected[i]));
         }
+    }
+
+    #[test]
+    fn test_encoder_decoder() -> Result<(), String> {
+        let (_, expected) = scaffold();
+
+        for i in 0..expected.len() {
+            let (lo, hi) = expected[i].encode();
+            assert_eq!(
+                (i, &crate::cpu::Instruction::decode(lo, hi).map_err(|_| "")?),
+                (i, &expected[i])
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_encoder_decoder_twice() -> Result<(), String> {
+        let (_, expected) = scaffold();
+
+        for i in 0..expected.len() {
+            let (lo, hi) = expected[i].encode();
+            let decoded = crate::cpu::Instruction::decode(lo, hi).map_err(|_| "")?;
+            let (lo, hi) = decoded.encode();
+            assert_eq!(
+                (i, &crate::cpu::Instruction::decode(lo, hi).map_err(|_| "")?),
+                (i, &expected[i])
+            );
+        }
+        Ok(())
     }
 }

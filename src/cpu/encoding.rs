@@ -51,7 +51,11 @@ impl ThreeRegs {
         Ok(ThreeRegs {
             dst: Register(r1 as usize),
             op1: Register(r2 as usize),
-            op2: Some(Register(r3 as usize)),
+            op2: if r3 == Register::NONE {
+                None
+            } else {
+                Some(Register(r3 as usize))
+            },
             imm: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
         })
     }
@@ -165,41 +169,45 @@ impl Instruction {
 
             Opcode::Return => Ok(Self::Return),
             Opcode::MakeClosure => Ok(Self::MakeClosure {
-                dst: Register::decode(r1),
+                dst: Register::decode(r0),
                 code: MachineRegister::try_decode(r1).expect("Shit happened!"),
             }),
 
-            Opcode::Eq => Ok(Self::Eq(ThreeRegs::decode(r1, r2, r3, hi)?)),
-            Opcode::Ne => Ok(Self::Ne(ThreeRegs::decode(r1, r2, r3, hi)?)),
-            Opcode::Gt => Ok(Self::Gt(ThreeRegs::decode(r1, r2, r3, hi)?)),
-            Opcode::Gte => Ok(Self::Gte(ThreeRegs::decode(r1, r2, r3, hi)?)),
-            Opcode::Lt => Ok(Self::Lt(ThreeRegs::decode(r1, r2, r3, hi)?)),
-            Opcode::Lte => Ok(Self::Lte(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Eq => Ok(Self::Eq(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Ne => Ok(Self::Ne(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Gt => Ok(Self::Gt(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Gte => Ok(Self::Gte(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Lt => Ok(Self::Lt(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Lte => Ok(Self::Lte(ThreeRegs::decode(r0, r1, r2, hi)?)),
 
-            Opcode::Car => Ok(Self::Car(TwoRegs::decode(r1, r2))),
-            Opcode::Cdr => Ok(Self::Cdr(TwoRegs::decode(r1, r2))),
-            Opcode::SetCar => Ok(Self::SetCar(TwoRegs::decode(r1, r2))),
-            Opcode::SetCdr => Ok(Self::SetCdr(TwoRegs::decode(r1, r2))),
+            Opcode::Car => Ok(Self::Car(TwoRegs::decode(r0, r1))),
+            Opcode::Cdr => Ok(Self::Cdr(TwoRegs::decode(r0, r1))),
+            Opcode::SetCar => Ok(Self::SetCar(TwoRegs::decode(r0, r1))),
+            Opcode::SetCdr => Ok(Self::SetCdr(TwoRegs::decode(r0, r1))),
             Opcode::Uncons => Ok(Self::Uncons {
-                car: Register::decode(r1),
+                car: Register::decode(r0),
                 cdr: Register::decode(r1),
-                src: Register::decode(r1),
+                src: Register::decode(r2),
             }),
-            Opcode::Add => Ok(Self::Add(ThreeRegs::decode(r1, r2, r3, hi)?)),
-            Opcode::Sub => Ok(Self::Sub(ThreeRegs::decode(r1, r2, r3, hi)?)),
-            Opcode::Mul => Ok(Self::Mul(ThreeRegs::decode(r1, r2, r3, hi)?)),
+            Opcode::Add => Ok(Self::Add(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Sub => Ok(Self::Sub(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Mul => Ok(Self::Mul(ThreeRegs::decode(r0, r1, r2, hi)?)),
             Opcode::IDiv => Ok(Self::IDiv {
                 div: Register::decode(01),
                 rem: Register::decode(r1),
                 op1: Register::decode(r2),
-                op2: Some(Register::decode(r3)),
+                op2: if r3 == Register::NONE {
+                    None
+                } else {
+                    Some(Register(r3 as usize))
+                },
                 imm: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
             }),
             Opcode::PopR => Ok(Self::PopR {
-                dst: Register::decode(r1),
+                dst: Register::decode(r0),
             }),
             Opcode::PushR => Ok(Self::PushR {
-                src: Register::decode(r1),
+                src: Register::decode(r0),
             }),
             Opcode::PopA => Ok(Self::PopA {
                 dst: MachineRegister::decode(r0)?,
@@ -224,19 +232,31 @@ impl Instruction {
                 op2: MachineRegister::try_decode(r2),
                 imm: hi as usize,
             })),
-            Opcode::GetPayload => todo!(),
-            Opcode::GetTag => todo!(),
+            Opcode::GetPayload => Ok(Instruction::GetPayload {
+                dst: MachineRegister::decode(r0)?,
+                src: Register::decode(r1),
+            }),
+            Opcode::GetTag => Ok(Instruction::GetTag {
+                dst: MachineRegister::decode(r0)?,
+                src: Register::decode(r1),
+            }),
             Opcode::Halt => Ok(Instruction::Halt),
             Opcode::Int => Ok(Instruction::Int(hi)),
             Opcode::LoadLiteral => Ok(Instruction::LoadLiteral {
                 dst: Register(r0 as usize),
                 val: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
             }),
-            Opcode::SetPayload => todo!(),
-            Opcode::SetTag => todo!(),
+            Opcode::SetPayload => Ok(Instruction::SetPayload {
+                dst: Register::decode(r0),
+                src: MachineRegister::decode(r1)?,
+            }),
+            Opcode::SetTag => Ok(Instruction::SetTag {
+                dst: Register::decode(r0),
+                src: MachineRegister::decode(r1)?,
+            }),
             Opcode::Mov => {
                 let dst = Location::decode(r0, hi)?;
-                let src = Location::decode(r0, hi)?;
+                let src = Location::decode(r1, hi)?;
 
                 Ok(Instruction::Mov { dst, src })
             }
@@ -410,7 +430,7 @@ impl Instruction {
                 Self::encode_op_jump_cond(Opcode::JumpIf, addressing)
             }
             Instruction::JumpIfNot(addressing) => {
-                Self::encode_op_jump_cond(Opcode::JumpIf, addressing)
+                Self::encode_op_jump_cond(Opcode::JumpIfNot, addressing)
             }
             Instruction::Call(addressing) => Self::encode_op_jump_cond(Opcode::Call, addressing),
 
@@ -476,7 +496,11 @@ impl Instruction {
                     div.encode(),
                     rem.encode(),
                     op1.encode(),
-                    op2.unwrap_or_default().encode(),
+                    if *op2 == None {
+                        Register::NONE
+                    } else {
+                        op2.unwrap().0 as u8
+                    },
                     0,
                     0,
                     0,
@@ -526,8 +550,8 @@ impl Instruction {
             Instruction::GetTag { src, dst } => (
                 u64::from_le_bytes([
                     Opcode::GetTag.into(),
-                    src.encode(),
                     dst.encode(),
+                    src.encode(),
                     0,
                     0,
                     0,
@@ -571,8 +595,8 @@ impl Instruction {
             Instruction::SetTag { src, dst } => (
                 u64::from_le_bytes([
                     Opcode::SetTag.into(),
-                    src.encode(),
                     dst.encode(),
+                    src.encode(),
                     0,
                     0,
                     0,

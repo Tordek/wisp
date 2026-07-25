@@ -45,7 +45,7 @@ fn main() -> Result<(), String> {
             }
         }
 
-        for _ in 1..1_000_000 {
+        for _ in 1..1_000 {
             // Run 1 million cycles per draw.
             machine.step();
         }

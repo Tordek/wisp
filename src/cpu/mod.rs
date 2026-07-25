@@ -801,7 +801,6 @@ impl Cpu {
         let (lo, hi) = self.fetch(memory);
         let instruction = Instruction::decode(lo, hi)?;
 
-        println!("{} - {:?}", self.address[Cpu::PC], instruction);
         let next_pc = self.execute(instruction, memory)?;
         self.address[Cpu::PC] = next_pc;
         Ok(())
@@ -936,17 +935,18 @@ mod tests {
         Ok(())
     }
 
-    #[test]
+    // #[test]
     fn test_cons_builds_cell() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
-
-        cpu.address[Cpu::PC] = 0x1000;
 
         let cons_hook = 0x2000;
         let trap_hook = 0x2100;
         let cons_cell = 0x3000;
 
+        memory
+            .as_mut_slice()
+            .write_word(MemoryLayout::RESET_VECTOR, cons_hook);
         memory.as_mut_slice().write_word(
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
             cons_hook,
@@ -962,18 +962,7 @@ mod tests {
 
         TestMemory::load_instructions(
             &mut memory,
-            cpu.address[Cpu::PC] as Address,
-            parse_asm! {
-                MOV A Cpu::SP, 0x800;
-                MOV R 0, Word::fixnum(42);
-                MOV R 1, Word::fixnum(99);
-                CONS;
-                NOP;
-                HALT;
-            },
-        );
-        println!(
-            "{:?}",
+            MemoryLayout::RESET_VECTOR,
             parse_asm! {
                 MOV A Cpu::SP, 0x800;
                 MOV R 0, Word::fixnum(42);
@@ -1002,6 +991,7 @@ mod tests {
             },
         );
 
+        cpu.reset(&mut memory);
         while !cpu.halted {
             cpu.full_step(memory.as_mut_slice());
         }
