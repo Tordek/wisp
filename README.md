@@ -11,125 +11,143 @@
 
 ## Opcodes
 
-### Control Flow
+### Lisp instructions
 
-- NOP
-- HALT
-- JUMP {target} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
-- JT reg, {target} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
-- JF reg, {target} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
-- CALL {reg} - With 4 variants for {address+imm}, {register}, {absolute}, {relative}
-- RETURN
-- MAKE_CLOSURE dst, code
+The generally higher-level calls that compiled Lisp code should use.
 
-### Arithmetic:
+Reg refers to any Word register; Adr refers to any Address register, including
+SP, PC and ENV.
 
-- ADD, to: Reg, op1: Reg, op2: Reg/Imm
-- MUL, to: Reg, op1: Reg, op2: Reg/Imm
-- SUB, to: Reg, op1: Reg, op2: Reg/Imm
-- DIV, to: Reg, op1: Reg, op2: Reg/Imm
-- IDIV, div: Reg, rem: Reg, op1: Reg, op2: Reg/Imm
-- NEG, to: Reg, op: Reg
+In the 4-operand versions of instructions, the evaluated expression is generally
 
-- AADD, to: Adr, op1: Adr, op2: Adr/Imm
-- ASUB, to: Adr, op1: Adr, op2: Adr/Imm
-- ANEG, to: Reg, op: Reg
+to <- op1 <op> (op2 + imm)
+
+#### Arithmetic
+
+- ADD to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- MUL to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- SUB to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- DIV div: Reg, rem: Reg, op1: Reg, op2: Reg, imm: WordLiteral
+- NEG to: Reg, op: Reg
 
 ### Bitwise
-- OR
-- AND
-- XOR
-- SHL
-- SHR
 
-- AOR
-- AAND
-- AXOR
-- ASHL
-- ASHR
+- OR to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- AND to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- XOR to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- SHL to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- SHR to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
 
-### Data
+#### Comparison
 
-- MOV reg, imm --- Must be a valid word.
-- MOV reg1, reg2
-- LOAD reg, adr, off -- reg = *(adr+off)
-- STORE reg, adr, off -- *(adr+off) = reg
+- EQ to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- LT to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- GT to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- LEQ to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- GEQ to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
+- NE to: Reg, op1: Reg, op2?: Reg, imm: WordLiteral
 
-- AMOV adr, imm
-- AMOV adr1, adr2
-- ALOAD adr, src -- adr = *(src+off)
-- ASTORE dst, adr -- *(dst+off) = adr
+#### Control Flow
 
-- MOVAR adr, reg
-- MOVRA reg, adr
+- RETURN
+- MAKE_CLOSURE dst, code
+- CALL to: Reg
+- JUMP to: Reg
+- JT cond: Reg, to: Reg
+- JF cond: Reg, to: Reg
 
-- GETPAYLOAD adr, reg - Loads the PAYLOAD of a WORD into an ADDRESS token.
-- SETPAYLOAD reg, adr
-- GETTAG adr, reg
-- SETTAG reg, adr
-- SETTAG reg, imm
+#### Cons cells
 
-- LOADGLOBAL reg, symbol - scoped per-program
-- LOADSGLOBAL reg, symbol - scoped for the machine
-
-### Comparison
-
-- EQ
-- LT
-- GT
-- LEQ
-- GEQ
-- NE
-
-- AEQ
-- ALT
-- AGT
-- ALEQ
-- AGEQ
-- ANE
-
-### Cons cells
-
-- CONS to, car, cdr
 - UNCONS car, cdr, cons
 - CAR to, cons
 - CDR to, cons
 - SET_CAR cons, value
 - SET_CDR cons, value
 
-### Type ops
+#### Data
+
+- MOV reg, imm --- Must be a valid word.
+- MOV reg1, reg2
+- LOAD reg, adr, off -- reg = \*(adr+off)
+- STORE reg, adr, off -- \*(adr+off) = reg
+
+- LOADGLOBAL reg, symbol - scoped per-program
+- LOADSGLOBAL reg, symbol - scoped for the machine
+
+#### Type ops
 
 - TYPEP dst, obj, register
 - TYPEP dst, obj, type
 - TYPE dst, obj
 - CHECK_TYPE obj, type
 
-### Memory
+### Low-level instructions
 
-- ALLOC dst, {type} [, {size}]
+#### Control Flow
+
+- NOP
+- HALT
+- JUMP to: Adr?+Imm
+- JT cond: Adr, to: Adr?+Imm
+- JF cond: Adr, to: Adr?+Imm
+- CALL to: Adr?+Imm
+- RETURN
+
+#### Arithmetic:
+
+- AADD to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- ASUB to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- ANEG to: Reg, op: Reg
+
+#### Bitwise
+
+- AOR to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- AAND to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- AXOR to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- ASHL to: Adr, op: Adr
+- ASHR to: Adr, op: Adr
+
+#### Comparison
+
+- AEQ to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- ALT to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- AGT to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- ALEQ to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- AGEQ to: Adr, op1: Adr, op2?: Adr, imm: Imm
+- ANE to: Adr, op1: Adr, op2?: Adr, imm: Imm
+
+#### Data
+
+- AMOV adr1, adr2?, imm -- adr1 <- adr2 + imm
+- ALOAD adr, src -- adr <- \*(src+off)
+- ASTORE dst, adr -- \*(dst+off) <- adr
+
+- MOVAR adr, reg
+- MOVRA reg, adr
+
+- GETPAYLOAD adr, reg - Loads the PAYLOAD of a WORD into an ADDRESS register.
+- SETPAYLOAD reg, adr
+- GETTAG adr, reg
+- SETTAG reg, adr
+- SETTAG reg, imm
+
+#### Interrupt
+
+- INT {int}
+- IRETURN
 
 ## Preloaded symbols
 
 On reset, program execution starts at RESET_VECTOR.
 
-The CPU requires certain Root symbols to be defined at the start of RAM:
-
-Minimally, usually in ROM:
+Lisp instructions require some symbols to be defined starting at 0x00.
 
 - NIL
 - T
-
-Afterwards, loaded from a Bootstrap program:
-
-Type symbols:
-
 - CONS
 - FIXNUM
 - POINTER
 - STRING
-
-Trap symbols:
-
 - INVALID-INSTRUCTION
 - INVALID-WORD
 - ALLOCATION-ERROR
@@ -138,32 +156,19 @@ Trap symbols:
 
 0x00-0x7f are reserved; 0x80 are user-defined.
 
-Interrupt pointers are set up at 0xf00. When ain interrupt is called, all registers
-are saved to the stack. Traps MUST exit with IRETURN, which recovers all registers
-(except A0).
+Interrupt pointers are set up at 0xf00. When an interrupt is called, all registers
+are saved to the stack. Traps MUST exit with IRETURN n, which recovers all
+registers below n.
 
-```c
-alloc() {
-  // Stack contains:
-  // storage_location
-  // data_hi
-  // data_lo
-  // size
-  // type <- sp
-  // type is a prototype for the requested object, that is a Word with the tag set as needed but empty Payload.
+Alloc (int 0x01) and Cons (int 0x02) requires a hook to exist with semantics
+similar to this:
 
-  // allocate <size> WORDs into obj. {type} can be used for metadata or
-  // type optimization as needed
-  obj = allocate(size);
-
-  obj[0] = data_lo;
-  obj[1] = data_hi;
-
-  A0 = obj
-  R0 = Word(type.tag, A0)
-
-  // before exiting, the four parameters must be discarded from the stack
-  // Afterwards, all 
+```rust
+// Params in R0, R1
+fn alloc(size: Word, typ: Word) -> (Word, Address) {
+  let address = allocate(size);
+  // Returns in R0, A0
+  ireturn(Word::pointer(address), address);
 }
 ```
 
@@ -174,8 +179,7 @@ as callee-saved. On error, they MUST jump to TRAP-HAMDLER.
 
 When the CPU detects an error,
 
-
-If R0 contains a Fixnum, 
+If R0 contains a Fixnum,
 
 ## Calling Convention
 

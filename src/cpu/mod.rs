@@ -1,3 +1,4 @@
+mod assembler;
 mod encoding;
 
 use int_enum::IntEnum;
@@ -43,7 +44,7 @@ impl ConsLayout {
     pub const CDR_OFFSET: u64 = 1;
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Root {
     NIL,
     T,
@@ -86,6 +87,27 @@ impl Word {
             tag,
             payload: payload & 0x00ff_ffff_ffff_ffff,
         }
+    }
+
+    // Convenience methods
+    pub const fn nil() -> Self {
+        Self::symbol(0)
+    }
+
+    pub const fn t() -> Self {
+        Self::symbol(1)
+    }
+
+    pub const fn symbol(value: u64) -> Self {
+        Self::new(WordType::Symbol, value)
+    }
+
+    pub const fn fixnum(value: u64) -> Self {
+        Self::new(WordType::Fixnum, value)
+    }
+
+    pub const fn cons(address: u64) -> Self {
+        Self::new(WordType::Cons, address)
     }
 }
 
@@ -141,13 +163,13 @@ impl Default for Cpu {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Register(pub usize);
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct AddressRegister(pub usize);
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum JumpAddressing {
     /// Jumping relative to current PC is done by JUMPing to [adr=PC=0x06]+offset
     AddressRegister {
@@ -161,7 +183,7 @@ pub enum JumpAddressing {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ThreeRegs {
     pub dst: Register,
     pub op1: Register,
@@ -169,7 +191,7 @@ pub struct ThreeRegs {
     pub imm: Word,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ThreeAddrs {
     pub dst: AddressRegister,
     pub op1: AddressRegister,
@@ -177,7 +199,7 @@ pub struct ThreeAddrs {
     pub imm: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct TwoRegs {
     dst: Register,
     src: Register,
@@ -189,7 +211,16 @@ struct TwoAddrs {
     dst: AddressRegister,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum Location {
+    Register(Register),
+    Address(AddressRegister),
+    IndirectRegister(Register),
+    IndirectAddress(AddressRegister, i64),
+    Absolute(i64),
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Instruction {
     // Lower level
     /// Halts execution
@@ -214,9 +245,7 @@ pub enum Instruction {
     /// POPs the PC and and all Registers lower than (count) are restored.
     /// All registers are popped, but the count indicates which ones are kept.
     /// For some internal INTs, it may perform additional work.
-    IReturn {
-        count: u64,
-    },
+    IReturn,
 
     /// Push raw data onto the stack.
     PushA {
@@ -231,65 +260,28 @@ pub enum Instruction {
         dst: Register,
         val: Word,
     },
-    /// Load one of the Root components like 't
-    LoadRoot {
-        dst: Register,
-        root: Root,
-    },
     /// Load a raw Word
     LoadAddress {
         dst: AddressRegister,
-        address: u64,
+        val: u64,
     },
-    /// Read from a pointer
-    ReadReg {
-        dst: Register,
-        base: Register,
-    },
-    /// Write to a pointer
-    StoreReg {
-        base: Register,
-        src: Register,
-    },
-    MovAdr {
-        dst: AddressRegister,
-        src: AddressRegister,
-    },
-    /// Read from an arbitrary position in memory
-    ReadOffsetAdr {
-        dst: AddressRegister,
-        base: Option<AddressRegister>,
-        offset: i64,
-    },
-    /// Write to an arbitrary position in memory
-    StoreOffsetAdr {
-        base: Option<AddressRegister>,
-        offset: i64,
-        value: AddressRegister,
-    },
-    /// Copy a Register into an Address pointer
-    MovAR {
-        dst: AddressRegister,
-        src: Register,
-    },
-    /// Copy an Address pointer into a Register - Will validate
-    MovRA {
-        dst: Register,
-        src: AddressRegister,
+    Mov {
+        dst: Location,
+        src: Location,
     },
     AAdd(ThreeAddrs),
     ASub(ThreeAddrs),
     SetTag {
-        src: Register,
-        dst: AddressRegister,
+        dst: Register,
+        src: AddressRegister,
     },
     GetTag {
-        src: Register,
         dst: AddressRegister,
+        src: Register,
     },
     SetPayload {
-        dst: AddressRegister,
-        src: Register,
+        dst: Register,
+        src: AddressRegister,
     },
     GetPayload {
         dst: AddressRegister,
@@ -360,6 +352,7 @@ pub enum Instruction {
 
     /// PUSHes PC on the stack and jumps
     Call(JumpAddressing),
+
     /// POPs PC from the stack
     Return,
 }
@@ -601,54 +594,32 @@ impl Cpu {
             Instruction::Int(interruption) => {
                 let next_pc = self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE;
                 match interruption {
-                    0x02 => {
-                        /// CONS takes its params as R0 and R1
+                    0x03 => {
                         self.push(memory, self.registers[0].into());
                         self.push(memory, self.registers[1].into());
+                        // CONS takes its params as R0 and R1
+                        self.registers[0] = Word::new(WordType::Fixnum, 2).into(); // Size: 2
+                        self.registers[1] = Word::new(WordType::Fixnum, 2).into();
+                        // Type: Int
                     }
                     _ => (),
                 }
-                self.push(memory, interruption);
-                for i in 0..4 {
-                    self.push(memory, self.registers[i].into());
-                    self.push(memory, self.address[i].into());
-                }
-                for i in 4..16 {
-                    self.push(memory, self.registers[i].into());
-                }
-                self.push(memory, next_pc);
-                self.push(memory, Word::new(WordType::Fixnum, 2).into()); // Size: 2
-                self.push(memory, Word::new(WordType::Fixnum, 2).into()); // Type: Cons
 
-                let location = memory.read_word(
-                    MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_CONS_VECTOR,
-                );
+                self.push(memory, interruption);
+                self.push(memory, next_pc);
+                let location = memory.read_word(MemoryLayout::INTERRUPT_TABLE + interruption);
                 Ok(location)
             }
-            Instruction::IReturn { count } => {
+            Instruction::IReturn => {
                 let return_address = self.pop(memory);
 
-                for i in (4..16).rev() {
-                    let r = self.pop_word(memory)?;
-                    if count <= i {
-                        self.registers[i as usize] = r;
-                    }
-                }
-                for i in (0..4).rev() {
-                    let r = self.pop_word(memory)?;
-                    let a = self.pop(memory);
-                    if count <= i {
-                        self.registers[i as usize] = r;
-                        self.address[i as usize] = a;
-                    }
-                }
                 let interrupt = self.pop(memory);
-                if interrupt == 2 {
+                if interrupt == 3 {
                     let cdr = self.pop(memory);
                     let car = self.pop(memory);
                     memory.write_word(self.address[0] + ConsLayout::CAR_OFFSET, car);
                     memory.write_word(self.address[0] + ConsLayout::CDR_OFFSET, cdr);
-                    self.registers[0] = Word::new(WordType::Cons, self.address[0]);
+                    self.registers[0] = Word::cons(self.address[0]);
                 }
                 Ok(return_address)
             }
@@ -751,38 +722,11 @@ impl Cpu {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
 
-            Instruction::LoadRoot { dst, root } => {
-                let root_obj = Self::read_word(memory, root as u64)?;
-                self.registers[dst.0] = root_obj;
-
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-
-            Instruction::LoadAddress { dst, address } => {
+            Instruction::LoadAddress { dst, val: address } => {
                 self.address[dst.0] = address;
 
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::StoreOffsetAdr {
-                base,
-                offset,
-                value,
-            } => {
-                let value_obj = self.registers[value.0];
-
-                memory.write_word(self.addr_with_offset(base, offset), value_obj.into());
-
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::ReadOffsetAdr { dst, base, offset } => {
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::ReadReg { dst, base } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
-            Instruction::StoreReg { base, src: value } => {
-                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
-            }
-            Instruction::MovAR { dst, src } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
-            Instruction::MovRA { dst, src } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
             Instruction::AAdd(ThreeAddrs { dst, op1, op2, imm }) => {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
@@ -794,13 +738,40 @@ impl Cpu {
             }
             Instruction::GetTag { src, dst } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
             Instruction::LoadLiteral { dst, val } => {
+                self.registers[dst.0] = val;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::SetPayload { dst, src } => {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::SetTag { src, dst } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
-            Instruction::MovAdr { dst, src } => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
+            Instruction::Mov { dst, src } => {
+                let value = match src {
+                    Location::Absolute(a) => memory.read_word(a as u64),
+                    Location::Address(AddressRegister(r)) => self.address[r],
+                    Location::IndirectAddress(AddressRegister(r), off) => {
+                        memory.read_word((self.address[r] as i64 + off) as u64)
+                    }
+                    Location::IndirectRegister(Register(r)) => {
+                        memory.read_word(self.registers[r].payload)
+                    }
+                    Location::Register(Register(r)) => self.registers[r].into(),
+                };
+                match dst {
+                    Location::Absolute(a) => memory.write_word(a as u64, value),
+                    Location::Address(AddressRegister(r)) => self.address[r] = value,
+                    Location::IndirectAddress(AddressRegister(r), off) => {
+                        memory.write_word((self.address[r] as i64 + off) as u64, value)
+                    }
+                    Location::IndirectRegister(Register(r)) => {
+                        memory.write_word(self.registers[r].payload, value)
+                    }
+                    Location::Register(Register(r)) => {
+                        self.registers[r] = Word::try_from(value).map_err(|_| Trap::TypeError)?
+                    }
+                }
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
         }
     }
 
@@ -811,6 +782,7 @@ impl Cpu {
         let (lo, hi) = self.fetch(memory);
         let instruction = Instruction::decode(lo, hi)?;
 
+        println!("{} - {:?}", self.address[Cpu::PC], instruction);
         let next_pc = self.execute(instruction, memory)?;
         self.address[Cpu::PC] = next_pc;
         Ok(())
@@ -829,6 +801,7 @@ impl Cpu {
     }
 }
 
+#[derive(Debug)]
 pub enum Trap {
     TypeError,
     InvalidInstruction,
@@ -837,7 +810,7 @@ pub enum Trap {
 
 #[cfg(test)]
 mod tests {
-    use crate::cpu::WordType::Fixnum;
+    use crate::{cpu::WordType::Fixnum, parse_asm};
 
     use super::*;
 
@@ -957,6 +930,10 @@ mod tests {
         let cons_cell = 0x3000;
 
         memory.write_word(
+            MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
+            cons_hook,
+        );
+        memory.write_word(
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_CONS_VECTOR,
             cons_hook,
         );
@@ -967,55 +944,48 @@ mod tests {
 
         memory.load_instructions(
             cpu.address[Cpu::PC] as usize,
-            vec![
-                Instruction::LoadAddress {
-                    dst: AddressRegister(0),
-                    address: 0x800,
-                },
-                Instruction::MovAdr {
-                    dst: AddressRegister(Cpu::SP),
-                    src: AddressRegister(0),
-                },
-                Instruction::LoadLiteral {
-                    dst: Register(0),
-                    val: Word::new(Fixnum, 42).into(),
-                },
-                Instruction::LoadLiteral {
-                    dst: Register(1),
-                    val: Word::new(Fixnum, 99).into(),
-                },
-                Instruction::Int(0x02), // CONS
-                Instruction::Nop,
-                Instruction::Halt,
-            ],
+            parse_asm! {
+                MOV A Cpu::SP, 0x800;
+                MOV R 0, Word::fixnum(42);
+                MOV R 1, Word::fixnum(99);
+                CONS;
+                NOP;
+                HALT;
+            },
+        );
+        println!(
+            "{:?}",
+            parse_asm! {
+                MOV A Cpu::SP, 0x800;
+                MOV R 0, Word::fixnum(42);
+                MOV R 1, Word::fixnum(99);
+                CONS;
+                NOP;
+                HALT;
+            },
         );
 
         // Fake CONS_HOOK
         memory.load_instructions(
             cons_hook as usize,
-            vec![
-                // A real hook would call an allocator.
-                // For testing, directly create the object.
-                Instruction::LoadAddress {
-                    dst: AddressRegister(0),
-                    address: cons_cell,
-                },
-                Instruction::PopA {
-                    dst: AddressRegister(1),
-                },
-                Instruction::IReturn { count: 1 },
-            ],
+            parse_asm! {
+                MOV A 0, cons_cell;
+                IRETURN;
+            },
         );
 
-        memory.load_instructions(trap_hook as usize, vec![Instruction::Halt]);
+        memory.load_instructions(
+            trap_hook as usize,
+            parse_asm! {
+                HALT;
+            },
+        );
 
         while !cpu.halted {
-            cpu.step(&mut memory).map_err(|_| "Trap ")?;
+            cpu.step(&mut memory).map_err(|t| format!("Trap {:?}", t))?;
         }
 
-        let result = cpu.registers[0];
-
-        assert_eq!(result, Word::new(WordType::Cons, cons_cell));
+        assert_eq!(cpu.registers[0], Word::new(WordType::Cons, cons_cell));
 
         assert_eq!(
             Word::try_from(memory.read_word(cons_cell)).expect("couldn't parse word"),

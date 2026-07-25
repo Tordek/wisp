@@ -132,7 +132,7 @@ impl Gpu {
     pub unsafe fn render(&self, vga_ram: &[u8], elapsed_millis: u32) {
         let mut vga_framebuffer = vec![0u8; 720 * 400 * 3];
         vga_framebuffer.fill(0);
-        for i in 0..(25*80) {
+        for i in 0..(25 * 80) {
             let position = 0x18000 + 2 * i;
             let attributes = vga_ram[position];
             let character = vga_ram[position + 1];
@@ -278,7 +278,7 @@ fn vga_color(on: bool, t: bool, color: u8) -> (u8, u8, u8) {
         (color >> 4) & 0x07
     };
     match c {
-        0 => (9,4,4),
+        0 => (9, 4, 4),
         1 => (191, 63, 52),
         2 => (2, 125, 45),
         3 => (190, 157, 57),

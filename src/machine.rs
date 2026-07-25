@@ -1,9 +1,10 @@
 use crate::{
     cpu::{
-        AddressRegister, Cpu, Instruction, InterruptTableOffset, MemoryLayout, Register,
-        SymbolLayout, ThreeAddrs, Word, WordType,
+        AddressRegister, Cpu, Instruction, InterruptTableOffset, Location::Address, MemoryLayout,
+        Register, SymbolLayout, ThreeAddrs, Word, WordType,
     },
     memory::Memory,
+    parse_asm,
 };
 
 type MachineAddressSize = u64;
@@ -169,11 +170,11 @@ impl FirmwareHelper {
                 // Set Stack Pointer at 0x2000
                 Instruction::LoadAddress {
                     dst: AddressRegister(0),
-                    address: Self::BOOTSTRAP_STACK_POSITION.0,
+                    val: Self::BOOTSTRAP_STACK_POSITION.0,
                 },
-                Instruction::MovAdr {
-                    dst: AddressRegister(Cpu::SP),
-                    src: AddressRegister(0),
+                Instruction::Mov {
+                    dst: Address(AddressRegister(Cpu::SP)),
+                    src: Address(AddressRegister(0)),
                 },
                 // Halt
                 Instruction::Halt,
@@ -185,45 +186,36 @@ impl FirmwareHelper {
         cursor.write_word_at(free_ptr, &Self::BOOTSTRAP_SCRATCH_ALLOC.0);
         cursor.write_instructions_at(
             Self::BOOTSTRAP_ALLOC_HOOK,
-            &[
-                // Discard type information.
-                Instruction::PopR { dst: Register(0) },
-                // A1 = freeptr
-                Instruction::LoadAddress {
-                    dst: AddressRegister(1),
-                    address: free_ptr.0,
-                },
-                // A0 = *freeptr
-                Instruction::ReadOffsetAdr {
-                    dst: AddressRegister(0),
-                    base: Some(AddressRegister(1)),
-                    offset: 0,
-                },
-                // A2 = length
-                Instruction::PopR { dst: Register(0) },
-                Instruction::GetPayload {
-                    dst: AddressRegister(2),
-                    src: Register(0),
-                },
-                // A3 = *freeptr + len
-                Instruction::AAdd(ThreeAddrs {
-                    dst: AddressRegister(3),
-                    op1: AddressRegister(0),
-                    op2: Some(AddressRegister(2)),
-                    imm: 0,
-                }),
-                // *freeptr = A3
-                Instruction::StoreOffsetAdr {
-                    base: Some(AddressRegister(1)),
-                    offset: 0,
-                    value: AddressRegister(3),
-                },
-                Instruction::IReturn { count: 1 },
-            ],
+            // Equivalent to:
+            // A0 = *freeptr;
+            // *freeptr += len;
+            &parse_asm! {
+                PUSH A 1;
+                PUSH A 2;
+                PUSH A 3;
+                PUSH R 1;
+                MOV A 1, free_ptr.0;
+                MOV A 0, [A 1];
+                GETPAYLOAD A 2, R 1;
+                ADD A 3, A 0, A 2;
+                MOV [A 1], A 3;
+                POP R 1;
+                POP A 3;
+                POP A 2;
+                POP A 1;
+                IRETURN;
+            }
+            .as_slice(),
         );
 
         // Default trap
-        cursor.write_instructions_at(Self::BOOTSTRAP_TRAP_HOOK, &[Instruction::Halt]);
+        cursor.write_instructions_at(
+            Self::BOOTSTRAP_TRAP_HOOK,
+            &parse_asm! {
+                HALT;
+            }
+            .as_slice(),
+        );
 
         firmware
     }

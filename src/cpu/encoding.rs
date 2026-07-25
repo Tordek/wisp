@@ -1,17 +1,20 @@
 use int_enum::IntEnum;
 
 use crate::cpu::{
-    self, AddressRegister, Instruction, JumpAddressing, Register, Root, ThreeAddrs, ThreeRegs,
-    Trap, TwoRegs, Word,
+    self, AddressRegister, Instruction, JumpAddressing, Location, Register, ThreeAddrs, ThreeRegs,
+    Trap, TwoRegs, Word, encoding::Opcode::LoadLiteral,
 };
 
 impl cpu::Register {
     fn encode(&self) -> u8 {
         self.0 as u8
     }
+
     fn decode(reg: u8) -> Self {
         Self(reg as usize)
     }
+
+    const NONE: u8 = 0x55;
 }
 
 impl AddressRegister {
@@ -47,7 +50,6 @@ impl ThreeRegs {
     fn decode(r1: u8, r2: u8, r3: u8, imm: u64) -> Result<ThreeRegs, Trap> {
         Ok(ThreeRegs {
             dst: Register(r1 as usize),
-
             op1: Register(r2 as usize),
             op2: Some(Register(r3 as usize)),
             imm: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
@@ -72,6 +74,35 @@ impl cpu::JumpAddressing {
     }
 }
 
+impl cpu::Location {
+    fn encode(&self) -> (u8, u64) {
+        match self {
+            Self::Absolute(a) => (Register::NONE, *a as u64),
+            Self::Address(r) => (r.encode(), 0),
+            Self::Register(r) => (r.encode(), 0),
+            Self::IndirectAddress(a, d) => (a.encode() + 24, *d as u64),
+            Self::IndirectRegister(a) => (a.encode() + 24, 0),
+        }
+    }
+
+    fn decode(reg: u8, off: u64) -> Result<Self, Trap> {
+        if reg == Register::NONE {
+            Ok(Self::Absolute(off as i64))
+        } else if reg < 16 {
+            Ok(Self::Register(Register::decode(reg)))
+        } else if reg < 24 {
+            Ok(Self::Address(AddressRegister::decode(reg)?))
+        } else if reg < 40 {
+            Ok(Self::IndirectRegister(Register::decode(reg - 24)))
+        } else {
+            Ok(Self::IndirectAddress(
+                AddressRegister::decode(reg - 24)?,
+                off as i64,
+            ))
+        }
+    }
+}
+
 #[repr(u8)]
 #[derive(IntEnum)]
 enum Opcode {
@@ -85,15 +116,8 @@ enum Opcode {
     PushA,
     PopA,
     LoadLiteral,
-    LoadRoot,
     LoadAddress,
-    ReadReg,
-    StoreReg,
-    ReadOffsetAdr,
-    StoreOffsetAdr,
-    MovAdr,
-    MovAR,
-    MovRA,
+    Mov,
     AAdd,
     ASub,
     SetTag,
@@ -183,26 +207,11 @@ impl Instruction {
             Opcode::PushA => Ok(Self::PushA {
                 src: AddressRegister::decode(r0)?,
             }),
-            Opcode::LoadRoot => match hi {
-                0 => Ok(Self::LoadRoot {
-                    dst: Register::decode(r0),
-                    root: Root::NIL,
-                }),
-                1 => Ok(Self::LoadRoot {
-                    dst: Register::decode(r0),
-                    root: Root::T,
-                }),
-                _ => Err(Trap::InvalidInstruction),
-            },
             Opcode::LoadAddress => Ok(Instruction::LoadAddress {
                 dst: AddressRegister::decode(r0)?,
-                address: hi,
+                val: hi,
             }),
-            Opcode::StoreReg => Ok(Self::StoreReg {
-                base: Register::decode(r1),
-                src: Register(r1 as usize),
-            }),
-            Opcode::IReturn => Ok(Self::IReturn { count: hi }),
+            Opcode::IReturn => Ok(Self::IReturn),
             Opcode::AAdd => Ok(Instruction::AAdd(cpu::ThreeAddrs {
                 dst: AddressRegister::decode(r0)?,
                 op1: AddressRegister::decode(r1)?,
@@ -215,19 +224,22 @@ impl Instruction {
                 op2: AddressRegister::try_decode(r2),
                 imm: hi,
             })),
-            Opcode::GetPayload => Err(Trap::TypeError),
-            Opcode::GetTag => Err(Trap::TypeError),
-            Opcode::Halt => Err(Trap::TypeError),
-            Opcode::Int => Err(Trap::TypeError),
-            Opcode::LoadLiteral => Err(Trap::TypeError),
-            Opcode::MovAR => Err(Trap::TypeError),
-            Opcode::MovRA => Err(Trap::TypeError),
-            Opcode::ReadOffsetAdr => Err(Trap::TypeError),
-            Opcode::ReadReg => Err(Trap::TypeError),
-            Opcode::SetPayload => Err(Trap::TypeError),
-            Opcode::SetTag => Err(Trap::TypeError),
-            Opcode::StoreOffsetAdr => Err(Trap::TypeError),
-            Opcode::MovAdr => Err(Trap::TypeError),
+            Opcode::GetPayload => todo!(),
+            Opcode::GetTag => todo!(),
+            Opcode::Halt => Ok(Instruction::Halt),
+            Opcode::Int => Ok(Instruction::Int(hi)),
+            Opcode::LoadLiteral => Ok(Instruction::LoadLiteral {
+                dst: Register(r0 as usize),
+                val: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
+            }),
+            Opcode::SetPayload => todo!(),
+            Opcode::SetTag => todo!(),
+            Opcode::Mov => {
+                let dst = Location::decode(r0, hi)?;
+                let src = Location::decode(r0, hi)?;
+
+                Ok(Instruction::Mov { dst, src })
+            }
         }
     }
 
@@ -238,7 +250,16 @@ impl Instruction {
                 adr: None,
                 offset,
             } => (
-                u64::from_le_bytes([opcode.into(), condition.encode(), 24, 0, 0, 0, 0, 0]),
+                u64::from_le_bytes([
+                    opcode.into(),
+                    condition.encode(),
+                    Register::NONE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
                 *offset as u64,
             ),
             JumpAddressing::AddressRegister {
@@ -282,7 +303,16 @@ impl Instruction {
                 op2: None,
                 imm,
             } => (
-                u64::from_le_bytes([opcode.into(), dst.encode(), op1.encode(), 24, 0, 0, 0, 0]),
+                u64::from_le_bytes([
+                    opcode.into(),
+                    dst.encode(),
+                    op1.encode(),
+                    Register::NONE,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
                 imm.into(),
             ),
             &ThreeAddrs {
@@ -313,7 +343,16 @@ impl Instruction {
                 op2: None,
                 imm,
             } => (
-                u64::from_le_bytes([opcode.into(), dst.encode(), op1.encode(), 24, 0, 0, 0, 0]),
+                u64::from_le_bytes([
+                    opcode.into(),
+                    dst.encode(),
+                    op1.encode(),
+                    Register::NONE,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
                 imm.into(),
             ),
             &ThreeRegs {
@@ -339,7 +378,16 @@ impl Instruction {
     fn encode_two_regs(opcode: Opcode, target: &TwoRegs) -> (u64, u64) {
         match target {
             &TwoRegs { dst, src } => (
-                u64::from_le_bytes([opcode.into(), dst.encode(), src.encode(), 24, 0, 0, 0, 0]),
+                u64::from_le_bytes([
+                    opcode.into(),
+                    dst.encode(),
+                    src.encode(),
+                    Register::NONE,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
                 0,
             ),
         }
@@ -452,138 +500,12 @@ impl Instruction {
                 u64::from_le_bytes([Opcode::PushA.into(), src.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-
-            Instruction::LoadRoot { dst, root } => (
-                u64::from_le_bytes([Opcode::LoadRoot.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
-                *root as u64,
-            ),
-
-            Instruction::LoadAddress { dst, address } => (
+            Instruction::LoadAddress { dst, val: address } => (
                 u64::from_le_bytes([Opcode::LoadAddress.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 *address,
             ),
-            Instruction::ReadOffsetAdr {
-                dst,
-                base: None,
-                offset,
-            } => (
-                u64::from_le_bytes([
-                    Opcode::ReadOffsetAdr.into(),
-                    dst.encode(),
-                    24,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                *offset as u64,
-            ),
-            Instruction::ReadOffsetAdr {
-                dst,
-                base: Some(adr),
-                offset,
-            } => (
-                u64::from_le_bytes([
-                    Opcode::ReadOffsetAdr.into(),
-                    dst.encode(),
-                    adr.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                *offset as u64,
-            ),
-            Instruction::ReadReg { dst, base } => (
-                u64::from_le_bytes([
-                    Opcode::LoadAddress.into(),
-                    dst.encode(),
-                    base.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::StoreOffsetAdr {
-                base: None,
-                offset,
-                value,
-            } => (
-                u64::from_le_bytes([
-                    Opcode::StoreOffsetAdr.into(),
-                    24,
-                    value.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                *offset as u64,
-            ),
-            Instruction::StoreOffsetAdr {
-                base: Some(base),
-                offset,
-                value,
-            } => (
-                u64::from_le_bytes([
-                    Opcode::StoreOffsetAdr.into(),
-                    base.encode(),
-                    value.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                *offset as u64,
-            ),
-            Instruction::StoreReg { base, src } => (
-                u64::from_le_bytes([
-                    Opcode::StoreReg.into(),
-                    base.encode(),
-                    src.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::IReturn { count } => (
+            Instruction::IReturn => (
                 u64::from_le_bytes([Opcode::IReturn.into(), 0, 0, 0, 0, 0, 0, 0]),
-                *count,
-            ),
-            Instruction::MovAR { dst, src } => (
-                u64::from_le_bytes([
-                    Opcode::MovAR.into(),
-                    dst.encode(),
-                    src.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::MovRA { dst, src } => (
-                u64::from_le_bytes([
-                    Opcode::MovRA.into(),
-                    dst.encode(),
-                    src.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
                 0,
             ),
             Instruction::AAdd(regs) => Self::encode_three_adrs(Opcode::AAdd, regs),
@@ -622,19 +544,17 @@ impl Instruction {
                 u64::from_le_bytes([Opcode::LoadLiteral.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 (*val).into(),
             ),
-            Instruction::MovAdr { dst, src } => (
-                u64::from_le_bytes([
-                    Opcode::MovAdr.into(),
-                    dst.encode(),
-                    src.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
+            Instruction::Mov { dst, src } => {
+                let (edst, doff) = dst.encode();
+                let (esrc, soff) = src.encode();
+                if doff != 0 && soff != 0 {
+                    panic!("Somehow you managed to construct an instruction with two offsets");
+                }
+                (
+                    u64::from_le_bytes([Opcode::Mov.into(), edst, esrc, 0, 0, 0, 0, 0]),
+                    doff + soff,
+                )
+            }
             Instruction::SetPayload { dst, src } => (
                 u64::from_le_bytes([
                     Opcode::SetPayload.into(),
