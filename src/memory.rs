@@ -3,12 +3,6 @@ pub trait Memory<const N: usize, WordSize> {
     fn write_word(&mut self, addr: usize, data: WordSize);
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum MemoryError {
-    UnalignedAccess,
-    OutOfBounds,
-}
-
 impl Memory<8, u64> for [u8] {
     fn read_word(&self, addr: usize) -> u64 {
         u64::from_le_bytes(

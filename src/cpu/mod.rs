@@ -186,35 +186,32 @@ pub enum JumpAddressing {
 pub struct ThreeRegs {
     pub dst: Register,
     pub op1: Register,
-    pub op2: Option<Register>,
-    pub imm: Word,
+    pub op2: OffsetRegister,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ThreeMachs {
     pub dst: MachineRegister,
     pub op1: MachineRegister,
-    // TODO: Convert to OffsetAddress.
-    pub op2: Option<MachineRegister>,
-    pub imm: Address,
+    pub op2: OffsetAddress,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct OffsetAddress {
-    base: Option<MachineRegister>,
-    off: Address,
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum OffsetAddress {
+    Relative { base: MachineRegister, off: Address },
+    Absolute { pos: Address },
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum OffsetRegister {
+    Relative { base: Register, off: Word },
+    Absolute { pos: Word },
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TwoRegs {
     dst: Register,
     src: Register,
-}
-
-#[derive(Debug)]
-pub struct TwoMachs {
-    src: MachineRegister,
-    dst: MachineRegister,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -224,11 +221,6 @@ pub enum Location {
     IndirectRegister(Register),
     IndirectMachine(MachineRegister, i64),
     Absolute(Address),
-}
-
-pub struct ByteAddressing {
-    base: MachineRegister,
-    offset: MachineRegister,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -339,8 +331,7 @@ pub enum Instruction {
         div: Register,
         rem: Register,
         op1: Register,
-        op2: Option<Register>,
-        imm: Word,
+        op2: OffsetRegister,
     },
     /// Calculates dst <- op1 - (op2 + imm) - typechecks, only fixnums.
     Sub(ThreeRegs),
@@ -358,10 +349,6 @@ pub enum Instruction {
     Lt(ThreeRegs),
     /// Calculates dst <- op1 <= (op2 + imm) - typechecks, only fixnums.
     Lte(ThreeRegs),
-    // Mov8 {
-    //     dst: ByteAddressing,
-    //     src: ByteAddressing,
-    // },
     /// I have no idea what this does yet.
     MakeClosure {
         dst: Register,
@@ -454,40 +441,6 @@ impl Cpu {
         Self::read_word(memory, self.address[Cpu::SP])
     }
 
-    fn reg_with_offset(&self, op: Option<Register>, off: Word) -> Result<Word, Trap> {
-        match (op, off) {
-            (None, off) => Ok(off),
-            (
-                Some(r),
-                Word {
-                    tag: WordType::Fixnum,
-                    payload: 0,
-                },
-            ) => Ok(self.registers[r.0]),
-            (
-                Some(r),
-                Word {
-                    tag: WordType::Fixnum,
-                    payload: offset,
-                },
-            ) => match self.registers[r.0] {
-                Word {
-                    tag: WordType::Fixnum,
-                    payload,
-                } => Ok(Word::new(WordType::Fixnum, payload + offset)),
-                _ => Err(Trap::TypeError),
-            },
-            _ => Err(Trap::TypeError),
-        }
-    }
-
-    fn addr_with_offset(&self, op: Option<MachineRegister>, off: i64) -> Address {
-        match op {
-            Some(MachineRegister(r)) => (self.address[r] as i64 + off) as Address,
-            None => off as Address,
-        }
-    }
-
     fn ensure(w: Word, word_type: WordType) -> Result<Word, Trap> {
         if w.tag == word_type {
             Ok(w)
@@ -503,6 +456,23 @@ impl Cpu {
                 (self.address[adr.0] as i64 + offset) as usize
             }
             JumpAddressing::Register { adr } => self.registers[adr.0].payload as usize,
+        }
+    }
+
+    fn get_offset_reg_val(&self, addr: OffsetRegister) -> Result<Word, Trap> {
+        match addr {
+            OffsetRegister::Absolute { pos } => Self::ensure(pos, WordType::Fixnum),
+            OffsetRegister::Relative { base, off } => {
+                let b = Self::ensure(self.registers[base.0], WordType::Fixnum)?;
+                let o = Self::ensure(off, WordType::Fixnum)?;
+                Ok(Word::fixnum(b.payload + o.payload))
+            }
+        }
+    }
+    fn get_offset_addr_val(&self, addr: OffsetAddress) -> usize {
+        match addr {
+            OffsetAddress::Absolute { pos } => pos,
+            OffsetAddress::Relative { base, off } => self.address[base.0] + off,
         }
     }
 
@@ -537,7 +507,13 @@ impl Cpu {
                 }
             }
 
-            Instruction::Call { target } => todo!(),
+            Instruction::Call { target } => {
+                let next_pc = self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE;
+                let address = self.get_jump_target(target);
+
+                self.push(memory, next_pc as WordSize);
+                Ok(address)
+            }
 
             Instruction::Return => {
                 let return_address = self.pop(memory);
@@ -546,61 +522,43 @@ impl Cpu {
             Instruction::MakeClosure { dst, code } => todo!(),
 
             // Comparison
-            Instruction::Eq(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Eq(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = self.registers[op1.0];
-                let op2_obj = match op2 {
-                    Some(op) => match self.registers[op.0] {
-                        Word {
-                            tag: WordType::Fixnum,
-                            payload,
-                        } => Ok(Word::new(
-                            WordType::Fixnum,
-                            payload + Word::try_from(imm).map_err(|_| Trap::TypeError)?.payload,
-                        )),
-                        word => {
-                            if imm == Word::new(WordType::Fixnum, 0) {
-                                Ok(word)
-                            } else {
-                                Err(Trap::TypeError)
-                            }
-                        }
-                    },
-                    None => Word::try_from(imm).map_err(|_| Trap::TypeError),
-                }?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
 
                 self.registers[dst.0] = Self::to_machine_bool(memory, op1_obj == op2_obj)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Ne(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Ne(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = self.registers[op1.0];
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 self.registers[dst.0] = Self::to_machine_bool(memory, op1_obj != op2_obj)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Gt(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Gt(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload > op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Gte(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Gte(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload >= op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Lt(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Lt(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload < op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Lte(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Lte(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 self.registers[dst.0] =
                     Self::to_machine_bool(memory, op1_obj.payload >= op2_obj.payload)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
@@ -685,39 +643,33 @@ impl Cpu {
             }
 
             // Arithmetic
-            Instruction::Add(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Add(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[dst.0] =
                     Word::new(WordType::Fixnum, op1_obj.payload + op2_obj.payload);
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Sub(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Sub(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[dst.0] =
                     Word::new(WordType::Fixnum, op1_obj.payload - op2_obj.payload);
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::Mul(ThreeRegs { dst, op1, op2, imm }) => {
+            Instruction::Mul(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[dst.0] =
                     Word::new(WordType::Fixnum, op1_obj.payload * op2_obj.payload);
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::IDiv {
-                div,
-                rem,
-                op1,
-                op2,
-                imm,
-            } => {
+            Instruction::IDiv { div, rem, op1, op2 } => {
                 let op1_obj = Self::ensure(self.registers[op1.0], WordType::Fixnum)?;
-                let op2_obj = self.reg_with_offset(op2, imm)?;
+                let op2_obj = self.get_offset_reg_val(op2)?;
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[div.0] =
                     Word::new(WordType::Fixnum, op1_obj.payload / op2_obj.payload);
@@ -750,24 +702,39 @@ impl Cpu {
 
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::AAdd(ThreeMachs { dst, op1, op2, imm }) => {
+            Instruction::AAdd(ThreeMachs { dst, op1, op2 }) => {
                 let val1 = self.address[op1.0];
-                let val2 = self.addr_with_offset(op2, imm as i64);
+                let val2 = self.get_offset_addr_val(op2);
                 self.address[dst.0] = val1 + val2;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::ASub(ThreeMachs { dst, op1, op2, imm }) => todo!(),
+            Instruction::ASub(ThreeMachs { dst, op1, op2 }) => {
+                let val1 = self.address[op1.0];
+                let val2 = self.get_offset_addr_val(op2);
+                self.address[dst.0] = val1 - val2;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
             Instruction::GetPayload { dst, src } => {
                 self.address[dst.0] = u64::from(self.registers[src.0].payload) as usize;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::GetTag { src, dst } => todo!(),
+            Instruction::GetTag { src, dst } => {
+                self.address[dst.0] = self.registers[src.0].tag as usize;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
             Instruction::LoadLiteral { dst, val } => {
                 self.registers[dst.0] = val;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::SetPayload { dst, src } => todo!(),
-            Instruction::SetTag { src, dst } => todo!(),
+            Instruction::SetPayload { dst, src } => {
+                self.registers[dst.0].payload = self.address[src.0] as u64;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
+            Instruction::SetTag { src, dst } => {
+                self.registers[dst.0].tag =
+                    WordType::try_from(self.address[src.0] as u8).map_err(|_| Trap::TypeError)?;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
             Instruction::Mov8 { dst, src } => {
                 let value = match src {
                     Location::Absolute(a) => memory.read_word(a as Address),
@@ -775,10 +742,10 @@ impl Cpu {
                     Location::IndirectMachine(MachineRegister(r), off) => {
                         memory.read_word((self.address[r] as i64 + off) as Address)
                     }
-                    Location::IndirectRegister(Register(r)) => {
+                    Location::IndirectRegister(Register(_)) => {
                         return Err(Trap::InvalidInstruction);
                     }
-                    Location::Register(Register(r)) => {
+                    Location::Register(Register(_)) => {
                         return Err(Trap::InvalidInstruction);
                     }
                 };
@@ -879,7 +846,7 @@ pub enum Trap {
 
 #[cfg(test)]
 mod tests {
-    use crate::{cpu::WordType::Fixnum, parse_asm};
+    use crate::parse_asm;
 
     use super::*;
 
@@ -983,7 +950,7 @@ mod tests {
         Ok(())
     }
 
-    // #[test]
+    #[test]
     fn test_cons_builds_cell() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut memory = TestMemory::new();
@@ -991,10 +958,11 @@ mod tests {
         let cons_hook = 0x2000;
         let trap_hook = 0x2100;
         let cons_cell = 0x3000;
+        let code_base = 0x4000;
 
         memory
             .as_mut_slice()
-            .write_word(MemoryLayout::RESET_VECTOR, cons_hook);
+            .write_word(MemoryLayout::RESET_VECTOR, code_base);
         memory.as_mut_slice().write_word(
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
             cons_hook,
@@ -1007,10 +975,11 @@ mod tests {
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR,
             trap_hook,
         );
+        cpu.reset(&mut memory);
 
         TestMemory::load_instructions(
             &mut memory,
-            MemoryLayout::RESET_VECTOR,
+            code_base as usize,
             parse_asm! {
                 MOV A Cpu::SP, 0x800;
                 MOV R 0, Word::fixnum(42);

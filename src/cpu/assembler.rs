@@ -625,8 +625,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeMachs {
                     dst: $crate::cpu::MachineRegister($p1),
                     op1: $crate::cpu::MachineRegister($p2),
-                    op2: Some($crate::cpu::MachineRegister($p3)),
-                    imm: $imm
+                    op2: $crate::cpu::OffsetAddress::Relative {
+                        base: $crate::cpu::MachineRegister($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -639,8 +641,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeMachs {
                     dst: $crate::cpu::MachineRegister($p1),
                     op1: $crate::cpu::MachineRegister($p2),
-                    op2: None,
-                    imm: $imm
+                    op2: $crate::cpu::OffsetAddress::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -653,8 +656,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeMachs {
                     dst: $crate::cpu::MachineRegister($p1),
                     op1: $crate::cpu::MachineRegister($p2),
-                    op2: Some($crate::cpu::MachineRegister($p3)),
-                    imm: 0,
+                    op2: $crate::cpu::OffsetAddress::Relative {
+                        base: $crate::cpu::MachineRegister($p3),
+                        off: 0,
+                    }
                 }
             )
         ];
@@ -667,8 +672,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeMachs {
                     dst: $crate::cpu::MachineRegister($p1),
                     op1: $crate::cpu::MachineRegister($p2),
-                    op2: Some($crate::cpu::MachineRegister($p3)),
-                    imm: $imm
+                    op2: $crate::cpu::OffsetAddress::Relative {
+                        base: $crate::cpu::MachineRegister($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -681,8 +688,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeMachs {
                     dst: $crate::cpu::MachineRegister($p1),
                     op1: $crate::cpu::MachineRegister($p2),
-                    op2: None,
-                    imm: $imm
+                    op2: $crate::cpu::OffsetAddress::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -695,8 +703,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeMachs {
                     dst: $crate::cpu::MachineRegister($p1),
                     op1: $crate::cpu::MachineRegister($p2),
-                    op2: Some($crate::cpu::MachineRegister($p3)),
-                    imm: 0,
+                    op2: $crate::cpu::OffsetAddress::Relative {
+                        base: $crate::cpu::MachineRegister($p3),
+                        off: 0,
+                    }
                 }
             )
         ];
@@ -810,8 +820,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -824,8 +836,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -838,8 +852,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -852,8 +867,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -866,8 +883,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -880,8 +899,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -894,8 +914,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -908,8 +930,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -922,8 +946,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -936,8 +961,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -950,8 +977,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -964,8 +993,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -978,8 +1008,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -992,8 +1024,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -1006,8 +1040,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -1020,8 +1055,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -1034,8 +1071,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -1048,8 +1087,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -1062,8 +1102,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -1076,8 +1118,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -1090,8 +1134,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -1104,8 +1149,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -1118,8 +1165,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -1132,8 +1181,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -1146,8 +1196,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $crate::cpu::Word::fixnum(0),
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $crate::cpu::Word::fixnum(0),
+                    }
                 }
             )
         ];
@@ -1160,8 +1212,10 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: Some($crate::cpu::Register($p3)),
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Relative {
+                        base: $crate::cpu::Register($p3),
+                        off: $imm,
+                    }
                 }
             )
         ];
@@ -1174,8 +1228,9 @@ macro_rules! parse_asm {
                 $crate::cpu::ThreeRegs {
                     dst: $crate::cpu::Register($p1),
                     op1: $crate::cpu::Register($p2),
-                    op2: None,
-                    imm: $imm,
+                    op2: $crate::cpu::OffsetRegister::Absolute{
+                        pos: $imm,
+                    }
                 }
             )
         ];
@@ -1188,8 +1243,10 @@ macro_rules! parse_asm {
                 div: $crate::cpu::Register($p1),
                 rem: $crate::cpu::Register($p2),
                 op1: $crate::cpu::Register($p3),
-                op2: Some($crate::cpu::Register($p4)),
-                imm: $crate::cpu::Word::fixnum(0)
+                op2: $crate::cpu::OffsetRegister::Relative {
+                    base: $crate::cpu::Register($p4),
+                    off: $crate::cpu::Word::fixnum(0)
+                }
             }
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -1201,8 +1258,10 @@ macro_rules! parse_asm {
                 div: $crate::cpu::Register($p1),
                 rem: $crate::cpu::Register($p2),
                 op1: $crate::cpu::Register($p3),
-                op2: Some($crate::cpu::Register($p4)),
-                imm: $imm
+                op2: $crate::cpu::OffsetRegister::Relative{
+                    base: $crate::cpu::Register($p4),
+                    off: $imm,
+                }
             }
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -1214,8 +1273,9 @@ macro_rules! parse_asm {
                 div: $crate::cpu::Register($p1),
                 rem: $crate::cpu::Register($p2),
                 op1: $crate::cpu::Register($p3),
-                op2: None,
-                imm: $imm,
+                op2: $crate::cpu::OffsetRegister::Absolute {
+                    pos: $imm
+                }
             }
         ];
         insts.extend(parse_asm!($($rest)*));
@@ -1357,9 +1417,7 @@ mod test {
             crate::cpu::Instruction::Int(42),
             crate::cpu::Instruction::IReturn,
             crate::cpu::Instruction::Jump {
-                target: crate::cpu::JumpAddressing::Absolute  {
-                    pos: 16,
-                },
+                target: crate::cpu::JumpAddressing::Absolute { pos: 16 },
             },
             crate::cpu::Instruction::Jump {
                 target: crate::cpu::JumpAddressing::MachineRegister {
@@ -1380,9 +1438,7 @@ mod test {
             },
             crate::cpu::Instruction::JumpIf {
                 condition: crate::cpu::Register(5),
-                target: crate::cpu::JumpAddressing::Absolute {
-                    pos: 16,
-                },
+                target: crate::cpu::JumpAddressing::Absolute { pos: 16 },
             },
             crate::cpu::Instruction::JumpIf {
                 condition: crate::cpu::Register(5),
@@ -1406,9 +1462,7 @@ mod test {
             },
             crate::cpu::Instruction::JumpIfNot {
                 condition: crate::cpu::Register(5),
-                target: crate::cpu::JumpAddressing::Absolute {
-                    pos: 16,
-                },
+                target: crate::cpu::JumpAddressing::Absolute { pos: 16 },
             },
             crate::cpu::Instruction::JumpIfNot {
                 condition: crate::cpu::Register(5),
@@ -1431,9 +1485,7 @@ mod test {
                 },
             },
             crate::cpu::Instruction::Call {
-                target: crate::cpu::JumpAddressing::Absolute {
-                    pos: 16,
-                },
+                target: crate::cpu::JumpAddressing::Absolute { pos: 16 },
             },
             crate::cpu::Instruction::Call {
                 target: crate::cpu::JumpAddressing::MachineRegister {
@@ -1563,38 +1615,44 @@ mod test {
             crate::cpu::Instruction::AAdd(crate::cpu::ThreeMachs {
                 dst: crate::cpu::MachineRegister(1),
                 op1: crate::cpu::MachineRegister(2),
-                op2: Some(crate::cpu::MachineRegister(3)),
-                imm: (0),
+                op2: crate::cpu::OffsetAddress::Relative {
+                    base: crate::cpu::MachineRegister(3),
+                    off: 0,
+                },
             }),
             crate::cpu::Instruction::AAdd(crate::cpu::ThreeMachs {
                 dst: crate::cpu::MachineRegister(1),
                 op1: crate::cpu::MachineRegister(2),
-                op2: Some(crate::cpu::MachineRegister(3)),
-                imm: (4),
+                op2: crate::cpu::OffsetAddress::Relative {
+                    base: crate::cpu::MachineRegister(3),
+                    off: 4,
+                },
             }),
             crate::cpu::Instruction::AAdd(crate::cpu::ThreeMachs {
                 dst: crate::cpu::MachineRegister(1),
                 op1: crate::cpu::MachineRegister(2),
-                op2: None,
-                imm: (8),
+                op2: crate::cpu::OffsetAddress::Absolute { pos: 8 },
             }),
             crate::cpu::Instruction::ASub(crate::cpu::ThreeMachs {
                 dst: crate::cpu::MachineRegister(4),
                 op1: crate::cpu::MachineRegister(5),
-                op2: Some(crate::cpu::MachineRegister(6)),
-                imm: (0),
+                op2: crate::cpu::OffsetAddress::Relative {
+                    base: crate::cpu::MachineRegister(6),
+                    off: 0,
+                },
             }),
             crate::cpu::Instruction::ASub(crate::cpu::ThreeMachs {
                 dst: crate::cpu::MachineRegister(4),
                 op1: crate::cpu::MachineRegister(5),
-                op2: Some(crate::cpu::MachineRegister(6)),
-                imm: (2),
+                op2: crate::cpu::OffsetAddress::Relative {
+                    base: crate::cpu::MachineRegister(6),
+                    off: 2,
+                },
             }),
             crate::cpu::Instruction::ASub(crate::cpu::ThreeMachs {
                 dst: crate::cpu::MachineRegister(4),
                 op1: crate::cpu::MachineRegister(5),
-                op2: None,
-                imm: (12),
+                op2: crate::cpu::OffsetAddress::Absolute { pos: 12 },
             }),
             crate::cpu::Instruction::SetTag {
                 dst: crate::cpu::Register(2),
@@ -1637,185 +1695,235 @@ mod test {
             crate::cpu::Instruction::Add(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Add(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Add(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Sub(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Sub(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Sub(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Mul(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Mul(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Mul(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Eq(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Eq(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Eq(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Ne(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Ne(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Ne(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Lt(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Lt(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Lt(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Lte(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Lte(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Lte(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Gt(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Gt(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Gt(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::Gte(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             }),
             crate::cpu::Instruction::Gte(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: Some(crate::cpu::Register(3)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(3),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             }),
             crate::cpu::Instruction::Gte(crate::cpu::ThreeRegs {
                 dst: crate::cpu::Register(1),
                 op1: crate::cpu::Register(2),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(10),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(10),
+                },
             }),
             crate::cpu::Instruction::IDiv {
                 div: crate::cpu::Register(9),
                 rem: crate::cpu::Register(2),
                 op1: crate::cpu::Register(3),
-                op2: Some(crate::cpu::Register(4)),
-                imm: crate::cpu::Word::fixnum(0),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(4),
+                    off: crate::cpu::Word::fixnum(0),
+                },
             },
             crate::cpu::Instruction::IDiv {
                 div: crate::cpu::Register(9),
                 rem: crate::cpu::Register(2),
                 op1: crate::cpu::Register(3),
-                op2: Some(crate::cpu::Register(4)),
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Relative {
+                    base: crate::cpu::Register(4),
+                    off: crate::cpu::Word::fixnum(5),
+                },
             },
             crate::cpu::Instruction::IDiv {
                 div: crate::cpu::Register(9),
                 rem: crate::cpu::Register(2),
                 op1: crate::cpu::Register(3),
-                op2: None,
-                imm: crate::cpu::Word::fixnum(5),
+                op2: crate::cpu::OffsetRegister::Absolute {
+                    pos: crate::cpu::Word::fixnum(5),
+                },
             },
             crate::cpu::Instruction::MakeClosure {
                 dst: crate::cpu::Register(5),

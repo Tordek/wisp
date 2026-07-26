@@ -52,11 +52,15 @@ impl ThreeRegs {
             dst: Register(r1 as usize),
             op1: Register(r2 as usize),
             op2: if r3 == Register::NONE {
-                None
+                cpu::OffsetRegister::Absolute {
+                    pos: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
+                }
             } else {
-                Some(Register(r3 as usize))
+                cpu::OffsetRegister::Relative {
+                    base: Register::decode(r3),
+                    off: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
+                }
             },
-            imm: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
         })
     }
 }
@@ -84,6 +88,45 @@ impl cpu::JumpAddressing {
                     offset: offset as i64,
                 },
             )
+        }
+    }
+}
+
+impl cpu::OffsetAddress {
+    fn encode(&self) -> (u8, u64) {
+        match self {
+            Self::Absolute { pos } => (Register::NONE, *pos as u64),
+            Self::Relative { base, off } => (base.encode(), *off as u64),
+        }
+    }
+    fn decode(reg: u8, imm: u64) -> Result<Self, Trap> {
+        if reg == Register::NONE {
+            Ok(Self::Absolute { pos: imm as usize })
+        } else {
+            Ok(Self::Relative {
+                base: MachineRegister::decode(reg)?,
+                off: imm as usize,
+            })
+        }
+    }
+}
+impl cpu::OffsetRegister {
+    fn encode(&self) -> (u8, u64) {
+        match self {
+            Self::Absolute { pos } => (Register::NONE, u64::from(*pos)),
+            Self::Relative { base, off } => (base.encode(), u64::from(*off)),
+        }
+    }
+    fn decode(reg: u8, imm: u64) -> Result<Self, Trap> {
+        if reg == Register::NONE {
+            Ok(Self::Absolute {
+                pos: Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
+            })
+        } else {
+            Ok(Self::Relative {
+                base: Register::decode(reg),
+                off: Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
+            })
         }
     }
 }
@@ -220,11 +263,15 @@ impl Instruction {
                 rem: Register::decode(r1),
                 op1: Register::decode(r2),
                 op2: if r3 == Register::NONE {
-                    None
+                    cpu::OffsetRegister::Absolute {
+                        pos: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
+                    }
                 } else {
-                    Some(Register(r3 as usize))
+                    cpu::OffsetRegister::Relative {
+                        base: Register::decode(r3),
+                        off: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
+                    }
                 },
-                imm: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
             }),
             Opcode::PopR => Ok(Self::PopR {
                 dst: Register::decode(r0),
@@ -246,14 +293,12 @@ impl Instruction {
             Opcode::AAdd => Ok(Instruction::AAdd(cpu::ThreeMachs {
                 dst: MachineRegister::decode(r0)?,
                 op1: MachineRegister::decode(r1)?,
-                op2: MachineRegister::try_decode(r2),
-                imm: hi as usize,
+                op2: cpu::OffsetAddress::decode(r2, hi)?,
             })),
             Opcode::ASub => Ok(Instruction::ASub(cpu::ThreeMachs {
                 dst: MachineRegister::decode(r0)?,
                 op1: MachineRegister::decode(r1)?,
-                op2: MachineRegister::try_decode(r2),
-                imm: hi as usize,
+                op2: cpu::OffsetAddress::decode(r2, hi)?,
             })),
             Opcode::GetPayload => Ok(Instruction::GetPayload {
                 dst: MachineRegister::decode(r0)?,
@@ -345,82 +390,42 @@ impl Instruction {
 
     fn encode_three_adrs(opcode: Opcode, target: &ThreeMachs) -> (u64, u64) {
         match target {
-            &ThreeMachs {
-                dst,
-                op1,
-                op2: None,
-                imm,
-            } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    dst.encode(),
-                    op1.encode(),
-                    Register::NONE,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                (imm as u64).into(),
-            ),
-            &ThreeMachs {
-                dst,
-                op1,
-                op2: Some(op2),
-                imm,
-            } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    dst.encode(),
-                    op1.encode(),
-                    op2.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                (imm as u64).into(),
-            ),
+            &ThreeMachs { dst, op1, op2 } => {
+                let (op2e, hi) = op2.encode();
+                (
+                    u64::from_le_bytes([
+                        opcode.into(),
+                        dst.encode(),
+                        op1.encode(),
+                        op2e,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ]),
+                    hi,
+                )
+            }
         }
     }
     fn encode_three_regs(opcode: Opcode, target: &ThreeRegs) -> (u64, u64) {
         match target {
-            &ThreeRegs {
-                dst,
-                op1,
-                op2: None,
-                imm,
-            } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    dst.encode(),
-                    op1.encode(),
-                    Register::NONE,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                imm.into(),
-            ),
-            &ThreeRegs {
-                dst,
-                op1,
-                op2: Some(op2),
-                imm,
-            } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    dst.encode(),
-                    op1.encode(),
-                    op2.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                imm.into(),
-            ),
+            &ThreeRegs { dst, op1, op2 } => {
+                let (op2e, hi) = op2.encode();
+                (
+                    u64::from_le_bytes([
+                        opcode.into(),
+                        dst.encode(),
+                        op1.encode(),
+                        op2e,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ]),
+                    hi,
+                )
+            }
         }
     }
     fn encode_two_regs(opcode: Opcode, target: &TwoRegs) -> (u64, u64) {
@@ -516,30 +521,22 @@ impl Instruction {
             Instruction::Sub(regs) => Self::encode_three_regs(Opcode::Sub, regs),
             Instruction::Mul(regs) => Self::encode_three_regs(Opcode::Mul, regs),
 
-            Instruction::IDiv {
-                div,
-                rem,
-                op1,
-                op2,
-                imm,
-            } => (
-                u64::from_le_bytes([
-                    Opcode::IDiv.into(),
-                    div.encode(),
-                    rem.encode(),
-                    op1.encode(),
-                    if *op2 == None {
-                        Register::NONE
-                    } else {
-                        op2.unwrap().0 as u8
-                    },
-                    0,
-                    0,
-                    0,
-                ]),
-                u64::from(*imm),
-            ),
-
+            Instruction::IDiv { div, rem, op1, op2 } => {
+                let (op2e, hi) = op2.encode();
+                (
+                    u64::from_le_bytes([
+                        Opcode::IDiv.into(),
+                        div.encode(),
+                        rem.encode(),
+                        op1.encode(),
+                        op2e,
+                        0,
+                        0,
+                        0,
+                    ]),
+                    hi,
+                )
+            }
             Instruction::PopR { dst } => (
                 u64::from_le_bytes([Opcode::PopR.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
