@@ -62,18 +62,22 @@ impl ThreeRegs {
 }
 
 impl cpu::JumpAddressing {
-    fn decode(cond: u8, adr: u8, offset: u64) -> Self {
+    fn decode(cond: u8, adr: u8, offset: u64) -> (Register, Self) {
         if adr < 16 {
-            cpu::JumpAddressing::Register {
-                condition: Register(cond as usize),
-                adr: Register(adr as usize),
-            }
+            (
+                Register(cond as usize),
+                cpu::JumpAddressing::Register {
+                    adr: Register(adr as usize),
+                },
+            )
         } else {
-            cpu::JumpAddressing::MachineRegister {
-                condition: MachineRegister(cond as usize - 16),
-                adr: MachineRegister::try_decode(adr),
-                offset: offset as i64,
-            }
+            (
+                Register(cond as usize),
+                cpu::JumpAddressing::MachineRegister {
+                    adr: MachineRegister::try_decode(adr),
+                    offset: offset as i64,
+                },
+            )
         }
     }
 }
@@ -122,6 +126,7 @@ enum Opcode {
     LoadLiteral,
     LoadMachine,
     Mov,
+    Mov8,
     AAdd,
     ASub,
     SetTag,
@@ -162,10 +167,22 @@ impl Instruction {
         let [opcode, r0, r1, r2, r3, ..] = lo.to_le_bytes();
         match Opcode::try_from(opcode).map_err(|_| Trap::InvalidInstruction)? {
             Opcode::Nop => Ok(Self::Nop),
-            Opcode::Jump => Ok(Self::Jump(JumpAddressing::decode(r0, r1, hi))),
-            Opcode::JumpIf => Ok(Self::JumpIf(JumpAddressing::decode(r0, r1, hi))),
-            Opcode::JumpIfNot => Ok(Self::JumpIfNot(JumpAddressing::decode(r0, r1, hi))),
-            Opcode::Call => Ok(Self::Call(JumpAddressing::decode(r0, r1, hi))),
+            Opcode::Jump => {
+                let (_, target) = JumpAddressing::decode(r0, r1, hi);
+                Ok(Self::Jump { target })
+            }
+            Opcode::JumpIf => {
+                let (condition, target) = JumpAddressing::decode(r0, r1, hi);
+                Ok(Self::JumpIf { condition, target })
+            }
+            Opcode::JumpIfNot => {
+                let (condition, target) = JumpAddressing::decode(r0, r1, hi);
+                Ok(Self::JumpIfNot { condition, target })
+            }
+            Opcode::Call => {
+                let (_, target) = JumpAddressing::decode(r0, r1, hi);
+                Ok(Self::Call { target })
+            }
 
             Opcode::Return => Ok(Self::Return),
             Opcode::MakeClosure => Ok(Self::MakeClosure {
@@ -193,7 +210,7 @@ impl Instruction {
             Opcode::Sub => Ok(Self::Sub(ThreeRegs::decode(r0, r1, r2, hi)?)),
             Opcode::Mul => Ok(Self::Mul(ThreeRegs::decode(r0, r1, r2, hi)?)),
             Opcode::IDiv => Ok(Self::IDiv {
-                div: Register::decode(01),
+                div: Register::decode(r0),
                 rem: Register::decode(r1),
                 op1: Register::decode(r2),
                 op2: if r3 == Register::NONE {
@@ -260,16 +277,22 @@ impl Instruction {
 
                 Ok(Instruction::Mov { dst, src })
             }
+            Opcode::Mov8 => {
+                let dst = Location::decode(r0, hi)?;
+                let src = Location::decode(r1, hi)?;
+
+                Ok(Instruction::Mov8 { dst, src })
+            }
         }
     }
 
-    fn encode_op_jump_cond(opcode: Opcode, target: &JumpAddressing) -> (u64, u64) {
+    fn encode_op_jump_cond(
+        opcode: Opcode,
+        condition: Register,
+        target: &JumpAddressing,
+    ) -> (u64, u64) {
         match target {
-            JumpAddressing::MachineRegister {
-                condition,
-                adr: None,
-                offset,
-            } => (
+            JumpAddressing::MachineRegister { adr: None, offset } => (
                 u64::from_le_bytes([
                     opcode.into(),
                     condition.encode(),
@@ -283,7 +306,6 @@ impl Instruction {
                 *offset as u64,
             ),
             JumpAddressing::MachineRegister {
-                condition,
                 adr: Some(MachineRegister(r)),
                 offset,
             } => (
@@ -299,7 +321,7 @@ impl Instruction {
                 ]),
                 *offset as u64,
             ),
-            JumpAddressing::Register { condition, adr } => (
+            JumpAddressing::Register { adr } => (
                 u64::from_le_bytes([
                     opcode.into(),
                     condition.encode(),
@@ -425,14 +447,18 @@ impl Instruction {
                 0,
             ),
 
-            Instruction::Jump(addressing) => Self::encode_op_jump_cond(Opcode::Jump, addressing),
-            Instruction::JumpIf(addressing) => {
-                Self::encode_op_jump_cond(Opcode::JumpIf, addressing)
+            Instruction::Jump { target: addressing } => {
+                Self::encode_op_jump_cond(Opcode::Jump, Register(0), addressing)
             }
-            Instruction::JumpIfNot(addressing) => {
-                Self::encode_op_jump_cond(Opcode::JumpIfNot, addressing)
+            Instruction::JumpIf { condition, target } => {
+                Self::encode_op_jump_cond(Opcode::JumpIf, *condition, target)
             }
-            Instruction::Call(addressing) => Self::encode_op_jump_cond(Opcode::Call, addressing),
+            Instruction::JumpIfNot { condition, target } => {
+                Self::encode_op_jump_cond(Opcode::JumpIfNot, *condition, target)
+            }
+            Instruction::Call { target } => {
+                Self::encode_op_jump_cond(Opcode::Call, Register(0), target)
+            }
 
             Instruction::Return => (
                 u64::from_le_bytes([Opcode::Return.into(), 0, 0, 0, 0, 0, 0, 0]),
@@ -607,6 +633,17 @@ impl Instruction {
             ),
             Instruction::MemCpy { dst, src, count } => todo!(),
             Instruction::MemSet { dst, src, count } => todo!(),
+            Instruction::Mov8 { dst, src } => {
+                let (edst, doff) = dst.encode();
+                let (esrc, soff) = src.encode();
+                if doff != 0 && soff != 0 {
+                    panic!("Somehow you managed to construct an instruction with two offsets");
+                }
+                (
+                    u64::from_le_bytes([Opcode::Mov8.into(), edst, esrc, 0, 0, 0, 0, 0]),
+                    doff + soff,
+                )
+            }
         }
     }
 }

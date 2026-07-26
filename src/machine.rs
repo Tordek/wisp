@@ -62,6 +62,9 @@ impl FirmwareHelper {
     const BOOTSTRAP_OBJECTS: usize = 0x3000;
     const BOOTSTRAP_STACK_POSITION: usize = 0x2000; // Grows backwards
     const BOOTSTRAP_SCRATCH_ALLOC: usize = 0x2000; // Grows forwards
+    const VIDEO_INTERRUPT: usize = InterruptTableOffset::END_RESERVED_INTERRUPTS + 0x00;
+    const CURSOR_POSITION: usize = 0x14000;
+    const VIDEO_INTERRUPT_ROUTINE: usize = 0x12000;
 
     fn make_firmware() -> Vec<u8> {
         let mut firmware = vec![0; 0x20000];
@@ -104,6 +107,10 @@ impl FirmwareHelper {
             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR,
             Self::BOOTSTRAP_TRAP_HOOK as u64,
         );
+        firmware.as_mut_slice().write_word(
+            MemoryLayout::INTERRUPT_TABLE + Self::VIDEO_INTERRUPT * Cpu::WORD_SIZE,
+            Self::VIDEO_INTERRUPT_ROUTINE as u64,
+        );
 
         // Bootstrap program:
         cursor.write_instructions_at(
@@ -111,21 +118,131 @@ impl FirmwareHelper {
             Self::BOOTSTRAP_HOOK,
             &parse_asm! {
                 MOV A Cpu::SP, Self::BOOTSTRAP_STACK_POSITION;
-                MOV A 0, 0x6c076c0765074807; //'Hell'
-                MOV [0xB8000], A 0;
-                MOV A 0, 0x7207660720076f07; //'o fr'
-                MOV [0xB8008], A 0;
-                MOV A 0, 0x610720076d076f07; //'om a'
-                MOV [0xB8010], A 0;
-                MOV A 0, 0x530749074C072007; //' LIS'
-                MOV [0xB8018], A 0;
-                MOV A 0, 0x41074D0720075007; //'P MA'
-                MOV [0xB8020], A 0;
-                MOV A 0, 0x4e07490748074307; //'CHIN'
-                MOV [0xB8028], A 0;
-                MOV A 0, 0x2007200721074507; //'E!!!'
-                MOV [0xB8030], A 0;
+                MOV R 0, Word::fixnum(0);
+                MOV A 0, R 0;
+                MOV [Self::CURSOR_POSITION], A 0;
+                MOV R 0, Word::char('H' as u64);
+                MOV R 1, Word::fixnum(0x07);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('e' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('l' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('l' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('o' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char(',' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char(' ' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('n' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('o' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('w' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char(' ' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('w' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('i' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('t' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('h' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('\n' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 1, Word::fixnum(0x27);
+                MOV R 0, Word::char('V' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 1, Word::fixnum(0x43);
+                MOV R 0, Word::char('G' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 1, Word::fixnum(0x10);
+                MOV R 0, Word::char('A' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 1, Word::fixnum(0x85);
+                MOV R 0, Word::char('!' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
                 HALT;
+            }
+            .as_slice(),
+        );
+
+        // Video interrupts
+        cursor.write_instructions_at(
+            &mut firmware,
+            Self::VIDEO_INTERRUPT_ROUTINE,
+            // A0 contains the specific interrupt. Only print_char is handled for now...
+            // R0 contains the character to print as a char
+            // R1 contains the attributes to save.
+            &parse_asm! {
+                PUSH A 0;
+                PUSH A 1;
+                PUSH A 2;
+                PUSH R 0;
+                PUSH R 1;
+                PUSH R 2;
+                PUSH R 3;
+                PUSH R 4;
+                PUSH R 5;
+                // Read cursor position.
+                MOV A 1, Self::CURSOR_POSITION;
+                MOV R 2, [A 1];
+
+                // Find Row(r4), Col(r3).
+                DIV R 4, R 3, R 2, Word::fixnum(80);
+
+                // If c == '\n', row++, col=0
+                EQ R 5, R 0, Word::char('\n' as u64);
+                JUMPIF R 5, [A Cpu::PC => 11 * Cpu::INSTRUCTION_SIZE as i64]; // GOTO: newline.
+
+                // Else, print character and advance cursor.
+                // 0xb8000 + cursorpos(r2) = attrib
+                // 0xb8000 + cursorpos(r2) + 1 = char
+                MUL R 2, R 2, Word::fixnum(2);
+                GETPAYLOAD A 0, R 2;
+                ADD A 0, A 0, 0xB8000; // VGA Start
+                // Save ATTR
+                GETPAYLOAD A 2, R 1;
+                MOV8 [A 0 ], A 2;
+                // Save CHAR
+                GETPAYLOAD A 2, R 0;
+                MOV8 [A 0 => 1], A 2;
+                // advance COLUMN
+                ADD R 3, R 3, Word::fixnum(1);
+
+                // if col>=80, newline.
+                GTE R 5, R 3, Word::fixnum(80);
+                JUMPIFNOT R 5, [A Cpu::PC => 3 * Cpu::INSTRUCTION_SIZE as i64];
+                // Newline
+                ADD R 4, R 4, Word::fixnum(1);
+                MOV R 3, Word::fixnum(0);
+
+                // If row == 25, scroll (row--)
+                // TODO, will HALT instead.
+                GTE R 5, R 4, Word::fixnum(25);
+                JUMPIFNOT R 5, [A Cpu::PC => 2 * Cpu::INSTRUCTION_SIZE as i64];
+                HALT;
+
+                // Save cursor position.
+                MUL R 4, R 4, Word::fixnum(80);
+                ADD R 2, R 4, R 3;
+                MOV [A 1], R 2;
+
+
+                POP R 5;
+                POP R 4;
+                POP R 3;
+                POP R 2;
+                POP R 1;
+                POP R 0;
+                POP A 2;
+                POP A 1;
+                POP A 0;
+                IRETURN;
             }
             .as_slice(),
         );

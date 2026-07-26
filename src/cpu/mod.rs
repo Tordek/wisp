@@ -16,14 +16,15 @@ impl MemoryLayout {
 
     pub const RESET_VECTOR: Address = 0x000000000007ef0;
     pub const INTERRUPT_TABLE: Address = 0x000000000007f00;
-    pub const CPU_RESERVED_END: Address = 0x000000000008000;
+    pub const CPU_RESERVED_END: Address = 0x000000000018000;
 }
 
 pub enum InterruptTableOffset {}
 impl InterruptTableOffset {
     pub const TRAP_VECTOR: Address = 0x00000000000000;
-    pub const ALLOC_VECTOR: Address = 0x000000000000010;
-    pub const ALLOC_CONS_VECTOR: Address = 0x000000000000018;
+    pub const ALLOC_VECTOR: Address = 0x10;
+    pub const ALLOC_CONS_VECTOR: Address = 0x018;
+    pub const END_RESERVED_INTERRUPTS: Address = 0xf0;
 }
 
 pub enum SymbolLayout {}
@@ -101,6 +102,10 @@ impl Word {
     pub const fn cons(address: WordSize) -> Self {
         Self::new(WordType::Cons, address)
     }
+
+    pub const fn char(address: WordSize) -> Self {
+        Self::new(WordType::Character, address & 0xff)
+    }
 }
 
 #[derive(Debug)]
@@ -166,12 +171,10 @@ pub struct MachineRegister(pub Address);
 pub enum JumpAddressing {
     /// Jumping relative to current PC is done by JUMPing to [adr=PC=0x06]+offset
     MachineRegister {
-        condition: MachineRegister,
         adr: Option<MachineRegister>,
         offset: i64,
     },
     Register {
-        condition: Register,
         adr: Register,
     },
 }
@@ -235,13 +238,21 @@ pub enum Instruction {
     Nop,
 
     /// Jumps unconditionally
-    Jump(JumpAddressing),
+    Jump {
+        target: JumpAddressing,
+    },
 
     /// Jump if its Register is 't
-    JumpIf(JumpAddressing),
+    JumpIf {
+        condition: Register,
+        target: JumpAddressing,
+    },
 
     /// Jump if its Register is 'nil
-    JumpIfNot(JumpAddressing),
+    JumpIfNot {
+        condition: Register,
+        target: JumpAddressing,
+    },
 
     /// PUSHes all Registers and Machinees to the stack, then the PC, and jumps.
     /// For some internal INTs (<0x80, like CONS) it may perform additional work.
@@ -271,6 +282,10 @@ pub enum Instruction {
         val: Address,
     },
     Mov {
+        dst: Location,
+        src: Location,
+    },
+    Mov8 {
         dst: Location,
         src: Location,
     },
@@ -371,7 +386,9 @@ pub enum Instruction {
     },
 
     /// PUSHes PC on the stack and jumps
-    Call(JumpAddressing),
+    Call {
+        target: JumpAddressing,
+    },
 
     /// POPs PC from the stack
     Return,
@@ -485,56 +502,63 @@ impl Cpu {
             }
             Instruction::Nop => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
 
-            Instruction::Jump(JumpAddressing::MachineRegister {
-                adr,
-                condition: _,
-                offset,
-            }) => Ok(self.addr_with_offset(adr, offset)),
-            Instruction::Jump(JumpAddressing::Register { condition: _, adr }) => {
-                Err(Trap::Unimplemented)
+            Instruction::Jump {
+                target: JumpAddressing::MachineRegister { adr, offset },
+            } => Ok(self.addr_with_offset(adr, offset)),
+            Instruction::Jump {
+                target: JumpAddressing::Register { adr },
+            } => {
+                todo!()
             }
 
-            Instruction::JumpIf(JumpAddressing::MachineRegister {
+            Instruction::JumpIf {
                 condition,
-                adr,
-                offset,
-            }) => {
+                target: JumpAddressing::MachineRegister { adr, offset },
+            } => {
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
                 if condition_value == nil {
-                    Ok(self.address[Cpu::SP] + Cpu::INSTRUCTION_SIZE)
+                    Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
                 } else {
                     Ok(self.addr_with_offset(adr, offset))
                 }
             }
-            Instruction::JumpIf(JumpAddressing::Register { condition, adr }) => {
-                Err(Trap::Unimplemented)
+            Instruction::JumpIf {
+                condition,
+                target: JumpAddressing::Register { adr },
+            } => {
+                todo!()
             }
 
-            Instruction::JumpIfNot(JumpAddressing::MachineRegister {
+            Instruction::JumpIfNot {
                 condition,
-                adr,
-                offset,
-            }) => {
+                target: JumpAddressing::MachineRegister { adr, offset },
+            } => {
+                println!("===============");
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
                 if condition_value != nil {
-                    Ok(self.address[Cpu::SP] + Cpu::INSTRUCTION_SIZE)
+                    println!("No jump");
+                    Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
                 } else {
+                    println!("jump");
                     Ok(self.addr_with_offset(adr, offset))
                 }
             }
-            Instruction::JumpIfNot(JumpAddressing::Register { condition, adr }) => {
-                Err(Trap::Unimplemented)
+            Instruction::JumpIfNot {
+                condition,
+                target: JumpAddressing::Register { adr },
+            } => {
+                todo!()
             }
 
-            Instruction::Call(target) => Err(Trap::Unimplemented),
+            Instruction::Call { target } => todo!(),
 
             Instruction::Return => {
                 let return_address = self.pop(memory);
                 Ok(return_address as Address)
             }
-            Instruction::MakeClosure { dst, code } => Err(Trap::Unimplemented),
+            Instruction::MakeClosure { dst, code } => todo!(),
 
             // Comparison
             Instruction::Eq(ThreeRegs { dst, op1, op2, imm }) => {
@@ -741,9 +765,17 @@ impl Cpu {
 
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
-            Instruction::AAdd(ThreeMachs { dst, op1, op2, imm }) => todo!(),
+            Instruction::AAdd(ThreeMachs { dst, op1, op2, imm }) => {
+                let val1 = self.address[op1.0];
+                let val2 = self.addr_with_offset(op2, imm as i64);
+                self.address[dst.0] = val1 + val2;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
             Instruction::ASub(ThreeMachs { dst, op1, op2, imm }) => todo!(),
-            Instruction::GetPayload { dst, src } => todo!(),
+            Instruction::GetPayload { dst, src } => {
+                self.address[dst.0] = u64::from(self.registers[src.0].payload) as usize;
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
             Instruction::GetTag { src, dst } => todo!(),
             Instruction::LoadLiteral { dst, val } => {
                 self.registers[dst.0] = val;
@@ -751,6 +783,37 @@ impl Cpu {
             }
             Instruction::SetPayload { dst, src } => todo!(),
             Instruction::SetTag { src, dst } => todo!(),
+            Instruction::Mov8 { dst, src } => {
+                let value = match src {
+                    Location::Absolute(a) => memory.read_word(a as Address),
+                    Location::Machine(MachineRegister(r)) => self.address[r] as WordSize,
+                    Location::IndirectMachine(MachineRegister(r), off) => {
+                        memory.read_word((self.address[r] as i64 + off) as Address)
+                    }
+                    Location::IndirectRegister(Register(r)) => {
+                        return Err(Trap::InvalidInstruction);
+                    }
+                    Location::Register(Register(r)) => {
+                        return Err(Trap::InvalidInstruction);
+                    }
+                };
+                println!("src {:?}", src);
+                println!("dst {:?}", dst);
+                match dst {
+                    Location::Absolute(a) => memory.write_word(a as Address, value),
+                    Location::Machine(MachineRegister(r)) => self.address[r] = value as Address,
+                    Location::IndirectMachine(MachineRegister(r), off) => {
+                        memory.write_word((self.address[r] as i64 + off) as Address, value)
+                    }
+                    Location::IndirectRegister(_) => {
+                        return Err(Trap::InvalidInstruction);
+                    }
+                    Location::Register(_) => {
+                        return Err(Trap::InvalidInstruction);
+                    }
+                }
+                Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+            }
             Instruction::Mov { dst, src } => {
                 let value = match src {
                     Location::Absolute(a) => memory.read_word(a as Address),
@@ -800,6 +863,8 @@ impl Cpu {
     pub fn step(&mut self, memory: &mut [u8]) -> Result<(), Trap> {
         let (lo, hi) = self.fetch(memory);
         let instruction = Instruction::decode(lo, hi)?;
+
+        println!("0x{:x} {:?}", self.address[Cpu::PC], instruction);
 
         let next_pc = self.execute(instruction, memory)?;
         self.address[Cpu::PC] = next_pc;
@@ -924,11 +989,9 @@ mod tests {
         TestMemory::load_instructions(
             &mut memory,
             cpu.address[Cpu::PC] as Address,
-            vec![Instruction::Jump(JumpAddressing::MachineRegister {
-                condition: MachineRegister(0),
-                adr: Some(MachineRegister(0)),
-                offset: 0,
-            })],
+            parse_asm! {
+                JUMP [A 0];
+            },
         );
         cpu.full_step(memory.as_mut_slice());
         assert_eq!(cpu.address[Cpu::PC], 0x2000);
