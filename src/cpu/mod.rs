@@ -141,6 +141,8 @@ pub struct Cpu {
     /// Machine registers
     address: [Address; 8],
 
+    interrupt: Option<u64>,
+
     pub halted: bool,
 }
 impl Cpu {
@@ -149,6 +151,10 @@ impl Cpu {
     pub const ENV: Address = 7;
     pub const WORD_SIZE: Address = 8;
     pub const INSTRUCTION_SIZE: Address = 2 * Self::WORD_SIZE;
+
+    pub fn interrupt(&mut self, int: u64) {
+        self.interrupt = Some(int);
+    }
 }
 
 impl Default for Cpu {
@@ -157,6 +163,7 @@ impl Default for Cpu {
             registers: [Word::undefined(); 16],
             address: [0; 8],
             halted: false,
+            interrupt: None,
         }
     }
 }
@@ -459,6 +466,16 @@ impl Cpu {
         }
     }
 
+    fn get_offset_reg_val_unchecked(&self, addr: OffsetRegister) -> Result<Word, Trap> {
+        match addr {
+            OffsetRegister::Absolute { pos } => Ok(pos),
+            OffsetRegister::Relative { base, off } => {
+                let b = self.registers[base.0];
+                let o = off;
+                Ok(Word::fixnum(b.payload + o.payload))
+            }
+        }
+    }
     fn get_offset_reg_val(&self, addr: OffsetRegister) -> Result<Word, Trap> {
         match addr {
             OffsetRegister::Absolute { pos } => Self::ensure(pos, WordType::Fixnum),
@@ -474,6 +491,32 @@ impl Cpu {
             OffsetAddress::Absolute { pos } => pos,
             OffsetAddress::Relative { base, off } => self.address[base.0] + off,
         }
+    }
+    fn run_interrupt(
+        &mut self,
+        memory: &mut [u8],
+        interruption: u64,
+        next_pc: usize,
+    ) -> Result<usize, Trap> {
+        println!("{} Interrupt", interruption);
+        self.interrupt = None;
+        match interruption {
+            0x03 => {
+                self.push(memory, self.registers[0].into());
+                self.push(memory, self.registers[1].into());
+                // CONS takes its params as R0 and R1
+                self.registers[0] = Word::new(WordType::Fixnum, 2).into(); // Size: 2
+                self.registers[1] = Word::new(WordType::Fixnum, 2).into();
+                // Type: Int
+            }
+            _ => (),
+        }
+
+        self.push(memory, interruption as WordSize);
+        self.push(memory, next_pc as WordSize);
+        let location =
+            memory.read_word(MemoryLayout::INTERRUPT_TABLE + interruption as Address * WORD_SIZE);
+        Ok(location as Address)
     }
 
     fn execute(&mut self, instruction: Instruction, memory: &mut [u8]) -> Result<Address, Trap> {
@@ -524,7 +567,7 @@ impl Cpu {
             // Comparison
             Instruction::Eq(ThreeRegs { dst, op1, op2 }) => {
                 let op1_obj = self.registers[op1.0];
-                let op2_obj = self.get_offset_reg_val(op2)?;
+                let op2_obj = self.get_offset_reg_val_unchecked(op2)?;
 
                 self.registers[dst.0] = Self::to_machine_bool(memory, op1_obj == op2_obj)?;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
@@ -567,23 +610,7 @@ impl Cpu {
             // Cons
             Instruction::Int(interruption) => {
                 let next_pc = self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE;
-                match interruption {
-                    0x03 => {
-                        self.push(memory, self.registers[0].into());
-                        self.push(memory, self.registers[1].into());
-                        // CONS takes its params as R0 and R1
-                        self.registers[0] = Word::new(WordType::Fixnum, 2).into(); // Size: 2
-                        self.registers[1] = Word::new(WordType::Fixnum, 2).into();
-                        // Type: Int
-                    }
-                    _ => (),
-                }
-
-                self.push(memory, interruption as WordSize);
-                self.push(memory, next_pc as WordSize);
-                let location = memory
-                    .read_word(MemoryLayout::INTERRUPT_TABLE + interruption as Address * WORD_SIZE);
-                Ok(location as Address)
+                self.run_interrupt(memory, interruption, next_pc)
             }
             Instruction::IReturn => {
                 let return_address = self.pop(memory);
@@ -749,8 +776,6 @@ impl Cpu {
                         return Err(Trap::InvalidInstruction);
                     }
                 };
-                println!("src {:?}", src);
-                println!("dst {:?}", dst);
                 match dst {
                     Location::Absolute(a) => memory.write_word(a as Address, value),
                     Location::Machine(MachineRegister(r)) => self.address[r] = value as Address,
@@ -816,10 +841,17 @@ impl Cpu {
         let (lo, hi) = self.fetch(memory);
         let instruction = Instruction::decode(lo, hi)?;
 
-        println!("0x{:x} {:?}", self.address[Cpu::PC], instruction);
+        if instruction != Instruction::Halt {
+            println!("0x{:x} {:?}", self.address[Cpu::PC], instruction);
+        }
 
         let next_pc = self.execute(instruction, memory)?;
-        self.address[Cpu::PC] = next_pc;
+        match self.interrupt {
+            Some(i) => self.address[Cpu::PC] = self.run_interrupt(memory, i, next_pc)?,
+            None => {
+                self.address[Cpu::PC] = next_pc;
+            }
+        };
         Ok(())
     }
 

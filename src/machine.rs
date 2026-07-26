@@ -1,5 +1,5 @@
 use crate::{
-    cpu::{Cpu, Instruction, InterruptTableOffset, MemoryLayout, SymbolLayout, Word},
+    cpu::{Cpu, Instruction, InterruptTableOffset, MemoryLayout, SymbolLayout, Word, WordType},
     memory::Memory,
     parse_asm,
 };
@@ -54,17 +54,20 @@ impl Cursor {
         Self { position: start }
     }
 }
-struct FirmwareHelper {}
+pub struct FirmwareHelper {}
 impl FirmwareHelper {
-    const BOOTSTRAP_HOOK: usize = MemoryLayout::CPU_RESERVED_END;
-    const BOOTSTRAP_ALLOC_HOOK: usize = 0x600;
-    const BOOTSTRAP_TRAP_HOOK: usize = 0x800;
-    const BOOTSTRAP_OBJECTS: usize = 0x3000;
-    const BOOTSTRAP_STACK_POSITION: usize = 0x2000; // Grows backwards
-    const BOOTSTRAP_SCRATCH_ALLOC: usize = 0x2000; // Grows forwards
-    const VIDEO_INTERRUPT: usize = InterruptTableOffset::END_RESERVED_INTERRUPTS + 0x00;
-    const CURSOR_POSITION: usize = 0x14000;
-    const VIDEO_INTERRUPT_ROUTINE: usize = 0x12000;
+    pub const BOOTSTRAP_HOOK: usize = MemoryLayout::CPU_RESERVED_END;
+    pub const BOOTSTRAP_ALLOC_HOOK: usize = 0x600;
+    pub const BOOTSTRAP_TRAP_HOOK: usize = 0x800;
+    pub const BOOTSTRAP_OBJECTS: usize = 0x3000;
+    pub const BOOTSTRAP_STACK_POSITION: usize = 0x2000; // Grows backwards
+    pub const BOOTSTRAP_SCRATCH_ALLOC: usize = 0x2000; // Grows forwards
+    pub const VIDEO_INTERRUPT: usize = InterruptTableOffset::END_RESERVED_INTERRUPTS + 0x00;
+    pub const KEYBOARD_INTERRUPT: usize = InterruptTableOffset::END_RESERVED_INTERRUPTS + 0x01;
+    pub const CURSOR_POSITION: usize = 0x18000;
+    pub const VIDEO_INTERRUPT_ROUTINE: usize = 0x12000;
+    pub const KEYBOARD_INTERRUPT_ROUTINE: usize = 0x13000;
+    pub const PRESSED_KEY_ID: usize = 0x14001;
 
     fn make_firmware() -> Vec<u8> {
         let mut firmware = vec![0; 0x20000];
@@ -110,6 +113,10 @@ impl FirmwareHelper {
         firmware.as_mut_slice().write_word(
             MemoryLayout::INTERRUPT_TABLE + Self::VIDEO_INTERRUPT * Cpu::WORD_SIZE,
             Self::VIDEO_INTERRUPT_ROUTINE as u64,
+        );
+        firmware.as_mut_slice().write_word(
+            MemoryLayout::INTERRUPT_TABLE + Self::KEYBOARD_INTERRUPT * Cpu::WORD_SIZE,
+            Self::KEYBOARD_INTERRUPT_ROUTINE as u64,
         );
 
         // Bootstrap program:
@@ -166,6 +173,9 @@ impl FirmwareHelper {
                 MOV R 1, Word::fixnum(0x85);
                 MOV R 0, Word::char('!' as u64);
                 INT Self::VIDEO_INTERRUPT as u64;
+                MOV R 0, Word::char('\n' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                // JUMP [A Cpu::PC];
                 HALT;
             }
             .as_slice(),
@@ -225,7 +235,7 @@ impl FirmwareHelper {
                 // TODO, will HALT instead.
                 GTE R 5, R 4, Word::fixnum(25);
                 JUMPIFNOT R 5, [A Cpu::PC => 2 * Cpu::INSTRUCTION_SIZE as i64];
-                HALT;
+                NOP;
 
                 // Save cursor position.
                 MUL R 4, R 4, Word::fixnum(80);
@@ -245,6 +255,26 @@ impl FirmwareHelper {
                 IRETURN;
             }
             .as_slice(),
+        );
+
+        cursor.write_instructions_at(
+            &mut firmware,
+            Self::KEYBOARD_INTERRUPT_ROUTINE,
+            &parse_asm! {
+                PUSH A 0;
+                PUSH R 0;
+                PUSH R 1;
+                MOV R 0, Word::fixnum(0x07);
+                MOV A 0, [Self::PRESSED_KEY_ID];
+                SETPAYLOAD R 0, A 0;
+                MOV R 1, Word::fixnum(0x07);
+                // MOV R 0, Word::char('o' as u64);
+                INT Self::VIDEO_INTERRUPT as u64;
+                POP R 1;
+                POP R 0;
+                POP A 0;
+                IRETURN;
+            },
         );
 
         // Default allocator:
@@ -294,7 +324,7 @@ impl FirmwareHelper {
 pub struct WispMachine<'a> {
     cpu: Cpu,
 
-    ram: &'a mut [u8],
+    pub ram: &'a mut [u8],
 
     pub halted: bool,
 }
@@ -325,5 +355,9 @@ impl<'a> WispMachine<'a> {
         let firmware = FirmwareHelper::make_firmware();
         machine.ram[0..firmware.len()].copy_from_slice(&firmware[..]);
         machine
+    }
+
+    pub fn interrupt(&mut self, int_id: u64) {
+        self.cpu.interrupt(int_id);
     }
 }

@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use sdl2::video::GLProfile;
 
+use crate::machine::FirmwareHelper;
+
 fn main() -> Result<(), String> {
     let sdl_context = sdl2::init()?;
 
@@ -40,8 +42,23 @@ fn main() -> Result<(), String> {
 
     'running: loop {
         for event in event_pump.poll_iter() {
-            if let sdl2::event::Event::Quit { .. } = event {
-                break 'running;
+            match event {
+                sdl2::event::Event::Quit { .. } => {
+                    break 'running;
+                }
+                sdl2::event::Event::KeyDown {
+                    timestamp,
+                    window_id,
+                    keycode,
+                    scancode,
+                    keymod,
+                    repeat,
+                } => {
+                    machine.interrupt(FirmwareHelper::KEYBOARD_INTERRUPT as u64);
+                    machine.ram[FirmwareHelper::PRESSED_KEY_ID] = keycode.unwrap().into_i32() as u8;
+                }
+
+                _ => (),
             }
         }
 
