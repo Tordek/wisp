@@ -35,9 +35,8 @@ macro_rules! parse_asm {
     { JUMP [$off:expr]; $($rest:tt)* } => {{
         let mut insts = vec![
             $crate::cpu::Instruction::Jump {
-                target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: $off,
+                target: $crate::cpu::JumpAddressing::Absolute {
+                    pos: $off,
                 }
             }
         ];
@@ -48,7 +47,7 @@ macro_rules! parse_asm {
         let mut insts = vec![
             $crate::cpu::Instruction::Jump {
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: 0,
                 }
             }
@@ -60,7 +59,7 @@ macro_rules! parse_asm {
         let mut insts = vec![
             $crate::cpu::Instruction::Jump {
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: $off,
                 }
             }
@@ -83,9 +82,8 @@ macro_rules! parse_asm {
         let mut insts = vec![
             $crate::cpu::Instruction::JumpIf {
                 condition: $crate::cpu::Register($cond),
-                target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: $off,
+                target: $crate::cpu::JumpAddressing::Absolute {
+                    pos: $off,
                 }
             }
         ];
@@ -97,7 +95,7 @@ macro_rules! parse_asm {
             $crate::cpu::Instruction::JumpIf {
                 condition: $crate::cpu::Register($cond),
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: 0,
                 }
             }
@@ -110,7 +108,7 @@ macro_rules! parse_asm {
             $crate::cpu::Instruction::JumpIf {
                 condition: $crate::cpu::Register($cond),
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: $off,
                 }
             }
@@ -134,9 +132,8 @@ macro_rules! parse_asm {
         let mut insts = vec![
             $crate::cpu::Instruction::JumpIfNot {
                 condition: $crate::cpu::Register($cond),
-                target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: $off,
+                target: $crate::cpu::JumpAddressing::Absolute {
+                    pos: $off,
                 }
             }
         ];
@@ -148,7 +145,7 @@ macro_rules! parse_asm {
             $crate::cpu::Instruction::JumpIfNot {
                 condition: $crate::cpu::Register($cond),
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: 0,
                 }
             }
@@ -161,7 +158,7 @@ macro_rules! parse_asm {
             $crate::cpu::Instruction::JumpIfNot {
                 condition: $crate::cpu::Register($cond),
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: $off,
                 }
             }
@@ -184,9 +181,8 @@ macro_rules! parse_asm {
     { CALL [$off:expr]; $($rest:tt)* } => {{
         let mut insts = vec![
             $crate::cpu::Instruction::Call {
-                target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: $off,
+                target: $crate::cpu::JumpAddressing::Absolute {
+                    pos: $off,
                 }
             }
         ];
@@ -197,7 +193,7 @@ macro_rules! parse_asm {
         let mut insts = vec![
             $crate::cpu::Instruction::Call {
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: 0,
                 }
             }
@@ -209,7 +205,7 @@ macro_rules! parse_asm {
         let mut insts = vec![
             $crate::cpu::Instruction::Call {
                 target: $crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some($crate::cpu::MachineRegister($base)),
+                    adr: $crate::cpu::MachineRegister($base),
                     offset: $off,
                 }
             }
@@ -1361,20 +1357,19 @@ mod test {
             crate::cpu::Instruction::Int(42),
             crate::cpu::Instruction::IReturn,
             crate::cpu::Instruction::Jump {
-                target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: 16,
+                target: crate::cpu::JumpAddressing::Absolute  {
+                    pos: 16,
                 },
             },
             crate::cpu::Instruction::Jump {
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(1)),
+                    adr: crate::cpu::MachineRegister(1),
                     offset: 0,
                 },
             },
             crate::cpu::Instruction::Jump {
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(1)),
+                    adr: crate::cpu::MachineRegister(1),
                     offset: 16,
                 },
             },
@@ -1385,22 +1380,21 @@ mod test {
             },
             crate::cpu::Instruction::JumpIf {
                 condition: crate::cpu::Register(5),
-                target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: 16,
+                target: crate::cpu::JumpAddressing::Absolute {
+                    pos: 16,
                 },
             },
             crate::cpu::Instruction::JumpIf {
                 condition: crate::cpu::Register(5),
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(2)),
+                    adr: crate::cpu::MachineRegister(2),
                     offset: 0,
                 },
             },
             crate::cpu::Instruction::JumpIf {
                 condition: crate::cpu::Register(5),
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(2)),
+                    adr: crate::cpu::MachineRegister(2),
                     offset: 32,
                 },
             },
@@ -1412,22 +1406,21 @@ mod test {
             },
             crate::cpu::Instruction::JumpIfNot {
                 condition: crate::cpu::Register(5),
-                target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: 16,
+                target: crate::cpu::JumpAddressing::Absolute {
+                    pos: 16,
                 },
             },
             crate::cpu::Instruction::JumpIfNot {
                 condition: crate::cpu::Register(5),
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(2)),
+                    adr: crate::cpu::MachineRegister(2),
                     offset: 0,
                 },
             },
             crate::cpu::Instruction::JumpIfNot {
                 condition: crate::cpu::Register(5),
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(2)),
+                    adr: crate::cpu::MachineRegister(2),
                     offset: -16,
                 },
             },
@@ -1438,20 +1431,19 @@ mod test {
                 },
             },
             crate::cpu::Instruction::Call {
-                target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: None,
-                    offset: 16,
+                target: crate::cpu::JumpAddressing::Absolute {
+                    pos: 16,
                 },
             },
             crate::cpu::Instruction::Call {
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(3)),
+                    adr: crate::cpu::MachineRegister(3),
                     offset: 0,
                 },
             },
             crate::cpu::Instruction::Call {
                 target: crate::cpu::JumpAddressing::MachineRegister {
-                    adr: Some(crate::cpu::MachineRegister(3)),
+                    adr: crate::cpu::MachineRegister(3),
                     offset: 8,
                 },
             },

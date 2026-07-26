@@ -63,7 +63,12 @@ impl ThreeRegs {
 
 impl cpu::JumpAddressing {
     fn decode(cond: u8, adr: u8, offset: u64) -> (Register, Self) {
-        if adr < 16 {
+        if adr == Register::NONE {
+            (
+                Register(cond as usize),
+                cpu::JumpAddressing::Absolute { pos: offset },
+            )
+        } else if adr < 16 {
             (
                 Register(cond as usize),
                 cpu::JumpAddressing::Register {
@@ -74,7 +79,8 @@ impl cpu::JumpAddressing {
             (
                 Register(cond as usize),
                 cpu::JumpAddressing::MachineRegister {
-                    adr: MachineRegister::try_decode(adr),
+                    adr: MachineRegister::try_decode(adr)
+                        .expect("somehow you encoded something invalid"),
                     offset: offset as i64,
                 },
             )
@@ -292,7 +298,7 @@ impl Instruction {
         target: &JumpAddressing,
     ) -> (u64, u64) {
         match target {
-            JumpAddressing::MachineRegister { adr: None, offset } => (
+            JumpAddressing::Absolute { pos } => (
                 u64::from_le_bytes([
                     opcode.into(),
                     condition.encode(),
@@ -303,10 +309,10 @@ impl Instruction {
                     0,
                     0,
                 ]),
-                *offset as u64,
+                *pos as u64,
             ),
             JumpAddressing::MachineRegister {
-                adr: Some(MachineRegister(r)),
+                adr: MachineRegister(r),
                 offset,
             } => (
                 u64::from_le_bytes([

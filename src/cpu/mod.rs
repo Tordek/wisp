@@ -169,9 +169,12 @@ pub struct MachineRegister(pub Address);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum JumpAddressing {
+    Absolute {
+        pos: u64,
+    },
     /// Jumping relative to current PC is done by JUMPing to [adr=PC=0x06]+offset
     MachineRegister {
-        adr: Option<MachineRegister>,
+        adr: MachineRegister,
         offset: i64,
     },
     Register {
@@ -493,6 +496,16 @@ impl Cpu {
         }
     }
 
+    fn get_jump_target(&self, addressing: JumpAddressing) -> usize {
+        match addressing {
+            JumpAddressing::Absolute { pos } => pos as usize,
+            JumpAddressing::MachineRegister { adr, offset } => {
+                (self.address[adr.0] as i64 + offset) as usize
+            }
+            JumpAddressing::Register { adr } => self.registers[adr.0].payload as usize,
+        }
+    }
+
     fn execute(&mut self, instruction: Instruction, memory: &mut [u8]) -> Result<Address, Trap> {
         match instruction {
             // Control flow
@@ -502,54 +515,26 @@ impl Cpu {
             }
             Instruction::Nop => Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE),
 
-            Instruction::Jump {
-                target: JumpAddressing::MachineRegister { adr, offset },
-            } => Ok(self.addr_with_offset(adr, offset)),
-            Instruction::Jump {
-                target: JumpAddressing::Register { adr },
-            } => {
-                todo!()
-            }
+            Instruction::Jump { target } => Ok(self.get_jump_target(target)),
 
-            Instruction::JumpIf {
-                condition,
-                target: JumpAddressing::MachineRegister { adr, offset },
-            } => {
+            Instruction::JumpIf { condition, target } => {
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
                 if condition_value == nil {
                     Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
                 } else {
-                    Ok(self.addr_with_offset(adr, offset))
+                    Ok(self.get_jump_target(target))
                 }
-            }
-            Instruction::JumpIf {
-                condition,
-                target: JumpAddressing::Register { adr },
-            } => {
-                todo!()
             }
 
-            Instruction::JumpIfNot {
-                condition,
-                target: JumpAddressing::MachineRegister { adr, offset },
-            } => {
-                println!("===============");
+            Instruction::JumpIfNot { condition, target } => {
                 let condition_value = self.registers[condition.0];
                 let nil = Self::nil(memory)?;
-                if condition_value != nil {
-                    println!("No jump");
-                    Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
+                if condition_value == nil {
+                    Ok(self.get_jump_target(target))
                 } else {
-                    println!("jump");
-                    Ok(self.addr_with_offset(adr, offset))
+                    Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
                 }
-            }
-            Instruction::JumpIfNot {
-                condition,
-                target: JumpAddressing::Register { adr },
-            } => {
-                todo!()
             }
 
             Instruction::Call { target } => todo!(),
