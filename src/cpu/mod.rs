@@ -45,15 +45,6 @@ impl ConsLayout {
     pub const CDR_OFFSET: Address = 8;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Root {
-    NIL,
-    T,
-    CONS,
-    FIXNUM,
-    SYMBOL,
-}
-
 #[repr(u8)]
 #[derive(PartialEq, Eq, Clone, Copy, IntEnum, Debug)]
 pub enum WordType {
@@ -174,7 +165,7 @@ pub struct Register(pub Address);
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct MachineRegister(pub Address);
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum JumpAddressing {
     Absolute {
         pos: u64,
@@ -189,14 +180,14 @@ pub enum JumpAddressing {
     },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct ThreeRegs {
     pub dst: Register,
     pub op1: Register,
     pub op2: OffsetRegister,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct ThreeMachs {
     pub dst: MachineRegister,
     pub op1: MachineRegister,
@@ -215,13 +206,13 @@ pub enum OffsetRegister {
     Absolute { pos: Word },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct TwoRegs {
     dst: Register,
     src: Register,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Location {
     Register(Register),
     Machine(MachineRegister),
@@ -230,7 +221,7 @@ pub enum Location {
     Absolute(Address),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Instruction {
     // Lower level
     /// Halts execution
@@ -343,10 +334,10 @@ pub enum Instruction {
     /// Calculates dst <- op1 - (op2 + imm) - typechecks, only fixnums.
     Sub(ThreeRegs),
     /// Calculates dst <- op1 == (op2 + imm)
-    ///! It traps if imm is not 0 when the operands are not fixnum.
+    /// It traps if imm is not 0 when the operands are not fixnum.
     Eq(ThreeRegs),
     /// Calculates dst <- op1 !- (op2 + imm)
-    ///! It traps if imm is not 0 when the operands are not fixnum.
+    /// It traps if imm is not 0 when the operands are not fixnum.
     Ne(ThreeRegs),
     /// Calculates dst <- op1 > (op2 + imm) - typechecks, only fixnums.
     Gt(ThreeRegs),
@@ -505,8 +496,8 @@ impl Cpu {
                 self.push(memory, self.registers[0].into());
                 self.push(memory, self.registers[1].into());
                 // CONS takes its params as R0 and R1
-                self.registers[0] = Word::new(WordType::Fixnum, 2).into(); // Size: 2
-                self.registers[1] = Word::new(WordType::Fixnum, 2).into();
+                self.registers[0] = Word::new(WordType::Fixnum, 2); // Size: 2
+                self.registers[1] = Word::new(WordType::Fixnum, 2);
                 // Type: Int
             }
             _ => (),
@@ -742,7 +733,7 @@ impl Cpu {
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::GetPayload { dst, src } => {
-                self.address[dst.0] = u64::from(self.registers[src.0].payload) as usize;
+                self.address[dst.0] = self.registers[src.0].payload as usize;
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }
             Instruction::GetTag { src, dst } => {
@@ -830,7 +821,7 @@ impl Cpu {
                 let srcadd = self.address[src.0];
                 let dstadd = self.address[dst.0];
                 for i in 0..count {
-                    memory[dstadd + i as usize] = memory[srcadd as usize]
+                    memory[dstadd + i as usize] = memory[srcadd]
                 }
                 Ok(self.address[Cpu::PC] + Cpu::INSTRUCTION_SIZE)
             }

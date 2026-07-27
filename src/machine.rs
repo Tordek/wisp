@@ -123,7 +123,7 @@ impl FirmwareHelper {
         cursor.write_instructions_at(
             &mut firmware,
             Self::BOOTSTRAP_HOOK,
-            &parse_asm! {
+            parse_asm! {
                 MOV A Cpu::SP, Self::BOOTSTRAP_STACK_POSITION;
                 MOV R 0, Word::fixnum(0);
                 MOV A 0, R 0;
@@ -188,7 +188,7 @@ impl FirmwareHelper {
             // A0 contains the specific interrupt. Only print_char is handled for now...
             // R0 contains the character to print as a char
             // R1 contains the attributes to save.
-            &parse_asm! {
+            parse_asm! {
                 PUSH A 0;
                 PUSH A 1;
                 PUSH A 2;
@@ -260,7 +260,7 @@ impl FirmwareHelper {
         cursor.write_instructions_at(
             &mut firmware,
             Self::KEYBOARD_INTERRUPT_ROUTINE,
-            &parse_asm! {
+            parse_asm! {
                 PUSH A 0;
                 PUSH R 0;
                 PUSH R 1;
@@ -274,7 +274,7 @@ impl FirmwareHelper {
                 POP R 0;
                 POP A 0;
                 IRETURN;
-            },
+            }.as_slice(),
         );
 
         // Default allocator:
@@ -288,7 +288,7 @@ impl FirmwareHelper {
             // Equivalent to:
             // A0 = *freeptr;
             // *freeptr += len;
-            &parse_asm! {
+            parse_asm! {
                 PUSH A 1;
                 PUSH A 2;
                 PUSH A 3;
@@ -311,7 +311,7 @@ impl FirmwareHelper {
         cursor.write_instructions_at(
             &mut firmware,
             Self::BOOTSTRAP_TRAP_HOOK,
-            &parse_asm! {
+            parse_asm! {
                 HALT;
             }
             .as_slice(),
@@ -335,7 +335,7 @@ impl<'a> WispMachine<'a> {
     }
 
     pub fn step(&mut self) {
-        self.cpu.full_step(&mut self.ram);
+        self.cpu.full_step(self.ram);
         if self.cpu.halted {
             self.halted = true;
         }

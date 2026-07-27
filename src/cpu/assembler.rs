@@ -1,6 +1,6 @@
 #[macro_export]
 macro_rules! parse_asm {
-    {} => {{ vec![] }};
+    {} => {{ Vec::<$crate::cpu::Instruction>::new() }};
     { HALT; $($rest:tt)* } => {{
         let mut insts = vec![
             $crate::cpu::Instruction::Halt];

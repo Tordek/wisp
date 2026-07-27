@@ -47,12 +47,12 @@ fn main() -> Result<(), String> {
                     break 'running;
                 }
                 sdl2::event::Event::KeyDown {
-                    timestamp,
-                    window_id,
+                    timestamp: _,
+                    window_id: _,
                     keycode,
-                    scancode,
-                    keymod,
-                    repeat,
+                    scancode: _,
+                    keymod: _,
+                    repeat: _,
                 } => {
                     machine.interrupt(FirmwareHelper::KEYBOARD_INTERRUPT as u64);
                     machine.ram[FirmwareHelper::PRESSED_KEY_ID] = keycode.unwrap().into_i32() as u8;

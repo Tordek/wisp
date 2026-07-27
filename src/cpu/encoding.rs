@@ -51,16 +51,7 @@ impl ThreeRegs {
         Ok(ThreeRegs {
             dst: Register(r1 as usize),
             op1: Register(r2 as usize),
-            op2: if r3 == Register::NONE {
-                cpu::OffsetRegister::Absolute {
-                    pos: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
-                }
-            } else {
-                cpu::OffsetRegister::Relative {
-                    base: Register::decode(r3),
-                    off: cpu::Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
-                }
-            },
+            op2: cpu::OffsetRegister::decode(r3, imm)?,
         })
     }
 }
@@ -202,12 +193,6 @@ enum Opcode {
     MakeClosure,
     Call,
     Return,
-}
-
-impl Default for Register {
-    fn default() -> Self {
-        Register(0)
-    }
 }
 
 // TODO: Find a real encoding/decoding.
@@ -354,7 +339,7 @@ impl Instruction {
                     0,
                     0,
                 ]),
-                *pos as u64,
+                *pos,
             ),
             JumpAddressing::MachineRegister {
                 adr: MachineRegister(r),

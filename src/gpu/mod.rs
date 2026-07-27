@@ -15,20 +15,20 @@ const TEX_H: usize = 400 + DEAD_V * 2;
 const BEZEL: f32 = 0.98;
 const VERTICES: [f32; 16] = [
     // PosX,  PosY,  TexU,  TexV
-    -1.0 * BEZEL,
-    1.0 * BEZEL,
+    -BEZEL,
+    BEZEL,
     0.0,
     0.0, // Top-Left
-    1.0 * BEZEL,
-    1.0 * BEZEL,
+    BEZEL,
+    BEZEL,
     1.0,
     0.0, // Top-Right
-    1.0 * BEZEL,
-    -1.0 * BEZEL,
+    BEZEL,
+    -BEZEL,
     1.0,
     1.0, // Bottom-Right
-    -1.0 * BEZEL,
-    -1.0 * BEZEL,
+    -BEZEL,
+    -BEZEL,
     0.0,
     1.0, // Bottom-Left
 ];
@@ -171,8 +171,8 @@ impl Gpu {
                 0,
                 DEAD_H as i32,
                 DEAD_V as i32,
-                720 as i32,
-                400 as i32,
+                720_i32,
+                400_i32,
                 gl::RGB,
                 gl::UNSIGNED_BYTE,
                 vga_framebuffer.as_ptr() as *const _,
