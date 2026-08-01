@@ -1,8 +1,11 @@
 use int_enum::IntEnum;
 
-use crate::cpu::{
-    self, Instruction, JumpAddressing, Location, MachineRegister, Register, ThreeMachs, ThreeRegs,
-    Trap, TwoRegs, Word,
+use crate::{
+    cpu::{
+        self, Instruction, LispWord, Location, MachineRegister, Native, Register, ThreeMachs,
+        ThreeRegs, Trap, TwoRegs,
+    },
+    memory::{Address, Offset},
 };
 
 impl cpu::Register {
@@ -10,8 +13,24 @@ impl cpu::Register {
         self.0 as u8
     }
 
+    fn encode_indirect(&self) -> u8 {
+        self.encode() + 24
+    }
+
     fn decode(reg: u8) -> Self {
-        Self(reg as usize)
+        Self(reg as u64)
+    }
+
+    fn decode_indirect(reg: u8) -> Self {
+        Self(reg as u64 - 24)
+    }
+
+    fn try_decode(reg: u8) -> Option<Register> {
+        if reg == Self::NONE {
+            None
+        } else {
+            Some(Self::decode(reg))
+        }
     }
 
     const NONE: u8 = 0x55;
@@ -21,16 +40,19 @@ impl MachineRegister {
     fn encode(&self) -> u8 {
         self.0 as u8 + 16
     }
+    fn encode_indirect(&self) -> u8 {
+        self.encode() + 24
+    }
     fn try_decode(reg: u8) -> Option<Self> {
         if reg - 16 < 8 {
-            Some(Self(reg as usize - 16))
+            Some(Self(reg as u64 - 16))
         } else {
             None
         }
     }
     fn decode(reg: u8) -> Result<Self, Trap> {
         if reg - 16 < 8 {
-            Ok(Self(reg as usize - 16))
+            Ok(Self(reg as u64 - 16))
         } else {
             Err(Trap::InvalidInstruction)
         }
@@ -40,84 +62,50 @@ impl MachineRegister {
 impl TwoRegs {
     fn decode(r1: u8, r2: u8) -> TwoRegs {
         TwoRegs {
-            dst: Register(r1 as usize),
-            src: Register(r2 as usize),
+            dst: Register(r1 as u64),
+            src: Register(r2 as u64),
         }
     }
 }
 
 impl ThreeRegs {
-    fn decode(r1: u8, r2: u8, r3: u8, imm: u64) -> Result<ThreeRegs, Trap> {
-        Ok(ThreeRegs {
-            dst: Register(r1 as usize),
-            op1: Register(r2 as usize),
-            op2: cpu::OffsetRegister::decode(r3, imm)?,
-        })
+    fn encode(&self) -> (u8, u8, u8, u64) {
+        match (self.op2, self.op3) {
+            (None, None) => (self.dst.encode(), self.op1.encode(), 64, 0),
+            (None, Some(o)) => (self.dst.encode(), self.op1.encode(), 65, o.0),
+            (Some(r), None) => (self.dst.encode(), self.op1.encode(), r.encode() + 24, 0),
+            (Some(r), Some(o)) => (self.dst.encode(), self.op1.encode(), r.encode(), o.0),
+        }
     }
-}
-
-impl cpu::JumpAddressing {
-    fn decode(cond: u8, adr: u8, offset: u64) -> (Register, Self) {
-        if adr == Register::NONE {
-            (
-                Register(cond as usize),
-                cpu::JumpAddressing::Absolute { pos: offset },
-            )
-        } else if adr < 16 {
-            (
-                Register(cond as usize),
-                cpu::JumpAddressing::Register {
-                    adr: Register(adr as usize),
-                },
-            )
+    fn decode(r0: u8, r1: u8, r2: u8, imm: u64) -> ThreeRegs {
+        if r2 == 64 {
+            ThreeRegs {
+                dst: Register::decode(r0),
+                op1: Register::decode(r1),
+                op2: None,
+                op3: None,
+            }
+        } else if r2 == 65 {
+            ThreeRegs {
+                dst: Register::decode(r0),
+                op1: Register::decode(r1),
+                op2: None,
+                op3: Some(LispWord(imm)),
+            }
+        } else if r2 >= 24 {
+            ThreeRegs {
+                dst: Register::decode(r0),
+                op1: Register::decode(r1),
+                op2: Some(Register::decode(r2 - 24)),
+                op3: None,
+            }
         } else {
-            (
-                Register(cond as usize),
-                cpu::JumpAddressing::MachineRegister {
-                    adr: MachineRegister::try_decode(adr)
-                        .expect("somehow you encoded something invalid"),
-                    offset: offset as i64,
-                },
-            )
-        }
-    }
-}
-
-impl cpu::OffsetAddress {
-    fn encode(&self) -> (u8, u64) {
-        match self {
-            Self::Absolute { pos } => (Register::NONE, *pos as u64),
-            Self::Relative { base, off } => (base.encode(), *off as u64),
-        }
-    }
-    fn decode(reg: u8, imm: u64) -> Result<Self, Trap> {
-        if reg == Register::NONE {
-            Ok(Self::Absolute { pos: imm as usize })
-        } else {
-            Ok(Self::Relative {
-                base: MachineRegister::decode(reg)?,
-                off: imm as usize,
-            })
-        }
-    }
-}
-impl cpu::OffsetRegister {
-    fn encode(&self) -> (u8, u64) {
-        match self {
-            Self::Absolute { pos } => (Register::NONE, u64::from(*pos)),
-            Self::Relative { base, off } => (base.encode(), u64::from(*off)),
-        }
-    }
-    fn decode(reg: u8, imm: u64) -> Result<Self, Trap> {
-        if reg == Register::NONE {
-            Ok(Self::Absolute {
-                pos: Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
-            })
-        } else {
-            Ok(Self::Relative {
-                base: Register::decode(reg),
-                off: Word::try_from(imm).map_err(|_| Trap::InvalidInstruction)?,
-            })
+            ThreeRegs {
+                dst: Register::decode(r0),
+                op1: Register::decode(r1),
+                op2: Some(Register::decode(r2)),
+                op3: Some(LispWord(imm)),
+            }
         }
     }
 }
@@ -125,17 +113,20 @@ impl cpu::OffsetRegister {
 impl cpu::Location {
     fn encode(&self) -> (u8, u64) {
         match self {
-            Self::Absolute(a) => (Register::NONE, *a as u64),
+            Self::Literal(l) => (Register::NONE, l.0),
+            Self::Absolute(l) => (Register::NONE + 1, l.0),
             Self::Machine(r) => (r.encode(), 0),
             Self::Register(r) => (r.encode(), 0),
-            Self::IndirectMachine(a, d) => (a.encode() + 24, *d as u64),
+            Self::IndirectMachine(a, d) => (a.encode() + 24, d.0 as u64),
             Self::IndirectRegister(a) => (a.encode() + 24, 0),
         }
     }
 
     fn decode(reg: u8, off: u64) -> Result<Self, Trap> {
         if reg == Register::NONE {
-            Ok(Self::Absolute(off as usize))
+            Ok(Self::Literal(Native(off)))
+        } else if reg == Register::NONE + 1 {
+            Ok(Self::Absolute(Address(off)))
         } else if reg < 16 {
             Ok(Self::Register(Register::decode(reg)))
         } else if reg < 24 {
@@ -145,9 +136,83 @@ impl cpu::Location {
         } else {
             Ok(Self::IndirectMachine(
                 MachineRegister::decode(reg - 24)?,
-                off as i64,
+                cpu::Offset(off as i64),
             ))
         }
+    }
+}
+
+impl cpu::JumpTarget {
+    fn encode(&self) -> (u8, u64) {
+        match self {
+            Self::Absolute(a) => (Register::NONE, a.0),
+            Self::Machine(r, off) => (r.encode(), off.0 as u64),
+            Self::Register(r) => (r.encode(), 0),
+            Self::IndirectMachine(a, off) => (a.encode(), off.0 as u64),
+            Self::IndirectRegister(a) => (a.encode() + 24, 0),
+        }
+    }
+
+    fn decode(reg: u8, off: u64) -> Result<Self, Trap> {
+        if reg == Register::NONE {
+            Ok(Self::Absolute(cpu::Address(off)))
+        } else if reg < 16 {
+            Ok(Self::Register(Register::decode(reg)))
+        } else if reg < 24 {
+            Ok(Self::Machine(
+                MachineRegister::decode(reg)?,
+                Offset(off as i64),
+            ))
+        } else if reg < 40 {
+            Ok(Self::IndirectRegister(Register::decode(reg - 24)))
+        } else {
+            Ok(Self::IndirectMachine(
+                MachineRegister::decode(reg - 24)?,
+                cpu::Offset(off as i64),
+            ))
+        }
+    }
+}
+
+impl ThreeMachs {
+    fn encode(&self) -> (u8, u8, u8, u64) {
+        match (self.op2, self.op3) {
+            (None, None) => (self.dst.encode(), self.op1.encode(), 64, 0),
+            (None, Some(o)) => (self.dst.encode(), self.op1.encode(), 65, o.0),
+            (Some(r), None) => (self.dst.encode(), self.op1.encode(), r.encode() + 24, 0),
+            (Some(r), Some(o)) => (self.dst.encode(), self.op1.encode(), r.encode(), o.0),
+        }
+    }
+    fn decode(r0: u8, r1: u8, r2: u8, imm: u64) -> Result<Self, Trap> {
+        Ok(if r2 == 64 {
+            Self {
+                dst: MachineRegister::decode(r0)?,
+                op1: MachineRegister::decode(r1)?,
+                op2: None,
+                op3: None,
+            }
+        } else if r2 == 65 {
+            Self {
+                dst: MachineRegister::decode(r0)?,
+                op1: MachineRegister::decode(r1)?,
+                op2: None,
+                op3: Some(Native(imm)),
+            }
+        } else if r2 >= 24 {
+            Self {
+                dst: MachineRegister::decode(r0)?,
+                op1: MachineRegister::decode(r1)?,
+                op2: Some(MachineRegister::decode(r2 - 24)?),
+                op3: None,
+            }
+        } else {
+            Self {
+                dst: MachineRegister::decode(r0)?,
+                op1: MachineRegister::decode(r1)?,
+                op2: Some(MachineRegister::decode(r2)?),
+                op3: Some(Native(imm)),
+            }
+        })
     }
 }
 
@@ -163,8 +228,6 @@ enum Opcode {
     IReturn,
     PushA,
     PopA,
-    LoadLiteral,
-    LoadMachine,
     Mov,
     Mov8,
     AAdd,
@@ -180,6 +243,8 @@ enum Opcode {
     SetCdr,
     Add,
     Mul,
+    Shl,
+    Shr,
     IDiv,
     Sub,
     Eq,
@@ -201,22 +266,21 @@ impl Instruction {
         let [opcode, r0, r1, r2, r3, ..] = lo.to_le_bytes();
         match Opcode::try_from(opcode).map_err(|_| Trap::InvalidInstruction)? {
             Opcode::Nop => Ok(Self::Nop),
-            Opcode::Jump => {
-                let (_, target) = JumpAddressing::decode(r0, r1, hi);
-                Ok(Self::Jump { target })
-            }
-            Opcode::JumpIf => {
-                let (condition, target) = JumpAddressing::decode(r0, r1, hi);
-                Ok(Self::JumpIf { condition, target })
-            }
-            Opcode::JumpIfNot => {
-                let (condition, target) = JumpAddressing::decode(r0, r1, hi);
-                Ok(Self::JumpIfNot { condition, target })
-            }
-            Opcode::Call => {
-                let (_, target) = JumpAddressing::decode(r0, r1, hi);
-                Ok(Self::Call { target })
-            }
+            Opcode::Jump => Ok(Self::Jump {
+                condition: cpu::Condition::Always,
+                target: cpu::JumpTarget::decode(r0, hi)?,
+            }),
+            Opcode::JumpIf => Ok(Self::Jump {
+                condition: cpu::Condition::True(Register::decode(r0)),
+                target: cpu::JumpTarget::decode(r1, hi)?,
+            }),
+            Opcode::JumpIfNot => Ok(Self::Jump {
+                condition: cpu::Condition::False(Register::decode(r0)),
+                target: cpu::JumpTarget::decode(r1, hi)?,
+            }),
+            Opcode::Call => Ok(Self::Call {
+                target: cpu::JumpTarget::decode(r0, hi)?,
+            }),
 
             Opcode::Return => Ok(Self::Return),
             Opcode::MakeClosure => Ok(Self::MakeClosure {
@@ -224,12 +288,50 @@ impl Instruction {
                 code: MachineRegister::try_decode(r1).expect("Shit happened!"),
             }),
 
-            Opcode::Eq => Ok(Self::Eq(ThreeRegs::decode(r0, r1, r2, hi)?)),
-            Opcode::Ne => Ok(Self::Ne(ThreeRegs::decode(r0, r1, r2, hi)?)),
-            Opcode::Gt => Ok(Self::Gt(ThreeRegs::decode(r0, r1, r2, hi)?)),
-            Opcode::Gte => Ok(Self::Gte(ThreeRegs::decode(r0, r1, r2, hi)?)),
-            Opcode::Lt => Ok(Self::Lt(ThreeRegs::decode(r0, r1, r2, hi)?)),
-            Opcode::Lte => Ok(Self::Lte(ThreeRegs::decode(r0, r1, r2, hi)?)),
+            Opcode::Eq => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Eq,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Ne => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Ne,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Gt => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Gt,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Gte => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Gte,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Lt => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Lt,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Lte => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Lte,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Add => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Add,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Sub => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Sub,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Mul => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Mul,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Shl => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Shl,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
+            Opcode::Shr => Ok(Self::Binary {
+                op: crate::cpu::BinaryOp::Shr,
+                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            }),
 
             Opcode::Car => Ok(Self::Car(TwoRegs::decode(r0, r1))),
             Opcode::Cdr => Ok(Self::Cdr(TwoRegs::decode(r0, r1))),
@@ -240,22 +342,21 @@ impl Instruction {
                 cdr: Register::decode(r1),
                 src: Register::decode(r2),
             }),
-            Opcode::Add => Ok(Self::Add(ThreeRegs::decode(r0, r1, r2, hi)?)),
-            Opcode::Sub => Ok(Self::Sub(ThreeRegs::decode(r0, r1, r2, hi)?)),
-            Opcode::Mul => Ok(Self::Mul(ThreeRegs::decode(r0, r1, r2, hi)?)),
             Opcode::IDiv => Ok(Self::IDiv {
                 div: Register::decode(r0),
                 rem: Register::decode(r1),
                 op1: Register::decode(r2),
-                op2: if r3 == Register::NONE {
-                    cpu::OffsetRegister::Absolute {
-                        pos: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
-                    }
+                op2: if r3 == 64 || r3 == 65 {
+                    None
+                } else if r3 >= 24 {
+                    Some(Register::decode(r3 - 24))
                 } else {
-                    cpu::OffsetRegister::Relative {
-                        base: Register::decode(r3),
-                        off: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
-                    }
+                    Some(Register::decode(r3))
+                },
+                op3: if r3 == 65 || r3 < 24 {
+                    Some(LispWord(hi))
+                } else {
+                    None
                 },
             }),
             Opcode::PopR => Ok(Self::PopR {
@@ -270,21 +371,15 @@ impl Instruction {
             Opcode::PushA => Ok(Self::PushA {
                 src: MachineRegister::decode(r0)?,
             }),
-            Opcode::LoadMachine => Ok(Instruction::LoadMachine {
-                dst: MachineRegister::decode(r0)?,
-                val: hi as usize,
-            }),
             Opcode::IReturn => Ok(Self::IReturn),
-            Opcode::AAdd => Ok(Instruction::AAdd(cpu::ThreeMachs {
-                dst: MachineRegister::decode(r0)?,
-                op1: MachineRegister::decode(r1)?,
-                op2: cpu::OffsetAddress::decode(r2, hi)?,
-            })),
-            Opcode::ASub => Ok(Instruction::ASub(cpu::ThreeMachs {
-                dst: MachineRegister::decode(r0)?,
-                op1: MachineRegister::decode(r1)?,
-                op2: cpu::OffsetAddress::decode(r2, hi)?,
-            })),
+            Opcode::AAdd => Ok(Instruction::MBinary {
+                op: cpu::MBinaryOp::Add,
+                operands: cpu::ThreeMachs::decode(r0, r1, r2, hi)?,
+            }),
+            Opcode::ASub => Ok(Instruction::MBinary {
+                op: cpu::MBinaryOp::Sub,
+                operands: cpu::ThreeMachs::decode(r0, r1, r2, hi)?,
+            }),
             Opcode::GetPayload => Ok(Instruction::GetPayload {
                 dst: MachineRegister::decode(r0)?,
                 src: Register::decode(r1),
@@ -295,10 +390,6 @@ impl Instruction {
             }),
             Opcode::Halt => Ok(Instruction::Halt),
             Opcode::Int => Ok(Instruction::Int(hi)),
-            Opcode::LoadLiteral => Ok(Instruction::LoadLiteral {
-                dst: Register(r0 as usize),
-                val: Word::try_from(hi).map_err(|_| Trap::InvalidInstruction)?,
-            }),
             Opcode::SetPayload => Ok(Instruction::SetPayload {
                 dst: Register::decode(r0),
                 src: MachineRegister::decode(r1)?,
@@ -322,96 +413,37 @@ impl Instruction {
         }
     }
 
-    fn encode_op_jump_cond(
-        opcode: Opcode,
-        condition: Register,
-        target: &JumpAddressing,
+    fn encode_div(
+        div: Register,
+        rem: Register,
+        op1: Register,
+        op2: Option<Register>,
+        op3: Option<LispWord>,
     ) -> (u64, u64) {
-        match target {
-            JumpAddressing::Absolute { pos } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    condition.encode(),
-                    Register::NONE,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                *pos,
-            ),
-            JumpAddressing::MachineRegister {
-                adr: MachineRegister(r),
-                offset,
-            } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    condition.encode(),
-                    (r + 16) as u8,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                *offset as u64,
-            ),
-            JumpAddressing::Register { adr } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    condition.encode(),
-                    adr.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-        }
+        let (r0, r1, r2, r3, hi) = match (op2, op3) {
+            (None, None) => (div.encode(), rem.encode(), op1.encode(), 64, 0),
+            (None, Some(o)) => (div.encode(), rem.encode(), op1.encode(), 65, o.0),
+            (Some(r), None) => (div.encode(), rem.encode(), op1.encode(), r.encode() + 24, 0),
+            (Some(r), Some(o)) => (div.encode(), rem.encode(), op1.encode(), r.encode(), o.0),
+        };
+        (
+            u64::from_le_bytes([Opcode::IDiv.into(), r0, r1, r2, r3, 0, 0, 0]),
+            hi,
+        )
     }
-
     fn encode_three_adrs(opcode: Opcode, target: &ThreeMachs) -> (u64, u64) {
-        match target {
-            &ThreeMachs { dst, op1, op2 } => {
-                let (op2e, hi) = op2.encode();
-                (
-                    u64::from_le_bytes([
-                        opcode.into(),
-                        dst.encode(),
-                        op1.encode(),
-                        op2e,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]),
-                    hi,
-                )
-            }
-        }
+        let (r0, r1, r2, hi) = target.encode();
+        (
+            u64::from_le_bytes([opcode.into(), r0, r1, r2, 0, 0, 0, 0]),
+            hi,
+        )
     }
     fn encode_three_regs(opcode: Opcode, target: &ThreeRegs) -> (u64, u64) {
-        match target {
-            &ThreeRegs { dst, op1, op2 } => {
-                let (op2e, hi) = op2.encode();
-                (
-                    u64::from_le_bytes([
-                        opcode.into(),
-                        dst.encode(),
-                        op1.encode(),
-                        op2e,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]),
-                    hi,
-                )
-            }
-        }
+        let (r0, r1, r2, hi) = target.encode();
+        (
+            u64::from_le_bytes([opcode.into(), r0, r1, r2, 0, 0, 0, 0]),
+            hi,
+        )
     }
     fn encode_two_regs(opcode: Opcode, target: &TwoRegs) -> (u64, u64) {
         match target {
@@ -443,17 +475,42 @@ impl Instruction {
                 0,
             ),
 
-            Instruction::Jump { target: addressing } => {
-                Self::encode_op_jump_cond(Opcode::Jump, Register(0), addressing)
+            Instruction::Jump {
+                condition: crate::cpu::Condition::Always,
+                target: addressing,
+            } => {
+                let (r0, hi) = addressing.encode();
+                (
+                    u64::from_le_bytes([Opcode::Jump.into(), r0, 0, 0, 0, 0, 0, 0]),
+                    hi,
+                )
             }
-            Instruction::JumpIf { condition, target } => {
-                Self::encode_op_jump_cond(Opcode::JumpIf, *condition, target)
+            Instruction::Jump {
+                condition: crate::cpu::Condition::True(reg),
+                target: addressing,
+            } => {
+                let (r1, hi) = addressing.encode();
+                (
+                    u64::from_le_bytes([Opcode::JumpIf.into(), reg.encode(), r1, 0, 0, 0, 0, 0]),
+                    hi,
+                )
             }
-            Instruction::JumpIfNot { condition, target } => {
-                Self::encode_op_jump_cond(Opcode::JumpIfNot, *condition, target)
+            Instruction::Jump {
+                condition: crate::cpu::Condition::False(reg),
+                target: addressing,
+            } => {
+                let (r1, hi) = addressing.encode();
+                (
+                    u64::from_le_bytes([Opcode::JumpIfNot.into(), reg.encode(), r1, 0, 0, 0, 0, 0]),
+                    hi,
+                )
             }
-            Instruction::Call { target } => {
-                Self::encode_op_jump_cond(Opcode::Call, Register(0), target)
+            Instruction::Call { target: addressing } => {
+                let (r0, hi) = addressing.encode();
+                (
+                    u64::from_le_bytes([Opcode::Call.into(), r0, 0, 0, 0, 0, 0, 0]),
+                    hi,
+                )
             }
 
             Instruction::Return => (
@@ -475,12 +532,50 @@ impl Instruction {
             ),
 
             // Comparison
-            Instruction::Eq(regs) => Self::encode_three_regs(Opcode::Eq, regs),
-            Instruction::Ne(regs) => Self::encode_three_regs(Opcode::Ne, regs),
-            Instruction::Gt(regs) => Self::encode_three_regs(Opcode::Gt, regs),
-            Instruction::Gte(regs) => Self::encode_three_regs(Opcode::Gte, regs),
-            Instruction::Lt(regs) => Self::encode_three_regs(Opcode::Lt, regs),
-            Instruction::Lte(regs) => Self::encode_three_regs(Opcode::Lte, regs),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Eq,
+                operands,
+            } => Self::encode_three_regs(Opcode::Eq, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Ne,
+                operands,
+            } => Self::encode_three_regs(Opcode::Ne, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Gt,
+                operands,
+            } => Self::encode_three_regs(Opcode::Gt, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Gte,
+                operands,
+            } => Self::encode_three_regs(Opcode::Gte, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Lt,
+                operands,
+            } => Self::encode_three_regs(Opcode::Lt, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Lte,
+                operands,
+            } => Self::encode_three_regs(Opcode::Lte, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Add,
+                operands,
+            } => Self::encode_three_regs(Opcode::Add, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Sub,
+                operands,
+            } => Self::encode_three_regs(Opcode::Sub, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Mul,
+                operands,
+            } => Self::encode_three_regs(Opcode::Mul, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Shl,
+                operands,
+            } => Self::encode_three_regs(Opcode::Shl, operands),
+            Instruction::Binary {
+                op: crate::cpu::BinaryOp::Shr,
+                operands,
+            } => Self::encode_three_regs(Opcode::Shr, operands),
 
             // Cons
             Instruction::Car(regs) => Self::encode_two_regs(Opcode::Car, regs),
@@ -501,27 +596,13 @@ impl Instruction {
                 0,
             ),
 
-            // Arithmetic
-            Instruction::Add(regs) => Self::encode_three_regs(Opcode::Add, regs),
-            Instruction::Sub(regs) => Self::encode_three_regs(Opcode::Sub, regs),
-            Instruction::Mul(regs) => Self::encode_three_regs(Opcode::Mul, regs),
-
-            Instruction::IDiv { div, rem, op1, op2 } => {
-                let (op2e, hi) = op2.encode();
-                (
-                    u64::from_le_bytes([
-                        Opcode::IDiv.into(),
-                        div.encode(),
-                        rem.encode(),
-                        op1.encode(),
-                        op2e,
-                        0,
-                        0,
-                        0,
-                    ]),
-                    hi,
-                )
-            }
+            Instruction::IDiv {
+                div,
+                rem,
+                op1,
+                op2,
+                op3,
+            } => Instruction::encode_div(*div, *rem, *op1, *op2, *op3),
             Instruction::PopR { dst } => (
                 u64::from_le_bytes([Opcode::PopR.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
@@ -538,16 +619,18 @@ impl Instruction {
                 u64::from_le_bytes([Opcode::PushA.into(), src.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-            Instruction::LoadMachine { dst, val: address } => (
-                u64::from_le_bytes([Opcode::LoadMachine.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
-                *address as u64,
-            ),
             Instruction::IReturn => (
                 u64::from_le_bytes([Opcode::IReturn.into(), 0, 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-            Instruction::AAdd(regs) => Self::encode_three_adrs(Opcode::AAdd, regs),
-            Instruction::ASub(regs) => Self::encode_three_adrs(Opcode::ASub, regs),
+            Instruction::MBinary {
+                op: crate::cpu::MBinaryOp::Add,
+                operands,
+            } => Self::encode_three_adrs(Opcode::AAdd, operands),
+            Instruction::MBinary {
+                op: crate::cpu::MBinaryOp::Sub,
+                operands,
+            } => Self::encode_three_adrs(Opcode::ASub, operands),
             Instruction::GetPayload { dst, src } => (
                 u64::from_le_bytes([
                     Opcode::GetPayload.into(),
@@ -577,10 +660,6 @@ impl Instruction {
             Instruction::Int(count) => (
                 u64::from_le_bytes([Opcode::Int.into(), 0, 0, 0, 0, 0, 0, 0]),
                 *count,
-            ),
-            Instruction::LoadLiteral { dst, val } => (
-                u64::from_le_bytes([Opcode::LoadLiteral.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
-                (*val).into(),
             ),
             Instruction::Mov { dst, src } => {
                 let (edst, doff) = dst.encode();

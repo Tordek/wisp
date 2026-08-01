@@ -35,8 +35,8 @@ fn main() -> Result<(), String> {
     let start = Instant::now();
     let mut event_pump = sdl_context.event_pump()?;
 
-    let mut mem = vec![0; 2 << 24];
-    let mut machine = machine::WispMachine::new(cpu::Cpu::default(), &mut mem);
+    let mem = vec![0; 2 << 24];
+    let mut machine = machine::WispMachine::new(cpu::Cpu::default(), mem);
 
     machine.reset();
 
@@ -55,14 +55,14 @@ fn main() -> Result<(), String> {
                     repeat: _,
                 } => {
                     machine.interrupt(FirmwareHelper::KEYBOARD_INTERRUPT as u64);
-                    machine.ram[FirmwareHelper::PRESSED_KEY_ID] = keycode.unwrap().into_i32() as u8;
+                    machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = keycode.unwrap().into_i32() as u8;
                 }
 
                 _ => (),
             }
         }
 
-        for _ in 1..1_000 {
+        for _ in 1..1_000_000 {
             // Run 1 million cycles per draw.
             machine.step();
         }

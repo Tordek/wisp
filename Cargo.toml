@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 gl = "0.14.0"
 int-enum = "1.2.0"
+nom = "8.0.0"
 sdl2 = "0.38.0"
