@@ -122,7 +122,7 @@ pub enum TokenizeError<'a> {
     UnexpectedInput { remaining: &'a str },
 }
 
-pub fn tokenize(input: &str) -> Result<Vec<AssemblyToken<'_>>, TokenizeError> {
+pub fn tokenize<'a>(input: &'a str) -> Result<Vec<AssemblyToken<'a>>, TokenizeError<'a>> {
     let (rest, tokens) = many0(token)
         .parse(input)
         .map_err(|_| TokenizeError::UnexpectedInput { remaining: input })?;

@@ -252,7 +252,10 @@ pub fn resolve(
             AssemblyLine::Ord(o) => AssemblyLine::Ord(*o),
             AssemblyLine::Label(l) => AssemblyLine::Label(l.clone()),
             AssemblyLine::UnresolvedData(Data::Cons(car, cdr)) => {
-                AssemblyLine::ResolvedData(todo!())
+                let mut vec = resolve_reference(car, labels)?.to_le_bytes().to_vec();
+                vec.extend(resolve_reference(car, labels)?.to_be_bytes());
+
+                AssemblyLine::ResolvedData(vec)
             }
             AssemblyLine::UnresolvedData(Data::Symbol(refr)) => AssemblyLine::ResolvedData(
                 cpu::LispWord::symbol(resolve_reference(refr, labels)? as u64)

@@ -11,8 +11,6 @@ use nom::{
     sequence::{delimited, pair, preceded, terminated},
 };
 
-use std::collections::HashMap;
-
 use crate::cpu::assembler::*;
 
 fn ident(input: &str) -> IResult<&str, &str> {
@@ -863,18 +861,30 @@ fn string(input: &str) -> IResult<&str, AssemblyLine> {
     Ok((rest, AssemblyLine::ResolvedData(encoded)))
 }
 
-fn consord(input: &str) -> IResult<&str, AssemblyLine> {
+fn consdir(input: &str) -> IResult<&str, AssemblyLine> {
     let (rest, _) = tag("cons").parse(input)?;
     let (rest, _) = space1.parse(rest)?;
     let (rest, car) = any_value.parse(rest)?;
     let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
     let (rest, cdr) = any_value.parse(rest)?;
 
-    Ok((rest, AssemblyLine::UnresolvedData(Data::Cons(car, cdr))))
+    Ok((
+        rest,
+        match (&car, &cdr) {
+            (Reference::Resolved(car), Reference::Resolved(cdr)) => {
+                let mut vec = car.to_le_bytes().to_vec();
+                vec.extend(cdr.to_be_bytes());
+
+                AssemblyLine::ResolvedData(vec)
+            }
+            _ => AssemblyLine::UnresolvedData(Data::Cons(car, cdr)),
+        },
+    ))
 }
 
 fn directive(input: &str) -> IResult<&str, AssemblyLine> {
-    preceded(tag("."), alt((ord, symbol, string, w, consord))).parse(input)
+    preceded(tag("."), alt((ord, symbol, string, w, consdir))).parse(input)
 }
 
 fn label(input: &str) -> IResult<&str, AssemblyLine> {
@@ -917,7 +927,6 @@ pub fn asm_lines(input: &str) -> IResult<&str, Vec<AssemblyLine>> {
     let (rest, _) = space0.parse(rest)?;
     Ok((rest, lines.concat()))
 }
-
 
 enum ParserError {}
 
