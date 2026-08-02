@@ -2,8 +2,8 @@ use int_enum::IntEnum;
 
 use crate::{
     cpu::{
-        self, Instruction, LispWord, Location, MachineRegister, Native, Register, ThreeMachs,
-        ThreeRegs, Trap, TwoRegs,
+        self, Count, Instruction, LispWord, Location, MachineRegister, Native, Register,
+        ThreeMachs, ThreeRegs, Trap, TwoRegs,
     },
     memory::{Address, Offset},
 };
@@ -258,6 +258,8 @@ enum Opcode {
     MakeClosure,
     Call,
     Return,
+    Typep,
+    MemCpy,
 }
 
 // TODO: Find a real encoding/decoding.
@@ -410,6 +412,16 @@ impl Instruction {
 
                 Ok(Instruction::Mov8 { dst, src })
             }
+            Opcode::Typep => Ok(Instruction::Typep {
+                dst: Register::decode(r0),
+                src: Register::decode(r1),
+                compare: Native(hi),
+            }),
+            Opcode::MemCpy => Ok(Instruction::MemCpy {
+                dst: MachineRegister::decode(r0)?,
+                src: MachineRegister::decode(r1)?,
+                count: Count(hi),
+            }),
         }
     }
 
@@ -698,7 +710,19 @@ impl Instruction {
                 ]),
                 0,
             ),
-            Instruction::MemCpy { dst, src, count } => todo!(),
+            Instruction::MemCpy { dst, src, count } => (
+                u64::from_le_bytes([
+                    Opcode::MemCpy.into(),
+                    dst.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                count.0,
+            ),
             Instruction::MemSet { dst, src, count } => todo!(),
             Instruction::Mov8 { dst, src } => {
                 let (edst, doff) = dst.encode();
@@ -711,6 +735,19 @@ impl Instruction {
                     doff + soff,
                 )
             }
+            Instruction::Typep { dst, src, compare } => (
+                u64::from_le_bytes([
+                    Opcode::Typep.into(),
+                    dst.encode(),
+                    src.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                compare.0,
+            ),
         }
     }
 }

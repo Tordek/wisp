@@ -1,25 +1,25 @@
-type WordSize = u64;
-
 use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::tag,
-    character::complete::{alpha1, alphanumeric1, digit1, none_of, one_of, space0, space1},
-    combinator::{Opt, opt, recognize},
+    character::{
+        anychar,
+        complete::{alpha1, alphanumeric1, digit1, hex_digit1, none_of, one_of, space0, space1},
+    },
+    combinator::{opt, recognize, value},
     multi::{many0, many0_count},
-    number::complete::hex_u32,
-    sequence::{delimited, pair, preceded, terminated, tuple},
+    sequence::{delimited, pair, preceded, terminated},
 };
 
 use std::collections::HashMap;
 
 use crate::{
-    cpu::{self, LispWord, MachineRegister, Native, TwoRegs},
+    cpu::{self, LispWord, Native, TwoRegs},
     memory::{self, Address, Offset},
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct ThreeRegs {
+pub struct ThreeRegs {
     pub dst: crate::cpu::Register,
     pub op1: crate::cpu::Register,
     pub op2: Option<crate::cpu::Register>,
@@ -27,7 +27,7 @@ struct ThreeRegs {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct ThreeMachs {
+pub struct ThreeMachs {
     pub dst: crate::cpu::MachineRegister,
     pub op1: crate::cpu::MachineRegister,
     pub op2: Option<crate::cpu::MachineRegister>,
@@ -144,11 +144,9 @@ pub enum Reference {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum Data {
-    Byte(u8),
-
-    // Symbol literal
+pub enum Data {
     Symbol(Reference),
+    Literal(Reference),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -176,9 +174,11 @@ fn reference(input: &str) -> IResult<&str, Reference> {
 }
 
 fn nop(input: &str) -> IResult<&str, AssemblyToken> {
-    tag("NOP")
-        .map(|_| AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Nop))
-        .parse(input)
+    value(
+        AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Nop),
+        tag("NOP"),
+    )
+    .parse(input)
 }
 
 fn halt(input: &str) -> IResult<&str, AssemblyToken> {
@@ -205,14 +205,32 @@ fn fixnum(input: &str) -> IResult<&str, Reference> {
         .parse(input)
 }
 
-fn value(input: &str) -> IResult<&str, Reference> {
-    alt((number.map(|v| Reference::Resolved(v)), reference, fixnum)).parse(input)
+fn charlit(input: &str) -> IResult<&str, Reference> {
+    preceded(
+        tag("\\#"),
+        alt((
+            value(LispWord::char('\n' as u64), tag("Newline")),
+            anychar.map(|n| LispWord::char(n as u64)),
+        )),
+    )
+    .map(|c| Reference::Resolved(c.0 as i64))
+    .parse(input)
+}
+
+fn any_value(input: &str) -> IResult<&str, Reference> {
+    alt((
+        number.map(|v| Reference::Resolved(v)),
+        reference,
+        fixnum,
+        charlit,
+    ))
+    .parse(input)
 }
 
 fn interrupt(input: &str) -> IResult<&str, AssemblyToken> {
     let (rest, _) = tag("INT").parse(input)?;
     let (rest, _) = space1.parse(rest)?;
-    let (rest, target) = value.parse(rest)?;
+    let (rest, target) = any_value.parse(rest)?;
     match target {
         Reference::Resolved(v) => Ok((
             rest,
@@ -235,7 +253,7 @@ fn register(input: &str) -> IResult<&str, crate::cpu::Register> {
 fn offset(input: &str) -> IResult<&str, Reference> {
     let (rest, sign) = one_of("+-").parse(input)?;
     let (rest, _) = space0.parse(rest)?;
-    value
+    any_value
         .map(|lit| {
             if sign == '+' {
                 lit
@@ -379,10 +397,10 @@ fn popr(input: &str) -> IResult<&str, AssemblyToken> {
 
 fn location(input: &str) -> IResult<&str, Location> {
     alt((
-        value.map(|r| Location::Literal(r)),
+        any_value.map(|r| Location::Literal(r)),
         register.map(|r| Location::Register(r)),
         machineregister.map(|reg| Location::Machine(reg)),
-        delimited(tag("["), value, tag("]")).map(|l| Location::Absolute(l)),
+        delimited(tag("["), any_value, tag("]")).map(|l| Location::Absolute(l)),
         delimited(tag("["), register, tag("]")).map(|r| Location::IndirectRegister(r)),
         delimited(tag("["), machine_and_offset, tag("]"))
             .map(|(reg, refr)| Location::IndirectMachine(reg, refr)),
@@ -392,7 +410,7 @@ fn location(input: &str) -> IResult<&str, Location> {
 
 fn jumptarget(input: &str) -> IResult<&str, JumpTarget> {
     alt((
-        value.map(|r| JumpTarget::Absolute(r)),
+        any_value.map(|r| JumpTarget::Absolute(r)),
         register.map(|r| JumpTarget::Register(r)),
         machine_and_offset.map(|(reg, off)| JumpTarget::Machine(reg, off)),
         delimited(tag("["), register, tag("]")).map(|r| JumpTarget::IndirectRegister(r)),
@@ -460,9 +478,9 @@ fn threemachs(input: &str) -> IResult<&str, ThreeMachs> {
     let (rest, op2) = opt(machineregister).parse(rest)?;
 
     let (rest, op3) = if op2.is_some() {
-        opt(preceded((space0, tag("+"), space0), value)).parse(rest)?
+        opt(preceded((space0, tag("+"), space0), any_value)).parse(rest)?
     } else {
-        opt(value).parse(rest)?
+        opt(any_value).parse(rest)?
     };
 
     Ok((rest, ThreeMachs { dst, op1, op2, op3 }))
@@ -646,9 +664,9 @@ fn threeregs(input: &str) -> IResult<&str, ThreeRegs> {
     let (rest, op2) = opt(register).parse(rest)?;
 
     let (rest, op3) = if op2.is_some() {
-        opt(preceded((space0, tag("+"), space0), value)).parse(rest)?
+        opt(preceded((space0, tag("+"), space0), any_value)).parse(rest)?
     } else {
-        opt(value).parse(rest)?
+        opt(any_value).parse(rest)?
     };
 
     Ok((rest, ThreeRegs { dst, op1, op2, op3 }))
@@ -772,13 +790,51 @@ fn number(input: &str) -> IResult<&str, i64> {
     alt((hex, decimal)).parse(input)
 }
 
+fn typep(input: &str) -> IResult<&str, AssemblyToken> {
+    let (rest, _) = tag("TYPEP").parse(input)?;
+    let (rest, _) = space1.parse(rest)?;
+    let (rest, dst) = register.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
+    let (rest, src) = register.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
+    let (rest, compare) = number.parse(rest)?;
+
+    Ok((
+        rest,
+        AssemblyToken::ResolvedInstruction(cpu::Instruction::Typep {
+            dst,
+            src,
+            compare: cpu::Native(compare as u64),
+        }),
+    ))
+}
+
+fn memcpy(input: &str) -> IResult<&str, AssemblyToken> {
+    let (rest, _) = tag("MEMCPY").parse(input)?;
+    let (rest, _) = space1.parse(rest)?;
+    let (rest, dst) = machineregister.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
+    let (rest, src) = machineregister.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
+    let (rest, count) = number.map(|c| cpu::Count(c as u64)).parse(rest)?;
+
+    Ok((
+        rest,
+        AssemblyToken::ResolvedInstruction(cpu::Instruction::MemCpy { dst, src, count }),
+    ))
+}
+
 fn instruction(input: &str) -> IResult<&str, AssemblyToken> {
     alt((
         alt((
             nop, halt, return_op, ireturn_op, interrupt, jump, call, pusha, popa, pushr, popr, mov,
             mov8, mbin, settag, gettag, setpayload, getpayload, cons, uncons, car,
         )),
-        alt((cdr, setcar, setcdr, bin, div, makeclosure)),
+        alt((cdr, setcar, setcdr, bin, div, makeclosure, typep, memcpy)),
     ))
     .parse(input)
 }
@@ -791,19 +847,60 @@ fn decimal(input: &str) -> IResult<&str, i64> {
 fn hex(input: &str) -> IResult<&str, i64> {
     // TODO: hex_u64
     let (rest, _) = tag("0x").parse(input)?;
-    let (rest, v) = hex_u32.parse(rest)?;
+    let (rest, v1) = recognize(hex_digit1).parse(rest)?;
+    let v = i64::from_str_radix(v1, 16).unwrap();
     Ok((rest, v as i64))
 }
 
 fn ord(input: &str) -> IResult<&str, AssemblyToken> {
     let (rest, _) = tag("ord").parse(input)?;
     let (rest, _) = space1.parse(rest)?;
-    let (rest, pos) = decimal.parse(rest)?;
+    let (rest, pos) = number.parse(rest)?;
     Ok((rest, AssemblyToken::Ord(pos as usize)))
 }
 
+fn symbol(input: &str) -> IResult<&str, AssemblyToken> {
+    let (rest, _) = tag("symbol").parse(input)?;
+    let (rest, _) = space1.parse(rest)?;
+    let (rest, pos) = any_value.parse(rest)?;
+    Ok((
+        rest,
+        match pos {
+            Reference::Resolved(r) => {
+                AssemblyToken::ResolvedData(LispWord::symbol(r as u64).0.to_le_bytes().to_vec())
+            }
+            unresolved => AssemblyToken::UnresolvedData(Data::Symbol(unresolved)),
+        },
+    ))
+}
+
+fn w(input: &str) -> IResult<&str, AssemblyToken> {
+    let (rest, _) = tag("w").parse(input)?;
+    let (rest, _) = space1.parse(rest)?;
+    let (rest, pos) = any_value.parse(rest)?;
+    Ok((
+        rest,
+        match pos {
+            Reference::Resolved(r) => AssemblyToken::ResolvedData(r.to_le_bytes().to_vec()),
+            unresolved => AssemblyToken::UnresolvedData(Data::Literal(unresolved)),
+        },
+    ))
+}
+
+fn string(input: &str) -> IResult<&str, AssemblyToken> {
+    let (rest, _) = tag("str").parse(input)?;
+    let (rest, _) = space1.parse(rest)?;
+    let (rest, pos) =
+        delimited(tag("\""), recognize(many0(none_of("\""))), tag("\"")).parse(rest)?;
+    let lenblock = LispWord::fixnum(pos.len() as u64);
+
+    let mut encoded = lenblock.0.to_le_bytes().to_vec();
+    encoded.extend(pos.as_bytes().to_vec());
+    Ok((rest, AssemblyToken::ResolvedData(encoded)))
+}
+
 fn directive(input: &str) -> IResult<&str, AssemblyToken> {
-    preceded(tag("."), alt((ord,))).parse(input)
+    preceded(tag("."), alt((ord, symbol, string, w))).parse(input)
 }
 
 fn label(input: &str) -> IResult<&str, AssemblyToken> {
@@ -841,22 +938,14 @@ fn asm_line(input: &str) -> IResult<&str, Vec<AssemblyToken>> {
     Ok((rest, tokens))
 }
 
-fn parse_asm(input: &str) -> IResult<&str, Vec<AssemblyToken>> {
+fn asm_lines(input: &str) -> IResult<&str, Vec<AssemblyToken>> {
     let (rest, lines) = many0(asm_line).parse(input)?;
     let (rest, _) = space0.parse(rest)?;
     Ok((rest, lines.concat()))
 }
 
-pub struct AssemblyLayout {
-    /// Map of label -> code index
-    pub labels: HashMap<String, usize>,
-
-    /// First steps
-    pub instructions: Vec<AssemblyToken>,
-}
-
 pub fn parse(input: &str) -> Result<Vec<AssemblyToken>, String> {
-    let (rest, assembly_lines) = parse_asm(input).map_err(|e| format!("parse error: {}", e))?;
+    let (rest, assembly_lines) = asm_lines(input).map_err(|e| format!("parse error: {}", e))?;
 
     if rest != "" {
         return Err(rest.to_string());
@@ -870,9 +959,9 @@ pub fn layout(assembly_lines: &[AssemblyToken]) -> HashMap<String, usize> {
     let mut labels = HashMap::new();
     for line in assembly_lines {
         match line {
-            AssemblyToken::ResolvedData(d) => position += d.len(),
-            AssemblyToken::UnresolvedData(Data::Byte(_)) => position += 1,
+            AssemblyToken::ResolvedData(d) => position = position.next_multiple_of(8) + d.len(),
             AssemblyToken::UnresolvedData(Data::Symbol(_)) => position += 8,
+            AssemblyToken::UnresolvedData(Data::Literal(_)) => position += 8,
             AssemblyToken::ResolvedInstruction(_) => {
                 position = position.next_multiple_of(16) + 16;
             }
@@ -880,7 +969,8 @@ pub fn layout(assembly_lines: &[AssemblyToken]) -> HashMap<String, usize> {
                 position = position.next_multiple_of(16) + 16;
             }
             AssemblyToken::Label(label) => {
-                labels.insert(label.clone(), position);
+                // Maybe should look at next line to decide alignment?
+                labels.insert(label.clone(), position.next_multiple_of(8));
             }
             AssemblyToken::Ord(p) => position = *p,
         }
@@ -904,8 +994,12 @@ pub fn resolve_reference(
 ) -> Result<usize, String> {
     match reference {
         Reference::Resolved(_) => todo!("This shouldn't happen"),
-        Reference::UnresolvedNeg(r) => Ok(-(*labels.get(r).ok_or("what")? as isize) as usize),
-        Reference::UnresolvedPos(r) => Ok(*labels.get(r).ok_or("what")? as usize),
+        Reference::UnresolvedNeg(r) => {
+            Ok(-(*labels.get(r).ok_or(format!("Symbol {} not found", r))? as isize) as usize)
+        }
+        Reference::UnresolvedPos(r) => {
+            Ok(*labels.get(r).ok_or(format!("Symbol {} not found", r))? as usize)
+        }
     }
 }
 
@@ -939,11 +1033,16 @@ pub fn resolve(
             AssemblyToken::Ord(o) => AssemblyToken::Ord(*o),
             AssemblyToken::Label(l) => AssemblyToken::Label(l.clone()),
             AssemblyToken::UnresolvedData(Data::Symbol(refr)) => AssemblyToken::ResolvedData(
+                LispWord::symbol(resolve_reference(&refr, labels)? as u64)
+                    .0
+                    .to_le_bytes()
+                    .to_vec(),
+            ),
+            AssemblyToken::UnresolvedData(Data::Literal(refr)) => AssemblyToken::ResolvedData(
                 (resolve_reference(&refr, labels)? as u64)
                     .to_le_bytes()
                     .to_vec(),
             ),
-            AssemblyToken::UnresolvedData(Data::Byte(b)) => AssemblyToken::ResolvedData(vec![*b]),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Binary {
                 op,
                 operands: ThreeRegs { dst, op1, op2, op3 },
@@ -980,10 +1079,10 @@ pub fn resolve(
                 ),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Call {
-                target: JumpTarget::Register(m),
+                target: JumpTarget::Register(_),
             }) => return Err("can't happen".to_string()),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Call {
-                target: JumpTarget::IndirectRegister(m),
+                target: JumpTarget::IndirectRegister(_),
             }) => return Err("can't happen".to_string()),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::IDiv {
                 div,
@@ -1034,12 +1133,12 @@ pub fn resolve(
                 ),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Jump {
-                condition,
-                target: JumpTarget::Register(m),
+                condition: _,
+                target: JumpTarget::Register(_),
             }) => return Err("can't happen".to_string()),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Jump {
-                condition,
-                target: JumpTarget::IndirectRegister(m),
+                condition: _,
+                target: JumpTarget::IndirectRegister(_),
             }) => return Err("can't happen".to_string()),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MBinary {
                 op,
@@ -1091,19 +1190,47 @@ pub fn resolve(
     Ok(result)
 }
 
-pub fn assemble(assembly_lines: &[AssemblyToken]) -> Vec<u8> {
-    vec![]
+pub fn assemble(assembly_lines: &[AssemblyToken]) -> Result<Vec<u8>, String> {
+    let mut result: Vec<u8> = vec![];
+    let mut position: usize = 0;
+
+    for line in assembly_lines {
+        match line {
+            AssemblyToken::Label(_) => {}
+            AssemblyToken::Ord(p) => position = *p,
+            AssemblyToken::ResolvedData(d) => {
+                position = position.next_multiple_of(8);
+                result.resize((result.len().max(position)) + d.len(), 0);
+                result[position..][..d.len()].copy_from_slice(d);
+                position += d.len()
+            }
+            AssemblyToken::ResolvedInstruction(i) => {
+                position = position.next_multiple_of(16);
+                let (lo, hi) = i.encode();
+                result.resize((result.len().max(position)) + 16, 0);
+                result[position..][..8].copy_from_slice(&lo.to_le_bytes());
+                position += 8;
+                result[position..][..8].copy_from_slice(&hi.to_le_bytes());
+                position += 8;
+            }
+            AssemblyToken::UnresolvedData(_) => return Err("Forgot to resolve".to_string()),
+            AssemblyToken::UnresolvedInstruction(_) => return Err("Forgot to resolve".to_string()),
+        }
+    }
+
+    Ok(result)
 }
 
 mod test {
     use crate::cpu::{
-        self, MachineRegister,
-        assembler::{self, layout, resolve},
+        self,
+        assembler::{self, parse},
     };
 
     fn scaffold() -> (Vec<assembler::AssemblyToken>, Vec<assembler::AssemblyToken>) {
         let asm = assembler::parse(
             r#"
+            .symbol 'loop
             HALT
             NOP
         ; A comment
@@ -1140,7 +1267,7 @@ mod test {
             PUSH R3
             POP R4
             ; Loading & Memory
-            MOV R1, #1234; -- TODO: Parse fixnums.
+            MOV R1, #1234
             MOV A3, 0x7FFFFFFF
             MOV R5, R6
             MOV R5, [R6]
@@ -1216,10 +1343,14 @@ mod test {
             DIV R9, R2, R3, #5
         ; Advanced Operations
             MAKECLOSURE R5, A6
+            MEMCPY A1, A2, 1
         "#,
         );
 
         let expected = vec![
+            assembler::AssemblyToken::UnresolvedData(assembler::Data::Symbol(
+                assembler::Reference::UnresolvedPos("loop".to_string()),
+            )),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Halt),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Nop),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Return),
@@ -1236,14 +1367,14 @@ mod test {
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
                 condition: crate::cpu::Condition::Always,
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(0),
                 ),
             }),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
                 condition: crate::cpu::Condition::Always,
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(16),
                 ),
             }),
@@ -1266,14 +1397,14 @@ mod test {
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
                 condition: crate::cpu::Condition::True(crate::cpu::Register(5)),
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(0),
                 ),
             }),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
                 condition: crate::cpu::Condition::True(crate::cpu::Register(5)),
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(16),
                 ),
             }),
@@ -1296,14 +1427,14 @@ mod test {
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
                 condition: crate::cpu::Condition::False(crate::cpu::Register(5)),
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(0),
                 ),
             }),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
                 condition: crate::cpu::Condition::False(crate::cpu::Register(5)),
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(16),
                 ),
             }),
@@ -1324,13 +1455,13 @@ mod test {
             }),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(0),
                 ),
             }),
             assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
                 target: crate::cpu::JumpTarget::Machine(
-                    MachineRegister(1),
+                    crate::cpu::MachineRegister(1),
                     crate::memory::Offset(16),
                 ),
             }),
@@ -1858,6 +1989,11 @@ mod test {
                 dst: crate::cpu::Register(5),
                 code: crate::cpu::MachineRegister(6),
             }),
+            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MemCpy {
+                dst: crate::cpu::MachineRegister(1),
+                src: crate::cpu::MachineRegister(2),
+                count: crate::cpu::Count(1),
+            }),
         ];
         (asm.unwrap(), expected)
     }
@@ -1874,16 +2010,16 @@ mod test {
     #[test]
     fn test_locate() {
         let (actual, _) = scaffold();
-        let labels = layout(&actual);
+        let labels = assembler::layout(&actual);
         assert_eq!(labels.len(), 1);
-        assert_eq!(labels.get("loop"), Some(&48));
+        assert_eq!(labels.get("loop"), Some(&64));
     }
 
     #[test]
     fn test_resolve() -> Result<(), String> {
         let (actual, _) = scaffold();
-        let labels = layout(&actual);
-        let resolved = resolve(&actual, &labels).map_err(|e| e.to_string())?;
+        let labels = assembler::layout(&actual);
+        let resolved = assembler::resolve(&actual, &labels).map_err(|e| e.to_string())?;
 
         for line in resolved {
             if let assembler::AssemblyToken::UnresolvedInstruction(i) = line {
@@ -1897,8 +2033,8 @@ mod test {
     #[test]
     fn test_encoder_decoder() -> Result<(), String> {
         let (_, expected) = scaffold();
-        let labels = layout(&expected);
-        let resolved = resolve(&expected, &labels).map_err(|e| e.to_string())?;
+        let labels = assembler::layout(&expected);
+        let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
 
         for i in 0..resolved.len() {
             match expected[i] {
@@ -1921,19 +2057,59 @@ mod test {
         Ok(())
     }
 
-    // #[test]
-    // fn test_encoder_decoder_twice() -> Result<(), String> {
-    //     let (_, expected) = scaffold();
+    #[test]
+    fn test_encoder_decoder_twice() -> Result<(), String> {
+        let (_, expected) = scaffold();
+        let labels = assembler::layout(&expected);
+        let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
 
-    //     for i in 0..expected.len() {
-    //         let (lo, hi) = expected[i].encode();
-    //         let decoded = assembler::Instruction::decode(lo, hi).map_err(|_| "")?;
-    //         let (lo, hi) = decoded.encode();
-    //         assert_eq!(
-    //             (i, &assembler::Instruction::decode(lo, hi).map_err(|_| "")?),
-    //             (i, &expected[i])
-    //         );
-    //     }
-    //     Ok(())
-    // }
+        for i in 0..resolved.len() {
+            match expected[i] {
+                assembler::AssemblyToken::ResolvedInstruction(inst) => {
+                    let (lo, hi) = inst.encode();
+                    let decoded = cpu::Instruction::decode(lo, hi).map_err(|t| {
+                        format!(
+                            "Error when decoding {:?}: {:?} {:08x}:{:08x}",
+                            inst, t, lo, hi
+                        )
+                    })?;
+                    let (lo, hi) = decoded.encode();
+                    assert_eq!(
+                        (
+                            i,
+                            cpu::Instruction::decode(lo, hi).map_err(|t| format!(
+                                "Error when decoding {:?}: {:?} {:08x}:{:08x}",
+                                inst, t, lo, hi
+                            ))?
+                        ),
+                        (i, inst)
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_assemble() -> Result<(), String> {
+        let (_, expected) = scaffold();
+        let labels = assembler::layout(&expected);
+        let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
+        let result = assembler::assemble(&resolved)?;
+
+        assert_eq!(result.len(), 1648);
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid() -> Result<(), String> {
+        let invalid_instructions = vec!["MOV [SP], 0x0123\n"];
+
+        for inst in invalid_instructions {
+            let result = parse(inst);
+            assert_eq!(result, Err(inst.to_string()));
+        }
+        Ok(())
+    }
 }

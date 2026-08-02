@@ -1,7 +1,7 @@
 pub mod assembler;
 mod encoding;
 
-use std::ops::Add;
+use std::{fmt::Debug, ops::Add};
 
 use crate::memory::{Address, Memory, Offset};
 use int_enum::IntEnum;
@@ -9,7 +9,7 @@ use int_enum::IntEnum;
 type WordSize = u64;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct Count(u64);
+pub struct Count(u64);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Native(pub u64);
@@ -119,7 +119,7 @@ pub enum WordType {
     Float,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub struct LispWord(u64);
 
 impl LispWord {
@@ -166,6 +166,12 @@ impl LispWord {
 
     fn as_fixnum(self) -> Result<u64, Trap> {
         Ok(self.ensure(WordType::Fixnum)?.payload())
+    }
+}
+
+impl Debug for LispWord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Word::{:?}({})", self.tag(), self.payload())
     }
 }
 
@@ -399,6 +405,11 @@ pub enum Instruction {
     PopR {
         dst: Register,
     },
+    Typep {
+        dst: Register,
+        src: Register,
+        compare: Native,
+    },
     /// while (count--) *dst++ = *src++
     MemCpy {
         dst: MachineRegister,
@@ -473,24 +484,26 @@ impl Cpu {
     }
 
     fn push(&mut self, memory: &mut Memory, val: Native) {
-        memory.write_word(Address::from(self.machine_reg[Cpu::SP.0 as usize]), val);
         self.machine_reg[Cpu::SP.0 as usize] =
             (Address::from(self.machine_reg[Cpu::SP.0 as usize]) - Offset(Self::WORD_SIZE as i64))
                 .into();
+        memory.write_word(Address::from(self.machine_reg[Cpu::SP.0 as usize]), val);
     }
 
     fn pop(&mut self, memory: &mut Memory) -> Native {
+        let res = memory.read_word(Address::from(self.machine_reg[Cpu::SP.0 as usize]));
         self.machine_reg[Cpu::SP.0 as usize] =
             (Address::from(self.machine_reg[Cpu::SP.0 as usize]) + Offset(Self::WORD_SIZE as i64))
                 .into();
-        memory.read_word(Address::from(self.machine_reg[Cpu::SP.0 as usize]))
+        res
     }
 
     fn pop_word(&mut self, memory: &mut Memory) -> Result<LispWord, Trap> {
+        let res = Self::read_word(memory, Address::from(self.machine_reg[Cpu::SP.0 as usize]));
         self.machine_reg[Cpu::SP.0 as usize] =
             (Address::from(self.machine_reg[Cpu::SP.0 as usize]) + Offset(Self::WORD_SIZE as i64))
                 .into();
-        Self::read_word(memory, Address::from(self.machine_reg[Cpu::SP.0 as usize]))
+        res
     }
 
     fn get_offset_reg_val_unchecked(
@@ -499,13 +512,17 @@ impl Cpu {
         off: Option<LispWord>,
     ) -> LispWord {
         let mut add = 0;
+        let mut tag = WordType::Fixnum;
         if let Some(reg) = base {
-            add += self.registers[reg.0 as usize].payload()
+            let op = self.registers[reg.0 as usize];
+            add += op.payload();
+            tag = op.tag();
         }
         if let Some(off) = off {
-            add += off.0
+            add += off.0;
+            tag = off.tag();
         }
-        LispWord::fixnum(add)
+        LispWord::new(tag, add)
     }
     fn get_offset_reg_val(
         &self,
@@ -547,7 +564,7 @@ impl Cpu {
                 self.push(memory, self.registers[0 as usize].into());
                 self.push(memory, self.registers[1 as usize].into());
                 // CONS takes its params as R0 and R1
-                self.registers[0 as usize] = LispWord::new(WordType::Fixnum, 2); // Size: 2
+                self.registers[0 as usize] = LispWord::new(WordType::Fixnum, 16); // Size: 2
                 self.registers[1 as usize] = LispWord::new(WordType::Fixnum, 2);
                 // Type: Int
             }
@@ -602,7 +619,8 @@ impl Cpu {
             // Control flow
             Instruction::Halt => {
                 self.halted = true;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0))
+                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
+                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::Nop => Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                 + Offset(Cpu::INSTRUCTION_SIZE as i64)),
@@ -841,7 +859,7 @@ impl Cpu {
             Instruction::Mov8 { dst, src } => {
                 let value = self.from_location(memory, src).0 as u8;
                 match dst {
-                    Location::Literal(a) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
+                    Location::Literal(_) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
                     Location::Absolute(a) => memory.bytes[a.0 as usize] = value,
                     Location::Machine(MachineRegister(r)) => {
                         self.machine_reg[(r as i64) as usize] = Native(value as u64)
@@ -863,7 +881,7 @@ impl Cpu {
             Instruction::Mov { dst, src } => {
                 let value = self.from_location(memory, src);
                 match dst {
-                    Location::Literal(a) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
+                    Location::Literal(_) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
                     Location::Absolute(a) => memory.write_word(a, value),
                     Location::Machine(MachineRegister(r)) => self.machine_reg[r as usize] = value,
                     Location::Register(Register(r)) => {
@@ -899,31 +917,46 @@ impl Cpu {
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
+            Instruction::Typep { dst, src, compare } => {
+                let src_obj = self.registers[src.0 as usize];
+                self.registers[dst.0 as usize] =
+                    Self::to_machine_bool(memory, src_obj.tag() as u8 as u64 == compare.0)?;
+                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
+                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
+            }
         }
     }
 
     pub fn step(&mut self, memory: &mut Memory) -> Result<(), Trap> {
-        let (lo, hi) = self.fetch(memory);
-        let instruction = Instruction::decode(lo.0, hi.0)?;
-
-        if instruction != Instruction::Halt {
-            println!(
-                "0x{:x} {:?}",
-                Address(self.machine_reg[Cpu::PC.0 as usize].0).0,
-                instruction
-            );
+        if self.interrupt.is_some() {
+            self.halted = false;
         }
 
-        let next_pc = self.execute(instruction, memory)?;
         match self.interrupt {
             Some(i) => {
-                Address(self.machine_reg[Cpu::PC.0 as usize].0) =
-                    self.run_interrupt(memory, i, next_pc)?
+                self.machine_reg[Cpu::PC.0 as usize] = Native::from(self.run_interrupt(
+                    memory,
+                    i,
+                    Address::from(self.machine_reg[Cpu::PC.0 as usize]),
+                )?)
             }
             None => {
-                Address(self.machine_reg[Cpu::PC.0 as usize].0) = next_pc;
+                if self.halted {
+                    return Ok(());
+                }
             }
         };
+
+        let (lo, hi) = self.fetch(memory);
+        let instruction = Instruction::decode(lo.0, hi.0)?;
+        let next_pc = self.execute(instruction, memory)?;
+        Address(self.machine_reg[Cpu::PC.0 as usize].0) = next_pc;
+        println!(
+            "PC: 0x{:x} SP:{:x} {:?}",
+            Address(self.machine_reg[Cpu::PC.0 as usize].0).0,
+            Address(self.machine_reg[Cpu::SP.0 as usize].0).0,
+            instruction
+        );
         Ok(())
     }
 
@@ -944,7 +977,6 @@ impl Cpu {
 pub enum Trap {
     TypeError,
     InvalidInstruction,
-    Unimplemented,
 }
 
 // #[cfg(test)]

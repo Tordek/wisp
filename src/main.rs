@@ -55,7 +55,11 @@ fn main() -> Result<(), String> {
                     repeat: _,
                 } => {
                     machine.interrupt(FirmwareHelper::KEYBOARD_INTERRUPT as u64);
-                    machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = keycode.unwrap().into_i32() as u8;
+                    let key = keycode.unwrap().into_i32() as u8;
+                    machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = key;
+                    if key == '\r' as u8 {
+                        machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = '\n' as u8;
+                    }
                 }
 
                 _ => (),
