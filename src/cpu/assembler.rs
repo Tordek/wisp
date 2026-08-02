@@ -158,6 +158,7 @@ pub enum Reference {
 pub enum Data {
     Symbol(Reference),
     Literal(Reference),
+    Cons(Reference, Reference),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1020,8 +1021,18 @@ fn string(input: &str) -> IResult<&str, AssemblyToken> {
     Ok((rest, AssemblyToken::ResolvedData(encoded)))
 }
 
+fn consord(input: &str) -> IResult<&str, AssemblyToken> {
+    let (rest, _) = tag("cons").parse(input)?;
+    let (rest, _) = space1.parse(rest)?;
+    let (rest, car) = any_value.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, cdr) = any_value.parse(rest)?;
+
+    Ok((rest, AssemblyToken::UnresolvedData(Data::Cons(car, cdr))))
+}
+
 fn directive(input: &str) -> IResult<&str, AssemblyToken> {
-    preceded(tag("."), alt((ord, symbol, string, w))).parse(input)
+    preceded(tag("."), alt((ord, symbol, string, w, consord))).parse(input)
 }
 
 fn label(input: &str) -> IResult<&str, AssemblyToken> {
@@ -1083,6 +1094,7 @@ pub fn layout(assembly_lines: &[AssemblyToken]) -> HashMap<String, usize> {
             AssemblyToken::ResolvedData(d) => position = position.next_multiple_of(8) + d.len(),
             AssemblyToken::UnresolvedData(Data::Symbol(_)) => position += 8,
             AssemblyToken::UnresolvedData(Data::Literal(_)) => position += 8,
+            AssemblyToken::UnresolvedData(Data::Cons(..)) => position += 16,
             AssemblyToken::ResolvedInstruction(_) => {
                 position = position.next_multiple_of(16) + 16;
             }
@@ -1153,6 +1165,9 @@ pub fn resolve(
         result.push(match line {
             AssemblyToken::Ord(o) => AssemblyToken::Ord(*o),
             AssemblyToken::Label(l) => AssemblyToken::Label(l.clone()),
+            AssemblyToken::UnresolvedData(Data::Cons(car, cdr)) => {
+                AssemblyToken::ResolvedData(todo!())
+            }
             AssemblyToken::UnresolvedData(Data::Symbol(refr)) => AssemblyToken::ResolvedData(
                 LispWord::symbol(resolve_reference(refr, labels)? as u64)
                     .0

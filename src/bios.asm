@@ -25,7 +25,22 @@
         .w 'nil
     fixnum_symbol:
         .w 'fixnum_str
-        .w 'nil
+        .w 'nil 
+symbol_table:
+    .cons 'nil, 'fixnum_entry
+
+fixnum_entry:
+    .cons 'fixnum, 'symbol_entry
+
+symbol_entry:
+    .cons 'symbol, 'cons_entry
+
+cons_entry:
+    .cons 'cons, 't_entry
+
+t_entry:
+    .cons 't, 'nil
+
 
 .ord 0x7ef0
     .w 'bootstrap
@@ -49,17 +64,17 @@ kbend: .w 'kbbufferstart
 kblen: .w 10
 ; TODO: A way to reserve space automagically.
 kbbufferstart:
-         .w #0
-         .w #0
-         .w #0
-         .w #0
-         .w #0
-         .w #0
-         .w #0
-         .w #0
-         .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
 kbbufferend:
-         .w #0
+        .w #0
 
 
 
