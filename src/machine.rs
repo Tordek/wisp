@@ -34,9 +34,7 @@ impl FirmwareHelper {
         let parsed_asm = parse(BIOS_ASM).unwrap();
         let locate = layout(&parsed_asm);
         let resolved = resolve(&parsed_asm, &locate).unwrap();
-        let firmware = assemble(&resolved).unwrap();
-
-        firmware
+        assemble(&resolved).unwrap()
     }
 }
 
@@ -48,7 +46,7 @@ pub struct WispMachine {
     pub halted: bool,
 }
 
-impl<'a> WispMachine {
+impl WispMachine {
     pub fn reset(&mut self) {
         self.cpu.reset(&mut self.ram);
     }

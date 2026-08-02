@@ -2,35 +2,19 @@ use int_enum::IntEnum;
 
 use crate::{
     cpu::{
-        self, Count, Instruction, LispWord, Location, MachineRegister, Native, Register,
-        ThreeMachs, ThreeRegs, Trap, TwoRegs,
+        self, Count, EitherSource, Instruction, LispWord, Location, MachSource, MachineRegister,
+        Native, RegSource, Register, Trap, TwoRegs,
     },
     memory::{Address, Offset},
 };
 
 impl cpu::Register {
     fn encode(&self) -> u8 {
-        self.0 as u8
-    }
-
-    fn encode_indirect(&self) -> u8 {
-        self.encode() + 24
+        self.0
     }
 
     fn decode(reg: u8) -> Self {
-        Self(reg as u64)
-    }
-
-    fn decode_indirect(reg: u8) -> Self {
-        Self(reg as u64 - 24)
-    }
-
-    fn try_decode(reg: u8) -> Option<Register> {
-        if reg == Self::NONE {
-            None
-        } else {
-            Some(Self::decode(reg))
-        }
+        Self(reg)
     }
 
     const NONE: u8 = 0x55;
@@ -38,75 +22,29 @@ impl cpu::Register {
 
 impl MachineRegister {
     fn encode(&self) -> u8 {
-        self.0 as u8 + 16
+        self.0
     }
-    fn encode_indirect(&self) -> u8 {
-        self.encode() + 24
-    }
-    fn try_decode(reg: u8) -> Option<Self> {
-        if reg - 16 < 8 {
-            Some(Self(reg as u64 - 16))
-        } else {
-            None
-        }
-    }
-    fn decode(reg: u8) -> Result<Self, Trap> {
-        if reg - 16 < 8 {
-            Ok(Self(reg as u64 - 16))
-        } else {
-            Err(Trap::InvalidInstruction)
-        }
+    fn decode(reg: u8) -> Self {
+        Self(reg)
     }
 }
 
 impl TwoRegs {
     fn decode(r1: u8, r2: u8) -> TwoRegs {
         TwoRegs {
-            dst: Register(r1 as u64),
-            src: Register(r2 as u64),
+            dst: Register(r1),
+            src: Register(r2),
         }
     }
 }
 
-impl ThreeRegs {
-    fn encode(&self) -> (u8, u8, u8, u64) {
-        match (self.op2, self.op3) {
-            (None, None) => (self.dst.encode(), self.op1.encode(), 64, 0),
-            (None, Some(o)) => (self.dst.encode(), self.op1.encode(), 65, o.0),
-            (Some(r), None) => (self.dst.encode(), self.op1.encode(), r.encode() + 24, 0),
-            (Some(r), Some(o)) => (self.dst.encode(), self.op1.encode(), r.encode(), o.0),
-        }
+impl RegSource {
+    fn encode(&self) -> (u8, u8, u64) {
+        EitherSource::encode_reg_source(*self)
     }
-    fn decode(r0: u8, r1: u8, r2: u8, imm: u64) -> ThreeRegs {
-        if r2 == 64 {
-            ThreeRegs {
-                dst: Register::decode(r0),
-                op1: Register::decode(r1),
-                op2: None,
-                op3: None,
-            }
-        } else if r2 == 65 {
-            ThreeRegs {
-                dst: Register::decode(r0),
-                op1: Register::decode(r1),
-                op2: None,
-                op3: Some(LispWord(imm)),
-            }
-        } else if r2 >= 24 {
-            ThreeRegs {
-                dst: Register::decode(r0),
-                op1: Register::decode(r1),
-                op2: Some(Register::decode(r2 - 24)),
-                op3: None,
-            }
-        } else {
-            ThreeRegs {
-                dst: Register::decode(r0),
-                op1: Register::decode(r1),
-                op2: Some(Register::decode(r2)),
-                op3: Some(LispWord(imm)),
-            }
-        }
+
+    fn decode(r1: u8, r2: u8, imm: u64) -> RegSource {
+        EitherSource::decode_reg_source(r1, r2, imm)
     }
 }
 
@@ -115,10 +53,10 @@ impl cpu::Location {
         match self {
             Self::Literal(l) => (Register::NONE, l.0),
             Self::Absolute(l) => (Register::NONE + 1, l.0),
-            Self::Machine(r) => (r.encode(), 0),
             Self::Register(r) => (r.encode(), 0),
-            Self::IndirectMachine(a, d) => (a.encode() + 24, d.0 as u64),
+            Self::Machine(r) => (r.encode() + 16, 0),
             Self::IndirectRegister(a) => (a.encode() + 24, 0),
+            Self::IndirectMachine(a, d) => (a.encode() + 40, d.0 as u64),
         }
     }
 
@@ -130,12 +68,12 @@ impl cpu::Location {
         } else if reg < 16 {
             Ok(Self::Register(Register::decode(reg)))
         } else if reg < 24 {
-            Ok(Self::Machine(MachineRegister::decode(reg)?))
+            Ok(Self::Machine(MachineRegister::decode(reg - 16)))
         } else if reg < 40 {
             Ok(Self::IndirectRegister(Register::decode(reg - 24)))
         } else {
             Ok(Self::IndirectMachine(
-                MachineRegister::decode(reg - 24)?,
+                MachineRegister::decode(reg - 40),
                 cpu::Offset(off as i64),
             ))
         }
@@ -146,10 +84,10 @@ impl cpu::JumpTarget {
     fn encode(&self) -> (u8, u64) {
         match self {
             Self::Absolute(a) => (Register::NONE, a.0),
-            Self::Machine(r, off) => (r.encode(), off.0 as u64),
             Self::Register(r) => (r.encode(), 0),
-            Self::IndirectMachine(a, off) => (a.encode(), off.0 as u64),
+            Self::Machine(r, off) => (r.encode() + 16, off.0 as u64),
             Self::IndirectRegister(a) => (a.encode() + 24, 0),
+            Self::IndirectMachine(a, off) => (a.encode() + 40, off.0 as u64),
         }
     }
 
@@ -160,59 +98,112 @@ impl cpu::JumpTarget {
             Ok(Self::Register(Register::decode(reg)))
         } else if reg < 24 {
             Ok(Self::Machine(
-                MachineRegister::decode(reg)?,
+                MachineRegister::decode(reg - 16),
                 Offset(off as i64),
             ))
         } else if reg < 40 {
             Ok(Self::IndirectRegister(Register::decode(reg - 24)))
         } else {
             Ok(Self::IndirectMachine(
-                MachineRegister::decode(reg - 24)?,
+                MachineRegister::decode(reg - 40),
                 cpu::Offset(off as i64),
             ))
         }
     }
 }
 
-impl ThreeMachs {
-    fn encode(&self) -> (u8, u8, u8, u64) {
-        match (self.op2, self.op3) {
-            (None, None) => (self.dst.encode(), self.op1.encode(), 64, 0),
-            (None, Some(o)) => (self.dst.encode(), self.op1.encode(), 65, o.0),
-            (Some(r), None) => (self.dst.encode(), self.op1.encode(), r.encode() + 24, 0),
-            (Some(r), Some(o)) => (self.dst.encode(), self.op1.encode(), r.encode(), o.0),
+impl MachSource {
+    fn encode(&self) -> (u8, u8, u64) {
+        EitherSource::encode_mach_source(*self)
+    }
+    fn decode(r1: u8, r2: u8, imm: u64) -> Self {
+        EitherSource::decode_mach_source(r1, r2, imm)
+    }
+}
+
+impl cpu::EitherSource {
+    fn encode_reg_source(RegSource { op1, op2, op3 }: RegSource) -> (u8, u8, u64) {
+        Self::encode_either_source(op1.encode(), op2.map(|v| v.encode()), op3.map(|v| v.0))
+    }
+
+    fn encode_mach_source(MachSource { op1, op2, op3 }: MachSource) -> (u8, u8, u64) {
+        let (op1, op2, op3) =
+            Self::encode_either_source(op1.encode(), op2.map(|v| v.encode()), op3.map(|v| v.0));
+        (op1 + 128, op2 + 128, op3)
+    }
+
+    fn encode_either_source(op1: u8, op2: Option<u8>, op3: Option<u64>) -> (u8, u8, u64) {
+        match (op2, op3) {
+            (None, None) => (op1, 64, 0),
+            (None, Some(o)) => (op1, 65, o),
+            (Some(r), None) => (op1, r + 48, 0),
+            (Some(r), Some(o)) => (op1, r, o),
         }
     }
-    fn decode(r0: u8, r1: u8, r2: u8, imm: u64) -> Result<Self, Trap> {
-        Ok(if r2 == 64 {
-            Self {
-                dst: MachineRegister::decode(r0)?,
-                op1: MachineRegister::decode(r1)?,
+
+    fn decode_reg_source(r1: u8, r2: u8, imm: u64) -> RegSource {
+        if r2 == 64 {
+            RegSource {
+                op1: Register::decode(r1),
                 op2: None,
                 op3: None,
             }
         } else if r2 == 65 {
-            Self {
-                dst: MachineRegister::decode(r0)?,
-                op1: MachineRegister::decode(r1)?,
+            RegSource {
+                op1: Register::decode(r1),
                 op2: None,
-                op3: Some(Native(imm)),
+                op3: Some(LispWord(imm)),
             }
-        } else if r2 >= 24 {
-            Self {
-                dst: MachineRegister::decode(r0)?,
-                op1: MachineRegister::decode(r1)?,
-                op2: Some(MachineRegister::decode(r2 - 24)?),
+        } else if r2 >= 48 {
+            RegSource {
+                op1: Register::decode(r1),
+                op2: Some(Register::decode(r2 - 48)),
                 op3: None,
             }
         } else {
-            Self {
-                dst: MachineRegister::decode(r0)?,
-                op1: MachineRegister::decode(r1)?,
-                op2: Some(MachineRegister::decode(r2)?),
+            RegSource {
+                op1: Register::decode(r1),
+                op2: Some(Register::decode(r2)),
+                op3: Some(LispWord(imm)),
+            }
+        }
+    }
+
+    fn decode_mach_source(r1: u8, r2: u8, imm: u64) -> MachSource {
+        let (r1, r2) = (r1 - 128, r2 - 128);
+        if r2 == 64 {
+            MachSource {
+                op1: MachineRegister::decode(r1),
+                op2: None,
+                op3: None,
+            }
+        } else if r2 == 65 {
+            MachSource {
+                op1: MachineRegister::decode(r1),
+                op2: None,
                 op3: Some(Native(imm)),
             }
-        })
+        } else if r2 >= 48 {
+            MachSource {
+                op1: MachineRegister::decode(r1),
+                op2: Some(MachineRegister::decode(r2 - 48)),
+                op3: None,
+            }
+        } else {
+            MachSource {
+                op1: MachineRegister::decode(r1),
+                op2: Some(MachineRegister::decode(r2)),
+                op3: Some(Native(imm)),
+            }
+        }
+    }
+
+    fn decode(r1: u8, r2: u8, hi: u64) -> Result<Self, Trap> {
+        if r1 >= 24 {
+            Ok(EitherSource::Mach(MachSource::decode(r1, r2, hi)))
+        } else {
+            Ok(EitherSource::Reg(RegSource::decode(r1, r2, hi)))
+        }
     }
 }
 
@@ -287,52 +278,63 @@ impl Instruction {
             Opcode::Return => Ok(Self::Return),
             Opcode::MakeClosure => Ok(Self::MakeClosure {
                 dst: Register::decode(r0),
-                code: MachineRegister::try_decode(r1).expect("Shit happened!"),
+                code: MachineRegister::decode(r1),
             }),
 
-            Opcode::Eq => Ok(Self::Binary {
-                op: crate::cpu::BinaryOp::Eq,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            Opcode::Eq => Ok(Self::MComparison {
+                op: crate::cpu::Comparison::Eq,
+                dst: Register::decode(r0),
+                operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Ne => Ok(Self::Binary {
-                op: crate::cpu::BinaryOp::Ne,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            Opcode::Ne => Ok(Self::MComparison {
+                op: crate::cpu::Comparison::Ne,
+                dst: Register::decode(r0),
+                operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Gt => Ok(Self::Binary {
-                op: crate::cpu::BinaryOp::Gt,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            Opcode::Gt => Ok(Self::MComparison {
+                op: crate::cpu::Comparison::Gt,
+                dst: Register::decode(r0),
+                operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Gte => Ok(Self::Binary {
-                op: crate::cpu::BinaryOp::Gte,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            Opcode::Gte => Ok(Self::MComparison {
+                op: crate::cpu::Comparison::Gte,
+                dst: Register::decode(r0),
+                operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Lt => Ok(Self::Binary {
-                op: crate::cpu::BinaryOp::Lt,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            Opcode::Lt => Ok(Self::MComparison {
+                op: crate::cpu::Comparison::Lt,
+                dst: Register::decode(r0),
+                operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Lte => Ok(Self::Binary {
-                op: crate::cpu::BinaryOp::Lte,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+            Opcode::Lte => Ok(Self::MComparison {
+                op: crate::cpu::Comparison::Lte,
+                dst: Register::decode(r0),
+                operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
             Opcode::Add => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Add,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+                dst: Register::decode(r0),
+                operands: RegSource::decode(r1, r2, hi),
             }),
             Opcode::Sub => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Sub,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+                dst: Register::decode(r0),
+                operands: RegSource::decode(r1, r2, hi),
             }),
             Opcode::Mul => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Mul,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+                dst: Register::decode(r0),
+                operands: RegSource::decode(r1, r2, hi),
             }),
             Opcode::Shl => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shl,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+                dst: Register::decode(r0),
+                operands: RegSource::decode(r1, r2, hi),
             }),
             Opcode::Shr => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shr,
-                operands: ThreeRegs::decode(r0, r1, r2, hi),
+                dst: Register::decode(r0),
+                operands: RegSource::decode(r1, r2, hi),
             }),
 
             Opcode::Car => Ok(Self::Car(TwoRegs::decode(r0, r1))),
@@ -347,19 +349,7 @@ impl Instruction {
             Opcode::IDiv => Ok(Self::IDiv {
                 div: Register::decode(r0),
                 rem: Register::decode(r1),
-                op1: Register::decode(r2),
-                op2: if r3 == 64 || r3 == 65 {
-                    None
-                } else if r3 >= 24 {
-                    Some(Register::decode(r3 - 24))
-                } else {
-                    Some(Register::decode(r3))
-                },
-                op3: if r3 == 65 || r3 < 24 {
-                    Some(LispWord(hi))
-                } else {
-                    None
-                },
+                operands: RegSource::decode(r2, r3, hi),
             }),
             Opcode::PopR => Ok(Self::PopR {
                 dst: Register::decode(r0),
@@ -368,37 +358,39 @@ impl Instruction {
                 src: Register::decode(r0),
             }),
             Opcode::PopA => Ok(Self::PopA {
-                dst: MachineRegister::decode(r0)?,
+                dst: MachineRegister::decode(r0),
             }),
             Opcode::PushA => Ok(Self::PushA {
-                src: MachineRegister::decode(r0)?,
+                src: MachineRegister::decode(r0),
             }),
             Opcode::IReturn => Ok(Self::IReturn),
             Opcode::AAdd => Ok(Instruction::MBinary {
                 op: cpu::MBinaryOp::Add,
-                operands: cpu::ThreeMachs::decode(r0, r1, r2, hi)?,
+                dst: cpu::MachineRegister::decode(r0),
+                operands: cpu::MachSource::decode(r1, r2, hi),
             }),
             Opcode::ASub => Ok(Instruction::MBinary {
                 op: cpu::MBinaryOp::Sub,
-                operands: cpu::ThreeMachs::decode(r0, r1, r2, hi)?,
+                dst: cpu::MachineRegister::decode(r0),
+                operands: cpu::MachSource::decode(r1, r2, hi),
             }),
             Opcode::GetPayload => Ok(Instruction::GetPayload {
-                dst: MachineRegister::decode(r0)?,
+                dst: MachineRegister::decode(r0),
                 src: Register::decode(r1),
             }),
             Opcode::GetTag => Ok(Instruction::GetTag {
-                dst: MachineRegister::decode(r0)?,
+                dst: MachineRegister::decode(r0),
                 src: Register::decode(r1),
             }),
             Opcode::Halt => Ok(Instruction::Halt),
             Opcode::Int => Ok(Instruction::Int(hi)),
             Opcode::SetPayload => Ok(Instruction::SetPayload {
                 dst: Register::decode(r0),
-                src: MachineRegister::decode(r1)?,
+                src: MachineRegister::decode(r1),
             }),
             Opcode::SetTag => Ok(Instruction::SetTag {
                 dst: Register::decode(r0),
-                src: MachineRegister::decode(r1)?,
+                src: MachineRegister::decode(r1),
             }),
             Opcode::Mov => {
                 let dst = Location::decode(r0, hi)?;
@@ -418,44 +410,48 @@ impl Instruction {
                 compare: Native(hi),
             }),
             Opcode::MemCpy => Ok(Instruction::MemCpy {
-                dst: MachineRegister::decode(r0)?,
-                src: MachineRegister::decode(r1)?,
+                dst: MachineRegister::decode(r0),
+                src: MachineRegister::decode(r1),
                 count: Count(hi),
             }),
         }
     }
 
-    fn encode_div(
-        div: Register,
-        rem: Register,
-        op1: Register,
-        op2: Option<Register>,
-        op3: Option<LispWord>,
-    ) -> (u64, u64) {
-        let (r0, r1, r2, r3, hi) = match (op2, op3) {
-            (None, None) => (div.encode(), rem.encode(), op1.encode(), 64, 0),
-            (None, Some(o)) => (div.encode(), rem.encode(), op1.encode(), 65, o.0),
-            (Some(r), None) => (div.encode(), rem.encode(), op1.encode(), r.encode() + 24, 0),
-            (Some(r), Some(o)) => (div.encode(), rem.encode(), op1.encode(), r.encode(), o.0),
-        };
+    fn encode_div(div: Register, rem: Register, r: RegSource) -> (u64, u64) {
+        let (r2, r3, hi) = r.encode();
         (
-            u64::from_le_bytes([Opcode::IDiv.into(), r0, r1, r2, r3, 0, 0, 0]),
+            u64::from_le_bytes([
+                Opcode::IDiv.into(),
+                div.encode(),
+                rem.encode(),
+                r2,
+                r3,
+                0,
+                0,
+                0,
+            ]),
             hi,
         )
     }
-    fn encode_three_adrs(opcode: Opcode, target: &ThreeMachs) -> (u64, u64) {
-        let (r0, r1, r2, hi) = target.encode();
+    fn encode_three_adrs(opcode: Opcode, dst: u8, target: &MachSource) -> (u64, u64) {
+        let (r1, r2, hi) = target.encode();
         (
-            u64::from_le_bytes([opcode.into(), r0, r1, r2, 0, 0, 0, 0]),
+            u64::from_le_bytes([opcode.into(), dst, r1, r2, 0, 0, 0, 0]),
             hi,
         )
     }
-    fn encode_three_regs(opcode: Opcode, target: &ThreeRegs) -> (u64, u64) {
-        let (r0, r1, r2, hi) = target.encode();
+    fn encode_three_regs(opcode: Opcode, dst: u8, target: &RegSource) -> (u64, u64) {
+        let (r1, r2, hi) = target.encode();
         (
-            u64::from_le_bytes([opcode.into(), r0, r1, r2, 0, 0, 0, 0]),
+            u64::from_le_bytes([opcode.into(), dst, r1, r2, 0, 0, 0, 0]),
             hi,
         )
+    }
+    fn encode_three_either(opcode: Opcode, dst: u8, target: &EitherSource) -> (u64, u64) {
+        match target {
+            EitherSource::Mach(m) => Self::encode_three_adrs(opcode, dst, m),
+            EitherSource::Reg(r) => Self::encode_three_regs(opcode, dst, r),
+        }
     }
     fn encode_two_regs(opcode: Opcode, target: &TwoRegs) -> (u64, u64) {
         match target {
@@ -544,50 +540,61 @@ impl Instruction {
             ),
 
             // Comparison
-            Instruction::Binary {
-                op: crate::cpu::BinaryOp::Eq,
+            Instruction::MComparison {
+                op: crate::cpu::Comparison::Eq,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Eq, operands),
-            Instruction::Binary {
-                op: crate::cpu::BinaryOp::Ne,
+            } => Self::encode_three_either(Opcode::Eq, dst.encode(), operands),
+            Instruction::MComparison {
+                op: crate::cpu::Comparison::Ne,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Ne, operands),
-            Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gt,
+            } => Self::encode_three_either(Opcode::Ne, dst.encode(), operands),
+            Instruction::MComparison {
+                op: crate::cpu::Comparison::Gt,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Gt, operands),
-            Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gte,
+            } => Self::encode_three_either(Opcode::Gt, dst.encode(), operands),
+            Instruction::MComparison {
+                op: crate::cpu::Comparison::Gte,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Gte, operands),
-            Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lt,
+            } => Self::encode_three_either(Opcode::Gte, dst.encode(), operands),
+            Instruction::MComparison {
+                op: crate::cpu::Comparison::Lt,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Lt, operands),
-            Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lte,
+            } => Self::encode_three_either(Opcode::Lt, dst.encode(), operands),
+            Instruction::MComparison {
+                op: crate::cpu::Comparison::Lte,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Lte, operands),
+            } => Self::encode_three_either(Opcode::Lte, dst.encode(), operands),
             Instruction::Binary {
                 op: crate::cpu::BinaryOp::Add,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Add, operands),
+            } => Self::encode_three_regs(Opcode::Add, dst.encode(), operands),
             Instruction::Binary {
                 op: crate::cpu::BinaryOp::Sub,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Sub, operands),
+            } => Self::encode_three_regs(Opcode::Sub, dst.encode(), operands),
             Instruction::Binary {
                 op: crate::cpu::BinaryOp::Mul,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Mul, operands),
+            } => Self::encode_three_regs(Opcode::Mul, dst.encode(), operands),
             Instruction::Binary {
                 op: crate::cpu::BinaryOp::Shl,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Shl, operands),
+            } => Self::encode_three_regs(Opcode::Shl, dst.encode(), operands),
             Instruction::Binary {
                 op: crate::cpu::BinaryOp::Shr,
+                dst,
                 operands,
-            } => Self::encode_three_regs(Opcode::Shr, operands),
+            } => Self::encode_three_regs(Opcode::Shr, dst.encode(), operands),
 
             // Cons
             Instruction::Car(regs) => Self::encode_two_regs(Opcode::Car, regs),
@@ -608,13 +615,9 @@ impl Instruction {
                 0,
             ),
 
-            Instruction::IDiv {
-                div,
-                rem,
-                op1,
-                op2,
-                op3,
-            } => Instruction::encode_div(*div, *rem, *op1, *op2, *op3),
+            &Instruction::IDiv { div, rem, operands } => {
+                Instruction::encode_div(div, rem, operands)
+            }
             Instruction::PopR { dst } => (
                 u64::from_le_bytes([Opcode::PopR.into(), dst.encode(), 0, 0, 0, 0, 0, 0]),
                 0,
@@ -637,12 +640,14 @@ impl Instruction {
             ),
             Instruction::MBinary {
                 op: crate::cpu::MBinaryOp::Add,
+                dst,
                 operands,
-            } => Self::encode_three_adrs(Opcode::AAdd, operands),
+            } => Self::encode_three_adrs(Opcode::AAdd, dst.encode(), operands),
             Instruction::MBinary {
                 op: crate::cpu::MBinaryOp::Sub,
+                dst,
                 operands,
-            } => Self::encode_three_adrs(Opcode::ASub, operands),
+            } => Self::encode_three_adrs(Opcode::ASub, dst.encode(), operands),
             Instruction::GetPayload { dst, src } => (
                 u64::from_le_bytes([
                     Opcode::GetPayload.into(),

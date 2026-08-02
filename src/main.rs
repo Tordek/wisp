@@ -57,8 +57,8 @@ fn main() -> Result<(), String> {
                     machine.interrupt(FirmwareHelper::KEYBOARD_INTERRUPT as u64);
                     let key = keycode.unwrap().into_i32() as u8;
                     machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = key;
-                    if key == '\r' as u8 {
-                        machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = '\n' as u8;
+                    if key == b'\r' {
+                        machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = b'\n';
                     }
                 }
 

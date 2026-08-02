@@ -19,73 +19,77 @@ use crate::{
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct ThreeRegs {
-    pub dst: crate::cpu::Register,
-    pub op1: crate::cpu::Register,
-    pub op2: Option<crate::cpu::Register>,
+pub struct RegSource {
+    pub op1: cpu::Register,
+    pub op2: Option<cpu::Register>,
     pub op3: Option<Reference>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct ThreeMachs {
-    pub dst: crate::cpu::MachineRegister,
-    pub op1: crate::cpu::MachineRegister,
-    pub op2: Option<crate::cpu::MachineRegister>,
+pub struct MachSource {
+    pub op1: cpu::MachineRegister,
+    pub op2: Option<cpu::MachineRegister>,
     pub op3: Option<Reference>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum EitherSource {
+    Mach(MachSource),
+    Reg(RegSource),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Location {
     Literal(Reference),
     Absolute(Reference),
-    Register(crate::cpu::Register),
-    Machine(crate::cpu::MachineRegister),
-    IndirectRegister(crate::cpu::Register),
-    IndirectMachine(crate::cpu::MachineRegister, Reference),
+    Register(cpu::Register),
+    Machine(cpu::MachineRegister),
+    IndirectRegister(cpu::Register),
+    IndirectMachine(cpu::MachineRegister, Reference),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum JumpTarget {
     Absolute(Reference),
-    Register(crate::cpu::Register),
-    Machine(crate::cpu::MachineRegister, Reference),
-    IndirectRegister(crate::cpu::Register),
-    IndirectMachine(crate::cpu::MachineRegister, Reference),
+    Register(cpu::Register),
+    Machine(cpu::MachineRegister, Reference),
+    IndirectRegister(cpu::Register),
+    IndirectMachine(cpu::MachineRegister, Reference),
 }
 
 impl Location {
     fn try_resolve(&self) -> Option<cpu::Location> {
-        match self {
-            &Location::Literal(Reference::Resolved(r)) => {
+        match *self {
+            Location::Literal(Reference::Resolved(r)) => {
                 Some(cpu::Location::Literal(cpu::Native(r as u64)))
             }
-            &Location::Absolute(Reference::Resolved(r)) => {
+            Location::Absolute(Reference::Resolved(r)) => {
                 Some(cpu::Location::Absolute(cpu::Address(r as u64)))
             }
-            &Location::Machine(reg) => Some(cpu::Location::Machine(reg)),
-            &Location::Register(reg) => Some(cpu::Location::Register(reg)),
-            &Location::IndirectMachine(reg, Reference::Resolved(off)) => {
+            Location::Machine(reg) => Some(cpu::Location::Machine(reg)),
+            Location::Register(reg) => Some(cpu::Location::Register(reg)),
+            Location::IndirectMachine(reg, Reference::Resolved(off)) => {
                 Some(cpu::Location::IndirectMachine(reg, Offset(off)))
             }
-            &Location::IndirectRegister(r) => Some(cpu::Location::IndirectRegister(r)),
+            Location::IndirectRegister(r) => Some(cpu::Location::IndirectRegister(r)),
             _ => None,
         }
     }
 }
 impl JumpTarget {
     fn try_resolve(&self) -> Option<cpu::JumpTarget> {
-        match self {
-            &JumpTarget::Absolute(Reference::Resolved(r)) => {
+        match *self {
+            JumpTarget::Absolute(Reference::Resolved(r)) => {
                 Some(cpu::JumpTarget::Absolute(Address(r as u64)))
             }
-            &JumpTarget::Machine(reg, Reference::Resolved(off)) => {
+            JumpTarget::Machine(reg, Reference::Resolved(off)) => {
                 Some(cpu::JumpTarget::Machine(reg, Offset(off)))
             }
-            &JumpTarget::Register(reg) => Some(cpu::JumpTarget::Register(reg)),
-            &JumpTarget::IndirectMachine(reg, Reference::Resolved(off)) => {
+            JumpTarget::Register(reg) => Some(cpu::JumpTarget::Register(reg)),
+            JumpTarget::IndirectMachine(reg, Reference::Resolved(off)) => {
                 Some(cpu::JumpTarget::IndirectMachine(reg, Offset(off)))
             }
-            &JumpTarget::IndirectRegister(r) => Some(cpu::JumpTarget::IndirectRegister(r)),
+            JumpTarget::IndirectRegister(r) => Some(cpu::JumpTarget::IndirectRegister(r)),
             _ => None,
         }
     }
@@ -94,7 +98,7 @@ impl JumpTarget {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum UnresolvedInstruction {
     Jump {
-        condition: crate::cpu::Condition,
+        condition: cpu::Condition,
         target: JumpTarget,
     },
     Int(Reference),
@@ -107,30 +111,37 @@ pub enum UnresolvedInstruction {
         src: Location,
     },
     MBinary {
-        op: crate::cpu::MBinaryOp,
-        operands: ThreeMachs,
+        op: cpu::MBinaryOp,
+        dst: cpu::MachineRegister,
+        operands: MachSource,
     },
     IDiv {
-        div: crate::cpu::Register,
-        rem: crate::cpu::Register,
-        op1: crate::cpu::Register,
-        op2: Option<crate::cpu::Register>,
+        div: cpu::Register,
+        rem: cpu::Register,
+        op1: cpu::Register,
+        op2: Option<cpu::Register>,
         op3: Option<Reference>,
     },
     Binary {
-        op: crate::cpu::BinaryOp,
-        operands: ThreeRegs,
+        op: cpu::BinaryOp,
+        dst: cpu::Register,
+        operands: RegSource,
     },
-    MemCpy {
-        dst: crate::cpu::MachineRegister,
-        src: crate::cpu::MachineRegister,
-        count: Reference,
+    MComparison {
+        op: cpu::Comparison,
+        dst: cpu::Register,
+        operands: EitherSource,
     },
-    MemSet {
-        dst: crate::cpu::MachineRegister,
-        src: crate::cpu::MachineRegister,
-        count: Reference,
-    },
+    // MemCpy {
+    //     dst: cpu::MachineRegister,
+    //     src: cpu::MachineRegister,
+    //     count: Reference,
+    // },
+    // MemSet {
+    //     dst: cpu::MachineRegister,
+    //     src: cpu::MachineRegister,
+    //     count: Reference,
+    // },
     Call {
         target: JumpTarget,
     },
@@ -154,7 +165,7 @@ pub enum AssemblyToken {
     Ord(usize),
     UnresolvedData(Data),
     ResolvedData(Vec<u8>),
-    ResolvedInstruction(crate::cpu::Instruction),
+    ResolvedInstruction(cpu::Instruction),
     UnresolvedInstruction(UnresolvedInstruction),
     Label(String),
 }
@@ -175,7 +186,7 @@ fn reference(input: &str) -> IResult<&str, Reference> {
 
 fn nop(input: &str) -> IResult<&str, AssemblyToken> {
     value(
-        AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Nop),
+        AssemblyToken::ResolvedInstruction(cpu::Instruction::Nop),
         tag("NOP"),
     )
     .parse(input)
@@ -183,19 +194,19 @@ fn nop(input: &str) -> IResult<&str, AssemblyToken> {
 
 fn halt(input: &str) -> IResult<&str, AssemblyToken> {
     tag("HALT")
-        .map(|_| AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Halt))
+        .map(|_| AssemblyToken::ResolvedInstruction(cpu::Instruction::Halt))
         .parse(input)
 }
 
 fn return_op(input: &str) -> IResult<&str, AssemblyToken> {
     tag("RETURN")
-        .map(|_| AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Return))
+        .map(|_| AssemblyToken::ResolvedInstruction(cpu::Instruction::Return))
         .parse(input)
 }
 
 fn ireturn_op(input: &str) -> IResult<&str, AssemblyToken> {
     tag("IRETURN")
-        .map(|_| AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::IReturn))
+        .map(|_| AssemblyToken::ResolvedInstruction(cpu::Instruction::IReturn))
         .parse(input)
 }
 
@@ -207,7 +218,7 @@ fn fixnum(input: &str) -> IResult<&str, Reference> {
 
 fn charlit(input: &str) -> IResult<&str, Reference> {
     preceded(
-        tag("\\#"),
+        tag("#\\"),
         alt((
             value(LispWord::char('\n' as u64), tag("Newline")),
             anychar.map(|n| LispWord::char(n as u64)),
@@ -218,13 +229,7 @@ fn charlit(input: &str) -> IResult<&str, Reference> {
 }
 
 fn any_value(input: &str) -> IResult<&str, Reference> {
-    alt((
-        number.map(|v| Reference::Resolved(v)),
-        reference,
-        fixnum,
-        charlit,
-    ))
-    .parse(input)
+    alt((number.map(Reference::Resolved), reference, fixnum, charlit)).parse(input)
 }
 
 fn interrupt(input: &str) -> IResult<&str, AssemblyToken> {
@@ -234,7 +239,7 @@ fn interrupt(input: &str) -> IResult<&str, AssemblyToken> {
     match target {
         Reference::Resolved(v) => Ok((
             rest,
-            AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Int(v as u64)),
+            AssemblyToken::ResolvedInstruction(cpu::Instruction::Int(v as u64)),
         )),
         unresolved => Ok((
             rest,
@@ -243,9 +248,9 @@ fn interrupt(input: &str) -> IResult<&str, AssemblyToken> {
     }
 }
 
-fn register(input: &str) -> IResult<&str, crate::cpu::Register> {
+fn register(input: &str) -> IResult<&str, cpu::Register> {
     preceded(tag("R"), digit1)
-        .map_res(|n: &str| n.parse().map(crate::cpu::Register))
+        .map_res(|n: &str| n.parse().map(cpu::Register))
         .parse(input)
 }
 
@@ -268,9 +273,9 @@ fn offset(input: &str) -> IResult<&str, Reference> {
         .parse(rest)
 }
 
-fn machineregister(input: &str) -> IResult<&str, crate::cpu::MachineRegister> {
+fn machineregister(input: &str) -> IResult<&str, cpu::MachineRegister> {
     let normalreg =
-        preceded(tag("A"), digit1).map_res(|n: &str| n.parse().map(crate::cpu::MachineRegister));
+        preceded(tag("A"), digit1).map_res(|n: &str| n.parse().map(cpu::MachineRegister));
     let sp = tag("SP").map(|_| cpu::Cpu::SP);
     let pc = tag("PC").map(|_| cpu::Cpu::PC);
     let env = tag("ENV").map(|_| cpu::Cpu::ENV);
@@ -292,15 +297,15 @@ fn jump(input: &str) -> IResult<&str, AssemblyToken> {
             let (rest, _) = space1.parse(rest)?;
             let (rest, register) = register.parse(rest)?;
             let (rest, _) = tag(",").parse(rest)?;
-            (rest, crate::cpu::Condition::True(register))
+            (rest, cpu::Condition::True(register))
         }
         Some("IFNOT") => {
             let (rest, _) = space1.parse(rest)?;
             let (rest, register) = register.parse(rest)?;
             let (rest, _) = tag(",").parse(rest)?;
-            (rest, crate::cpu::Condition::False(register))
+            (rest, cpu::Condition::False(register))
         }
-        None => (rest, crate::cpu::Condition::Always),
+        None => (rest, cpu::Condition::Always),
         _ => {
             return Err(nom::Err::Error(nom::error::Error::new(
                 rest,
@@ -333,29 +338,29 @@ fn call(input: &str) -> IResult<&str, AssemblyToken> {
         rest,
         match jumptarget {
             JumpTarget::Absolute(Reference::Resolved(target)) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
                     target: cpu::JumpTarget::Absolute(Address(target as u64)),
                 })
             }
             JumpTarget::Machine(reg, Reference::Resolved(target)) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
                     target: cpu::JumpTarget::Machine(reg, Offset(target)),
                 })
             }
             JumpTarget::Register(reg) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
                     target: cpu::JumpTarget::Register(reg),
                 })
             }
 
             JumpTarget::IndirectMachine(mr, Reference::Resolved(target)) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
                     target: cpu::JumpTarget::IndirectMachine(mr, Offset(target)),
                 })
             }
 
             JumpTarget::IndirectRegister(reg) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
                     target: cpu::JumpTarget::IndirectRegister(reg),
                 })
             }
@@ -397,11 +402,11 @@ fn popr(input: &str) -> IResult<&str, AssemblyToken> {
 
 fn location(input: &str) -> IResult<&str, Location> {
     alt((
-        any_value.map(|r| Location::Literal(r)),
-        register.map(|r| Location::Register(r)),
-        machineregister.map(|reg| Location::Machine(reg)),
-        delimited(tag("["), any_value, tag("]")).map(|l| Location::Absolute(l)),
-        delimited(tag("["), register, tag("]")).map(|r| Location::IndirectRegister(r)),
+        any_value.map(Location::Literal),
+        register.map(Location::Register),
+        machineregister.map(Location::Machine),
+        delimited(tag("["), any_value, tag("]")).map(Location::Absolute),
+        delimited(tag("["), register, tag("]")).map(Location::IndirectRegister),
         delimited(tag("["), machine_and_offset, tag("]"))
             .map(|(reg, refr)| Location::IndirectMachine(reg, refr)),
     ))
@@ -410,14 +415,25 @@ fn location(input: &str) -> IResult<&str, Location> {
 
 fn jumptarget(input: &str) -> IResult<&str, JumpTarget> {
     alt((
-        any_value.map(|r| JumpTarget::Absolute(r)),
-        register.map(|r| JumpTarget::Register(r)),
+        any_value.map(JumpTarget::Absolute),
+        register.map(JumpTarget::Register),
         machine_and_offset.map(|(reg, off)| JumpTarget::Machine(reg, off)),
-        delimited(tag("["), register, tag("]")).map(|r| JumpTarget::IndirectRegister(r)),
+        delimited(tag("["), register, tag("]")).map(JumpTarget::IndirectRegister),
         delimited(tag("["), machine_and_offset, tag("]"))
             .map(|(reg, refr)| JumpTarget::IndirectMachine(reg, refr)),
     ))
     .parse(input)
+}
+
+fn operand_uses_extra(location: &Location) -> bool {
+    match location {
+        Location::Absolute(_) => true,
+        Location::IndirectMachine(_, _) => true,
+        Location::IndirectRegister(_) => false,
+        Location::Literal(_) => true,
+        Location::Machine(_) => false,
+        Location::Register(_) => false,
+    }
 }
 
 fn mov(input: &str) -> IResult<&str, AssemblyToken> {
@@ -427,6 +443,14 @@ fn mov(input: &str) -> IResult<&str, AssemblyToken> {
     let (rest, _) = tag(",").parse(rest)?;
     let (rest, _) = space0.parse(rest)?;
     let (rest, source) = location.parse(rest)?;
+
+    if operand_uses_extra(&source) && operand_uses_extra(&target) {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Fail,
+        )));
+    }
+
     Ok((
         rest,
         match (target.try_resolve(), source.try_resolve()) {
@@ -468,11 +492,8 @@ fn mov8(input: &str) -> IResult<&str, AssemblyToken> {
     ))
 }
 
-fn threemachs(input: &str) -> IResult<&str, ThreeMachs> {
-    let (rest, dst) = machineregister.parse(input)?;
-    let (rest, _) = tag(",").parse(rest)?;
-    let (rest, _) = space0.parse(rest)?;
-    let (rest, op1) = machineregister.parse(rest)?;
+fn threemachs(input: &str) -> IResult<&str, MachSource> {
+    let (rest, op1) = machineregister.parse(input)?;
     let (rest, _) = tag(",").parse(rest)?;
     let (rest, _) = space0.parse(rest)?;
     let (rest, op2) = opt(machineregister).parse(rest)?;
@@ -483,7 +504,7 @@ fn threemachs(input: &str) -> IResult<&str, ThreeMachs> {
         opt(any_value).parse(rest)?
     };
 
-    Ok((rest, ThreeMachs { dst, op1, op2, op3 }))
+    Ok((rest, MachSource { op1, op2, op3 }))
 }
 
 fn mbin(input: &str) -> IResult<&str, AssemblyToken> {
@@ -493,34 +514,35 @@ fn mbin(input: &str) -> IResult<&str, AssemblyToken> {
     ))
     .parse(input)?;
     let (rest, _) = space1.parse(rest)?;
+    let (rest, dst) = machineregister.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
     let (rest, threemachs) = threemachs.parse(rest)?;
 
     Ok((
         rest,
         match threemachs {
-            ThreeMachs {
-                dst,
+            MachSource {
                 op1,
                 op2,
                 op3: None,
             } => AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
                 op,
-                operands: cpu::ThreeMachs {
-                    dst,
+                dst,
+                operands: cpu::MachSource {
                     op1,
                     op2,
                     op3: None,
                 },
             }),
-            ThreeMachs {
-                dst,
+            MachSource {
                 op1,
                 op2,
                 op3: Some(Reference::Resolved(r)),
             } => AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
                 op,
-                operands: cpu::ThreeMachs {
-                    dst,
+                dst,
+                operands: cpu::MachSource {
                     op1,
                     op2,
                     op3: Some(cpu::Native(r as u64)),
@@ -528,6 +550,7 @@ fn mbin(input: &str) -> IResult<&str, AssemblyToken> {
             }),
             unresolved => AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MBinary {
                 op,
+                dst,
                 operands: unresolved,
             }),
         },
@@ -654,11 +677,8 @@ fn setcdr(input: &str) -> IResult<&str, AssemblyToken> {
         AssemblyToken::ResolvedInstruction(cpu::Instruction::SetCdr(tworegs)),
     ))
 }
-fn threeregs(input: &str) -> IResult<&str, ThreeRegs> {
-    let (rest, dst) = register.parse(input)?;
-    let (rest, _) = tag(",").parse(rest)?;
-    let (rest, _) = space0.parse(rest)?;
-    let (rest, op1) = register.parse(rest)?;
+fn threeregs(input: &str) -> IResult<&str, RegSource> {
+    let (rest, op1) = register.parse(input)?;
     let (rest, _) = tag(",").parse(rest)?;
     let (rest, _) = space0.parse(rest)?;
     let (rest, op2) = opt(register).parse(rest)?;
@@ -669,51 +689,136 @@ fn threeregs(input: &str) -> IResult<&str, ThreeRegs> {
         opt(any_value).parse(rest)?
     };
 
-    Ok((rest, ThreeRegs { dst, op1, op2, op3 }))
+    Ok((rest, RegSource { op1, op2, op3 }))
+}
+
+fn either_source(input: &str) -> IResult<&str, EitherSource> {
+    alt((
+        threemachs.map(EitherSource::Mach),
+        threeregs.map(EitherSource::Reg),
+    ))
+    .parse(input)
+}
+
+fn comparison(input: &str) -> IResult<&str, AssemblyToken> {
+    let (rest, op) = alt((
+        value(cpu::Comparison::Eq, tag("EQ")),
+        value(cpu::Comparison::Ne, tag("NE")),
+        value(cpu::Comparison::Gte, tag("GTE")),
+        value(cpu::Comparison::Gt, tag("GT")),
+        value(cpu::Comparison::Lte, tag("LTE")),
+        value(cpu::Comparison::Lt, tag("LT")),
+    ))
+    .parse(input)?;
+    let (rest, _) = space1.parse(rest)?;
+    let (rest, dst) = register.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
+    let (rest, either_source) = either_source.parse(rest)?;
+
+    Ok((
+        rest,
+        match either_source {
+            EitherSource::Mach(MachSource {
+                op1,
+                op2,
+                op3: None,
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op,
+                dst,
+                operands: cpu::EitherSource::Mach(cpu::MachSource {
+                    op1,
+                    op2,
+                    op3: None,
+                }),
+            }),
+            EitherSource::Mach(MachSource {
+                op1,
+                op2,
+                op3: Some(Reference::Resolved(r)),
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op,
+                dst,
+                operands: cpu::EitherSource::Mach(cpu::MachSource {
+                    op1,
+                    op2,
+                    op3: Some(cpu::Native(r as u64)),
+                }),
+            }),
+            EitherSource::Reg(RegSource {
+                op1,
+                op2,
+                op3: None,
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op,
+                dst,
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1,
+                    op2,
+                    op3: None,
+                }),
+            }),
+            EitherSource::Reg(RegSource {
+                op1,
+                op2,
+                op3: Some(Reference::Resolved(r)),
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op,
+                dst,
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1,
+                    op2,
+                    op3: Some(cpu::LispWord(r as u64)),
+                }),
+            }),
+            unresolved => {
+                AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MComparison {
+                    op,
+                    dst,
+                    operands: unresolved,
+                })
+            }
+        },
+    ))
 }
 
 fn bin(input: &str) -> IResult<&str, AssemblyToken> {
     let (rest, op) = alt((
-        tag("ADD").map(|_| cpu::BinaryOp::Add),
-        tag("SUB").map(|_| cpu::BinaryOp::Sub),
-        tag("MUL").map(|_| cpu::BinaryOp::Mul),
-        tag("EQ").map(|_| cpu::BinaryOp::Eq),
-        tag("NE").map(|_| cpu::BinaryOp::Ne),
-        tag("GTE").map(|_| cpu::BinaryOp::Gte),
-        tag("GT").map(|_| cpu::BinaryOp::Gt),
-        tag("LTE").map(|_| cpu::BinaryOp::Lte),
-        tag("LT").map(|_| cpu::BinaryOp::Lt),
+        value(cpu::BinaryOp::Add, tag("ADD")),
+        value(cpu::BinaryOp::Sub, tag("SUB")),
+        value(cpu::BinaryOp::Mul, tag("MUL")),
     ))
     .parse(input)?;
     let (rest, _) = space1.parse(rest)?;
+    let (rest, dst) = register.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
     let (rest, threeregs) = threeregs.parse(rest)?;
 
     Ok((
         rest,
         match threeregs {
-            ThreeRegs {
-                dst,
+            RegSource {
                 op1,
                 op2,
                 op3: None,
             } => AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
                 op,
-                operands: cpu::ThreeRegs {
-                    dst,
+                dst,
+                operands: cpu::RegSource {
                     op1,
                     op2,
                     op3: None,
                 },
             }),
-            ThreeRegs {
-                dst,
+            RegSource {
                 op1,
                 op2,
                 op3: Some(Reference::Resolved(r)),
             } => AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
                 op,
-                operands: cpu::ThreeRegs {
-                    dst,
+                dst,
+                operands: cpu::RegSource {
                     op1,
                     op2,
                     op3: Some(cpu::LispWord(r as u64)),
@@ -721,6 +826,7 @@ fn bin(input: &str) -> IResult<&str, AssemblyToken> {
             }),
             unresolved => AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Binary {
                 op,
+                dst,
                 operands: unresolved,
             }),
         },
@@ -733,38 +839,45 @@ fn div(input: &str) -> IResult<&str, AssemblyToken> {
     let (rest, div) = register.parse(rest)?;
     let (rest, _) = tag(",").parse(rest)?;
     let (rest, _) = space0.parse(rest)?;
-    let (rest, threeregs) = threeregs.parse(rest)?;
+    let (rest, rem) = register.parse(rest)?;
+    let (rest, _) = tag(",").parse(rest)?;
+    let (rest, _) = space0.parse(rest)?;
+    let (rest, operands) = threeregs.parse(rest)?;
     Ok((
         rest,
-        match threeregs {
-            ThreeRegs {
-                dst,
+        match operands {
+            RegSource {
                 op1,
                 op2,
                 op3: None,
             } => AssemblyToken::ResolvedInstruction(cpu::Instruction::IDiv {
                 div,
-                rem: dst,
-                op1,
-                op2,
-                op3: None,
+                rem,
+                operands: {
+                    cpu::RegSource {
+                        op1,
+                        op2,
+                        op3: None,
+                    }
+                },
             }),
-            ThreeRegs {
-                dst,
+            RegSource {
                 op1,
                 op2,
                 op3: Some(Reference::Resolved(r)),
             } => AssemblyToken::ResolvedInstruction(cpu::Instruction::IDiv {
                 div,
-                rem: dst,
-                op1,
-                op2,
-                op3: Some(LispWord(r as u64)),
+                rem,
+                operands: cpu::RegSource {
+                    op1,
+                    op2,
+                    op3: Some(LispWord(r as u64)),
+                },
             }),
-            ThreeRegs { dst, op1, op2, op3 } => {
+            RegSource { op1, op2, op3 } => {
                 AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::IDiv {
                     div,
-                    rem: dst,
+                    rem,
                     op1,
                     op2,
                     op3,
@@ -834,7 +947,17 @@ fn instruction(input: &str) -> IResult<&str, AssemblyToken> {
             nop, halt, return_op, ireturn_op, interrupt, jump, call, pusha, popa, pushr, popr, mov,
             mov8, mbin, settag, gettag, setpayload, getpayload, cons, uncons, car,
         )),
-        alt((cdr, setcar, setcdr, bin, div, makeclosure, typep, memcpy)),
+        alt((
+            cdr,
+            setcar,
+            setcdr,
+            bin,
+            div,
+            makeclosure,
+            typep,
+            memcpy,
+            comparison,
+        )),
     ))
     .parse(input)
 }
@@ -845,11 +968,9 @@ fn decimal(input: &str) -> IResult<&str, i64> {
 }
 
 fn hex(input: &str) -> IResult<&str, i64> {
-    // TODO: hex_u64
-    let (rest, _) = tag("0x").parse(input)?;
-    let (rest, v1) = recognize(hex_digit1).parse(rest)?;
-    let v = i64::from_str_radix(v1, 16).unwrap();
-    Ok((rest, v as i64))
+    preceded(tag("0x"), recognize(hex_digit1))
+        .map_res(|str| i64::from_str_radix(str, 16))
+        .parse(input)
 }
 
 fn ord(input: &str) -> IResult<&str, AssemblyToken> {
@@ -947,7 +1068,7 @@ fn asm_lines(input: &str) -> IResult<&str, Vec<AssemblyToken>> {
 pub fn parse(input: &str) -> Result<Vec<AssemblyToken>, String> {
     let (rest, assembly_lines) = asm_lines(input).map_err(|e| format!("parse error: {}", e))?;
 
-    if rest != "" {
+    if !rest.is_empty() {
         return Err(rest.to_string());
     }
 
@@ -1009,14 +1130,14 @@ pub fn resolve_location(
 ) -> Result<cpu::Location, String> {
     Ok(match location {
         Location::Absolute(r) => {
-            cpu::Location::Absolute(Address(resolve_reference(&r, labels)? as u64))
+            cpu::Location::Absolute(Address(resolve_reference(r, labels)? as u64))
         }
         Location::IndirectMachine(m, r) => {
             cpu::Location::IndirectMachine(*m, memory::Offset(resolve_reference(r, labels)? as i64))
         }
         Location::IndirectRegister(r) => cpu::Location::IndirectRegister(*r),
         Location::Literal(r) => {
-            cpu::Location::Literal(Native(resolve_reference(&r, labels)? as u64))
+            cpu::Location::Literal(Native(resolve_reference(r, labels)? as u64))
         }
         Location::Machine(m) => cpu::Location::Machine(*m),
         Location::Register(r) => cpu::Location::Register(*r),
@@ -1033,49 +1154,48 @@ pub fn resolve(
             AssemblyToken::Ord(o) => AssemblyToken::Ord(*o),
             AssemblyToken::Label(l) => AssemblyToken::Label(l.clone()),
             AssemblyToken::UnresolvedData(Data::Symbol(refr)) => AssemblyToken::ResolvedData(
-                LispWord::symbol(resolve_reference(&refr, labels)? as u64)
+                LispWord::symbol(resolve_reference(refr, labels)? as u64)
                     .0
                     .to_le_bytes()
                     .to_vec(),
             ),
             AssemblyToken::UnresolvedData(Data::Literal(refr)) => AssemblyToken::ResolvedData(
-                (resolve_reference(&refr, labels)? as u64)
+                (resolve_reference(refr, labels)? as u64)
                     .to_le_bytes()
                     .to_vec(),
             ),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Binary {
                 op,
-                operands: ThreeRegs { dst, op1, op2, op3 },
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
+                dst,
+                operands: RegSource { op1, op2, op3 },
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
                 op: *op,
-                operands: crate::cpu::ThreeRegs {
-                    dst: *dst,
+                dst: *dst,
+                operands: cpu::RegSource {
                     op1: *op1,
                     op2: *op2,
-                    op3: resolve_opt_reference(&op3, labels)?.map(|w| LispWord(w as u64)),
+                    op3: resolve_opt_reference(op3, labels)?.map(|w| LispWord(w as u64)),
                 },
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Call {
                 target: JumpTarget::Absolute(refr),
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
-                target: cpu::JumpTarget::Absolute(
-                    Address(resolve_reference(&refr, labels)? as u64),
-                ),
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
+                target: cpu::JumpTarget::Absolute(Address(resolve_reference(refr, labels)? as u64)),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Call {
                 target: JumpTarget::Machine(m, refr),
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
                 target: cpu::JumpTarget::Machine(
                     *m,
-                    Offset(resolve_reference(&refr, labels)? as i64),
+                    Offset(resolve_reference(refr, labels)? as i64),
                 ),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Call {
                 target: JumpTarget::IndirectMachine(m, refr),
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
                 target: cpu::JumpTarget::IndirectMachine(
                     *m,
-                    Offset(resolve_reference(&refr, labels)? as i64),
+                    Offset(resolve_reference(refr, labels)? as i64),
                 ),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Call {
@@ -1090,46 +1210,45 @@ pub fn resolve(
                 op1,
                 op2,
                 op3,
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::IDiv {
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::IDiv {
                 div: *div,
                 rem: *rem,
-                op1: *op1,
-                op2: *op2,
-                op3: resolve_opt_reference(&op3, labels)?.map(|v| LispWord(v as u64)),
+                operands: cpu::RegSource {
+                    op1: *op1,
+                    op2: *op2,
+                    op3: resolve_opt_reference(op3, labels)?.map(|v| LispWord(v as u64)),
+                },
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Int(i)) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Int(resolve_reference(
-                    &i, labels,
-                )?
-                    as u64))
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Int(resolve_reference(
+                    i, labels,
+                )? as u64))
             }
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Jump {
                 condition,
                 target: JumpTarget::Absolute(refr),
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
                 condition: *condition,
-                target: cpu::JumpTarget::Absolute(
-                    Address(resolve_reference(&refr, labels)? as u64),
-                ),
+                target: cpu::JumpTarget::Absolute(Address(resolve_reference(refr, labels)? as u64)),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Jump {
                 condition,
                 target: JumpTarget::Machine(m, refr),
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
                 condition: *condition,
                 target: cpu::JumpTarget::Machine(
                     *m,
-                    Offset(resolve_reference(&refr, labels)? as i64),
+                    Offset(resolve_reference(refr, labels)? as i64),
                 ),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Jump {
                 condition,
                 target: JumpTarget::IndirectMachine(m, refr),
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
                 condition: *condition,
                 target: cpu::JumpTarget::IndirectMachine(
                     *m,
-                    Offset(resolve_reference(&refr, labels)? as i64),
+                    Offset(resolve_reference(refr, labels)? as i64),
                 ),
             }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Jump {
@@ -1142,44 +1261,71 @@ pub fn resolve(
             }) => return Err("can't happen".to_string()),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MBinary {
                 op,
-                operands: ThreeMachs { dst, op1, op2, op3 },
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MBinary {
+                dst,
+                operands: MachSource { op1, op2, op3 },
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
                 op: *op,
-                operands: cpu::ThreeMachs {
-                    dst: *dst,
+                dst: *dst,
+                operands: cpu::MachSource {
                     op1: *op1,
                     op2: *op2,
-                    op3: resolve_opt_reference(&op3, labels)?.map(|v| Native(v as u64)),
+                    op3: resolve_opt_reference(op3, labels)?.map(|v| Native(v as u64)),
                 },
             }),
-            AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MemCpy {
+            AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MComparison {
+                op,
                 dst,
-                src,
-                count,
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MemCpy {
+                operands: EitherSource::Reg(RegSource { op1, op2, op3 }),
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: *op,
                 dst: *dst,
-                src: *src,
-                count: cpu::Count(resolve_reference(&count, labels)? as u64),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: *op1,
+                    op2: *op2,
+                    op3: resolve_opt_reference(op3, labels)?.map(|v| LispWord(v as u64)),
+                }),
             }),
-            AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MemSet {
+            AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MComparison {
+                op,
                 dst,
-                src,
-                count,
-            }) => AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MemSet {
+                operands: EitherSource::Mach(MachSource { op1, op2, op3 }),
+            }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: *op,
                 dst: *dst,
-                src: *src,
-                count: cpu::Count(resolve_reference(&count, labels)? as u64),
+                operands: cpu::EitherSource::Mach(cpu::MachSource {
+                    op1: *op1,
+                    op2: *op2,
+                    op3: resolve_opt_reference(op3, labels)?.map(|v| Native(v as u64)),
+                }),
             }),
+            // AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MemCpy {
+            //     dst,
+            //     src,
+            //     count,
+            // }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MemCpy {
+            //     dst: *dst,
+            //     src: *src,
+            //     count: cpu::Count(resolve_reference(&count, labels)? as u64),
+            // }),
+            // AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::MemSet {
+            //     dst,
+            //     src,
+            //     count,
+            // }) => AssemblyToken::ResolvedInstruction(cpu::Instruction::MemSet {
+            //     dst: *dst,
+            //     src: *src,
+            //     count: cpu::Count(resolve_reference(count, labels)? as u64),
+            // }),
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Mov { dst, src }) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                    dst: resolve_location(&dst, labels)?,
-                    src: resolve_location(&src, labels)?,
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                    dst: resolve_location(dst, labels)?,
+                    src: resolve_location(src, labels)?,
                 })
             }
             AssemblyToken::UnresolvedInstruction(UnresolvedInstruction::Mov8 { dst, src }) => {
-                AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov8 {
-                    dst: resolve_location(&dst, labels)?,
-                    src: resolve_location(&src, labels)?,
+                AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov8 {
+                    dst: resolve_location(dst, labels)?,
+                    src: resolve_location(src, labels)?,
                 })
             }
 
@@ -1222,9 +1368,12 @@ pub fn assemble(assembly_lines: &[AssemblyToken]) -> Result<Vec<u8>, String> {
 }
 
 mod test {
-    use crate::cpu::{
-        self,
-        assembler::{self, parse},
+    use crate::{
+        cpu::{
+            self,
+            assembler::{self, parse},
+        },
+        memory,
     };
 
     fn scaffold() -> (Vec<assembler::AssemblyToken>, Vec<assembler::AssemblyToken>) {
@@ -1351,122 +1500,98 @@ mod test {
             assembler::AssemblyToken::UnresolvedData(assembler::Data::Symbol(
                 assembler::Reference::UnresolvedPos("loop".to_string()),
             )),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Halt),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Nop),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Return),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Halt),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Nop),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Return),
             assembler::AssemblyToken::Label("loop".to_string()),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Int(42)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Int(42)),
             assembler::AssemblyToken::UnresolvedInstruction(assembler::UnresolvedInstruction::Int(
                 assembler::Reference::UnresolvedPos("loop".to_string()),
             )),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::IReturn),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::Always,
-                target: crate::cpu::JumpTarget::Absolute(crate::memory::Address(16)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::IReturn),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::Always,
+                target: cpu::JumpTarget::Absolute(memory::Address(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::Always,
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(0),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::Always,
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::Always,
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(16),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::Always,
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::Always,
-                target: crate::cpu::JumpTarget::Register(crate::cpu::Register(1)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::Always,
+                target: cpu::JumpTarget::Register(cpu::Register(1)),
             }),
             assembler::AssemblyToken::UnresolvedInstruction(
                 assembler::UnresolvedInstruction::Jump {
-                    condition: crate::cpu::Condition::Always,
+                    condition: cpu::Condition::Always,
                     target: assembler::JumpTarget::Absolute(assembler::Reference::UnresolvedPos(
                         "loop".to_string(),
                     )),
                 },
             ),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::True(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Absolute(crate::memory::Address(16)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: cpu::JumpTarget::Absolute(memory::Address(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::True(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(0),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::True(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(16),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::True(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Register(crate::cpu::Register(1)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: cpu::JumpTarget::Register(cpu::Register(1)),
             }),
             assembler::AssemblyToken::UnresolvedInstruction(
                 assembler::UnresolvedInstruction::Jump {
-                    condition: crate::cpu::Condition::True(crate::cpu::Register(5)),
+                    condition: cpu::Condition::True(cpu::Register(5)),
                     target: assembler::JumpTarget::Absolute(assembler::Reference::UnresolvedPos(
                         "loop".to_string(),
                     )),
                 },
             ),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::False(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Absolute(crate::memory::Address(16)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: cpu::JumpTarget::Absolute(memory::Address(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::False(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(0),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::False(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(16),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Jump {
-                condition: crate::cpu::Condition::False(crate::cpu::Register(5)),
-                target: crate::cpu::JumpTarget::Register(crate::cpu::Register(1)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: cpu::JumpTarget::Register(cpu::Register(1)),
             }),
             assembler::AssemblyToken::UnresolvedInstruction(
                 assembler::UnresolvedInstruction::Jump {
-                    condition: crate::cpu::Condition::False(crate::cpu::Register(5)),
+                    condition: cpu::Condition::False(cpu::Register(5)),
                     target: assembler::JumpTarget::Absolute(assembler::Reference::UnresolvedPos(
                         "loop".to_string(),
                     )),
                 },
             ),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
-                target: crate::cpu::JumpTarget::Absolute(crate::memory::Address(16)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
+                target: cpu::JumpTarget::Absolute(memory::Address(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(0),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
-                target: crate::cpu::JumpTarget::Machine(
-                    crate::cpu::MachineRegister(1),
-                    crate::memory::Offset(16),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
+                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Call {
-                target: crate::cpu::JumpTarget::Register(crate::cpu::Register(1)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Call {
+                target: cpu::JumpTarget::Register(cpu::Register(1)),
             }),
             assembler::AssemblyToken::UnresolvedInstruction(
                 assembler::UnresolvedInstruction::Call {
@@ -1475,524 +1600,525 @@ mod test {
                     )),
                 },
             ),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::PushA {
-                src: crate::cpu::MachineRegister(1),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::PushA {
+                src: cpu::MachineRegister(1),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::PopA {
-                dst: crate::cpu::MachineRegister(2),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::PopA {
+                dst: cpu::MachineRegister(2),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::PushR {
-                src: crate::cpu::Register(3),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::PushR {
+                src: cpu::Register(3),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::PopR {
-                dst: crate::cpu::Register(4),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::PopR {
+                dst: cpu::Register(4),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Register(crate::cpu::Register(1)),
-                src: crate::cpu::Location::Literal(crate::cpu::Native(
-                    crate::cpu::LispWord::fixnum(1234).0,
-                )),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Register(cpu::Register(1)),
+                src: cpu::Location::Literal(cpu::Native(cpu::LispWord::fixnum(1234).0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(3)),
-                src: crate::cpu::Location::Literal(crate::cpu::Native(0x7fffffff)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
+                src: cpu::Location::Literal(cpu::Native(0x7fffffff)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Register(crate::cpu::Register(5)),
-                src: crate::cpu::Location::Register(crate::cpu::Register(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Register(cpu::Register(5)),
+                src: cpu::Location::Register(cpu::Register(6)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Register(crate::cpu::Register(5)),
-                src: crate::cpu::Location::IndirectRegister(crate::cpu::Register(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Register(cpu::Register(5)),
+                src: cpu::Location::IndirectRegister(cpu::Register(6)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::IndirectRegister(crate::cpu::Register(6)),
-                src: crate::cpu::Location::Register(crate::cpu::Register(7)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::IndirectRegister(cpu::Register(6)),
+                src: cpu::Location::Register(cpu::Register(7)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(4)),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(5)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Machine(cpu::MachineRegister(4)),
+                src: cpu::Location::Machine(cpu::MachineRegister(5)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(1)),
-                src: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(2),
-                    crate::cpu::Offset(0),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Machine(cpu::MachineRegister(1)),
+                src: cpu::Location::IndirectMachine(cpu::MachineRegister(2), cpu::Offset(0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(1)),
-                src: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(2),
-                    crate::cpu::Offset(16),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Machine(cpu::MachineRegister(1)),
+                src: cpu::Location::IndirectMachine(cpu::MachineRegister(2), cpu::Offset(16)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(1)),
-                src: crate::cpu::Location::Absolute(crate::cpu::Address(64)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Machine(cpu::MachineRegister(1)),
+                src: cpu::Location::Absolute(cpu::Address(64)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(2),
-                    crate::memory::Offset(0),
-                ),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(3)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(2), memory::Offset(0)),
+                src: cpu::Location::Machine(cpu::MachineRegister(3)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(2),
-                    crate::memory::Offset(8),
-                ),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(3)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(2), memory::Offset(8)),
+                src: cpu::Location::Machine(cpu::MachineRegister(3)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Absolute(crate::memory::Address(24)),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(4)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Absolute(memory::Address(24)),
+                src: cpu::Location::Machine(cpu::MachineRegister(4)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(5)),
-                src: crate::cpu::Location::Register(crate::cpu::Register(8)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Machine(cpu::MachineRegister(5)),
+                src: cpu::Location::Register(cpu::Register(8)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Register(crate::cpu::Register(9)),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Register(cpu::Register(9)),
+                src: cpu::Location::Machine(cpu::MachineRegister(6)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(5),
-                    crate::memory::Offset(0),
-                ),
-                src: crate::cpu::Location::Register(crate::cpu::Register(8)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(5), memory::Offset(0)),
+                src: cpu::Location::Register(cpu::Register(8)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(5),
-                    crate::memory::Offset(8),
-                ),
-                src: crate::cpu::Location::Register(crate::cpu::Register(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(5), memory::Offset(8)),
+                src: cpu::Location::Register(cpu::Register(6)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Register(crate::cpu::Register(5)),
-                src: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(6),
-                    crate::memory::Offset(0),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Register(cpu::Register(5)),
+                src: cpu::Location::IndirectMachine(cpu::MachineRegister(6), memory::Offset(0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov {
-                dst: crate::cpu::Location::Register(crate::cpu::Register(5)),
-                src: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(6),
-                    crate::memory::Offset(8),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov {
+                dst: cpu::Location::Register(cpu::Register(5)),
+                src: cpu::Location::IndirectMachine(cpu::MachineRegister(6), memory::Offset(8)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov8 {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(3)),
-                src: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(4),
-                    crate::memory::Offset(0),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov8 {
+                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
+                src: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(0)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov8 {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(3)),
-                src: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(4),
-                    crate::memory::Offset(5),
-                ),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov8 {
+                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
+                src: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(5)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov8 {
-                dst: crate::cpu::Location::Machine(crate::cpu::MachineRegister(3)),
-                src: crate::cpu::Location::Absolute(crate::memory::Address(5)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov8 {
+                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
+                src: cpu::Location::Absolute(memory::Address(5)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov8 {
-                dst: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(4),
-                    crate::memory::Offset(0),
-                ),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov8 {
+                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(0)),
+                src: cpu::Location::Machine(cpu::MachineRegister(6)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov8 {
-                dst: crate::cpu::Location::IndirectMachine(
-                    crate::cpu::MachineRegister(4),
-                    crate::memory::Offset(5),
-                ),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov8 {
+                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(5)),
+                src: cpu::Location::Machine(cpu::MachineRegister(6)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Mov8 {
-                dst: crate::cpu::Location::Absolute(crate::memory::Address(5)),
-                src: crate::cpu::Location::Machine(crate::cpu::MachineRegister(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Mov8 {
+                dst: cpu::Location::Absolute(memory::Address(5)),
+                src: cpu::Location::Machine(cpu::MachineRegister(6)),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MBinary {
-                op: crate::cpu::MBinaryOp::Add,
-                operands: crate::cpu::ThreeMachs {
-                    dst: crate::cpu::MachineRegister(1),
-                    op1: crate::cpu::MachineRegister(2),
-                    op2: Some(crate::cpu::MachineRegister(3)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
+                op: cpu::MBinaryOp::Add,
+
+                dst: cpu::MachineRegister(1),
+                operands: cpu::MachSource {
+                    op1: cpu::MachineRegister(2),
+                    op2: Some(cpu::MachineRegister(3)),
                     op3: None,
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MBinary {
-                op: crate::cpu::MBinaryOp::Add,
-                operands: crate::cpu::ThreeMachs {
-                    dst: crate::cpu::MachineRegister(1),
-                    op1: crate::cpu::MachineRegister(2),
-                    op2: Some(crate::cpu::MachineRegister(3)),
-                    op3: Some(crate::cpu::Native(4)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
+                op: cpu::MBinaryOp::Add,
+
+                dst: cpu::MachineRegister(1),
+                operands: cpu::MachSource {
+                    op1: cpu::MachineRegister(2),
+                    op2: Some(cpu::MachineRegister(3)),
+                    op3: Some(cpu::Native(4)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MBinary {
-                op: crate::cpu::MBinaryOp::Add,
-                operands: crate::cpu::ThreeMachs {
-                    dst: crate::cpu::MachineRegister(1),
-                    op1: crate::cpu::MachineRegister(2),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
+                op: cpu::MBinaryOp::Add,
+
+                dst: cpu::MachineRegister(1),
+                operands: cpu::MachSource {
+                    op1: cpu::MachineRegister(2),
                     op2: None,
-                    op3: Some(crate::cpu::Native(8)),
+                    op3: Some(cpu::Native(8)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MBinary {
-                op: crate::cpu::MBinaryOp::Sub,
-                operands: crate::cpu::ThreeMachs {
-                    dst: crate::cpu::MachineRegister(4),
-                    op1: crate::cpu::MachineRegister(5),
-                    op2: Some(crate::cpu::MachineRegister(6)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
+                op: cpu::MBinaryOp::Sub,
+
+                dst: cpu::MachineRegister(4),
+                operands: cpu::MachSource {
+                    op1: cpu::MachineRegister(5),
+                    op2: Some(cpu::MachineRegister(6)),
                     op3: None,
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MBinary {
-                op: crate::cpu::MBinaryOp::Sub,
-                operands: crate::cpu::ThreeMachs {
-                    dst: crate::cpu::MachineRegister(4),
-                    op1: crate::cpu::MachineRegister(5),
-                    op2: Some(crate::cpu::MachineRegister(6)),
-                    op3: Some(crate::cpu::Native(2)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
+                op: cpu::MBinaryOp::Sub,
+
+                dst: cpu::MachineRegister(4),
+                operands: cpu::MachSource {
+                    op1: cpu::MachineRegister(5),
+                    op2: Some(cpu::MachineRegister(6)),
+                    op3: Some(cpu::Native(2)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MBinary {
-                op: crate::cpu::MBinaryOp::Sub,
-                operands: crate::cpu::ThreeMachs {
-                    dst: crate::cpu::MachineRegister(4),
-                    op1: crate::cpu::MachineRegister(5),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MBinary {
+                op: cpu::MBinaryOp::Sub,
+
+                dst: cpu::MachineRegister(4),
+                operands: cpu::MachSource {
+                    op1: cpu::MachineRegister(5),
                     op2: None,
-                    op3: Some(crate::cpu::Native(12)),
+                    op3: Some(cpu::Native(12)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::SetTag {
-                dst: crate::cpu::Register(2),
-                src: crate::cpu::MachineRegister(1),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::SetTag {
+                dst: cpu::Register(2),
+                src: cpu::MachineRegister(1),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::GetTag {
-                dst: crate::cpu::MachineRegister(3),
-                src: crate::cpu::Register(2),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::GetTag {
+                dst: cpu::MachineRegister(3),
+                src: cpu::Register(2),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::SetPayload {
-                dst: crate::cpu::Register(4),
-                src: crate::cpu::MachineRegister(3),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::SetPayload {
+                dst: cpu::Register(4),
+                src: cpu::MachineRegister(3),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::GetPayload {
-                dst: crate::cpu::MachineRegister(5),
-                src: crate::cpu::Register(4),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::GetPayload {
+                dst: cpu::MachineRegister(5),
+                src: cpu::Register(4),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Int(0x03)),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Uncons {
-                car: crate::cpu::Register(1),
-                cdr: crate::cpu::Register(2),
-                src: crate::cpu::Register(3),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Int(0x03)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Uncons {
+                car: cpu::Register(1),
+                cdr: cpu::Register(2),
+                src: cpu::Register(3),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Car(
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Car(
                 assembler::TwoRegs {
-                    dst: crate::cpu::Register(4),
-                    src: crate::cpu::Register(5),
+                    dst: cpu::Register(4),
+                    src: cpu::Register(5),
                 },
             )),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Cdr(
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Cdr(
                 assembler::TwoRegs {
-                    dst: crate::cpu::Register(6),
-                    src: crate::cpu::Register(7),
+                    dst: cpu::Register(6),
+                    src: cpu::Register(7),
                 },
             )),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::SetCar(
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::SetCar(
                 assembler::TwoRegs {
-                    dst: crate::cpu::Register(8),
-                    src: crate::cpu::Register(9),
+                    dst: cpu::Register(8),
+                    src: cpu::Register(9),
                 },
             )),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::SetCdr(
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::SetCdr(
                 assembler::TwoRegs {
-                    dst: crate::cpu::Register(10),
-                    src: crate::cpu::Register(11),
+                    dst: cpu::Register(10),
+                    src: cpu::Register(11),
                 },
             )),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Add,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Add,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
                     op3: None,
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Add,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Add,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Add,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Add,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
                     op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
+                    op3: Some(cpu::LispWord::fixnum(10)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Sub,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Sub,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
                     op3: None,
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Sub,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Sub,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Sub,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Sub,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
                     op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
+                    op3: Some(cpu::LispWord::fixnum(10)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Mul,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Mul,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
                     op3: None,
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Mul,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Mul,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Mul,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::Binary {
+                op: cpu::BinaryOp::Mul,
+
+                dst: cpu::Register(1),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(2),
                     op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
+                    op3: Some(cpu::LispWord::fixnum(10)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Eq,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Eq,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Eq,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Eq,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(cpu::LispWord::fixnum(10)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Ne,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Ne,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Ne,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(cpu::LispWord::fixnum(10)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Lt,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Lt,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Lt,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(cpu::LispWord::fixnum(10)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Lte,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Lte,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Lte,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(cpu::LispWord::fixnum(10)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Gt,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Gt,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Gt,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(cpu::LispWord::fixnum(10)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Gte,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Gte,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MComparison {
+                op: cpu::Comparison::Gte,
+
+                dst: cpu::Register(1),
+                operands: cpu::EitherSource::Reg(cpu::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(cpu::LispWord::fixnum(10)),
+                }),
+            }),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::IDiv {
+                div: cpu::Register(9),
+                rem: cpu::Register(2),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(3),
+                    op2: Some(cpu::Register(4)),
                     op3: None,
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Eq,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::IDiv {
+                div: cpu::Register(9),
+                rem: cpu::Register(2),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(3),
+                    op2: Some(cpu::Register(4)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Eq,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::IDiv {
+                div: cpu::Register(9),
+                rem: cpu::Register(2),
+                operands: cpu::RegSource {
+                    op1: cpu::Register(3),
                     op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
+                    op3: Some(cpu::LispWord::fixnum(5)),
                 },
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Ne,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: None,
-                },
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MakeClosure {
+                dst: cpu::Register(5),
+                code: cpu::MachineRegister(6),
             }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Ne,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Ne,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lt,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lt,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lt,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lte,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lte,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Lte,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gt,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gt,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gt,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gte,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gte,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: Some(crate::cpu::Register(3)),
-                    op3: Some(crate::cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::Binary {
-                op: crate::cpu::BinaryOp::Gte,
-                operands: crate::cpu::ThreeRegs {
-                    dst: crate::cpu::Register(1),
-                    op1: crate::cpu::Register(2),
-                    op2: None,
-                    op3: Some(crate::cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::IDiv {
-                div: crate::cpu::Register(9),
-                rem: crate::cpu::Register(2),
-                op1: crate::cpu::Register(3),
-                op2: Some(crate::cpu::Register(4)),
-                op3: None,
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::IDiv {
-                div: crate::cpu::Register(9),
-                rem: crate::cpu::Register(2),
-                op1: crate::cpu::Register(3),
-                op2: Some(crate::cpu::Register(4)),
-                op3: Some(crate::cpu::LispWord::fixnum(5)),
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::IDiv {
-                div: crate::cpu::Register(9),
-                rem: crate::cpu::Register(2),
-                op1: crate::cpu::Register(3),
-                op2: None,
-                op3: Some(crate::cpu::LispWord::fixnum(5)),
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MakeClosure {
-                dst: crate::cpu::Register(5),
-                code: crate::cpu::MachineRegister(6),
-            }),
-            assembler::AssemblyToken::ResolvedInstruction(crate::cpu::Instruction::MemCpy {
-                dst: crate::cpu::MachineRegister(1),
-                src: crate::cpu::MachineRegister(2),
-                count: crate::cpu::Count(1),
+            assembler::AssemblyToken::ResolvedInstruction(cpu::Instruction::MemCpy {
+                dst: cpu::MachineRegister(1),
+                src: cpu::MachineRegister(2),
+                count: cpu::Count(1),
             }),
         ];
         (asm.unwrap(), expected)
@@ -2037,13 +2163,13 @@ mod test {
         let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
 
         for i in 0..resolved.len() {
-            match expected[i] {
+            match &expected[i] {
                 assembler::AssemblyToken::ResolvedInstruction(inst) => {
                     let (lo, hi) = inst.encode();
                     assert_eq!(
                         (
                             i,
-                            cpu::Instruction::decode(lo, hi).map_err(|t| format!(
+                            &cpu::Instruction::decode(lo, hi).map_err(|t| format!(
                                 "Error when decoding {:?}: {:?} {:08x}:{:08x}",
                                 inst, t, lo, hi
                             ))?
@@ -2064,7 +2190,7 @@ mod test {
         let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
 
         for i in 0..resolved.len() {
-            match expected[i] {
+            match &expected[i] {
                 assembler::AssemblyToken::ResolvedInstruction(inst) => {
                     let (lo, hi) = inst.encode();
                     let decoded = cpu::Instruction::decode(lo, hi).map_err(|t| {
@@ -2077,7 +2203,7 @@ mod test {
                     assert_eq!(
                         (
                             i,
-                            cpu::Instruction::decode(lo, hi).map_err(|t| format!(
+                            &cpu::Instruction::decode(lo, hi).map_err(|t| format!(
                                 "Error when decoding {:?}: {:?} {:08x}:{:08x}",
                                 inst, t, lo, hi
                             ))?
