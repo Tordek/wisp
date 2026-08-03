@@ -2,15 +2,18 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::tag,
-    character::complete::{alpha1, alphanumeric1, digit1, hex_digit1, none_of, space0},
+    character::{
+        anychar,
+        complete::{alpha1, alphanumeric1, digit1, hex_digit1, none_of, space0},
+    },
     combinator::{recognize, value},
     multi::{many0, many0_count},
-    sequence::{pair, preceded},
+    sequence::{delimited, pair, preceded, terminated},
 };
 
 use crate::cpu;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum AssemblyToken<'a> {
     Label(&'a str),
     Directive(&'a str),
@@ -23,7 +26,12 @@ pub enum AssemblyToken<'a> {
     Minus,
     Comment(&'a str),
     Instruction(&'a str),
+    Reference(&'a str),
+    String(&'a str),
+    Character(u8),
+    LispLiteral,
     Newline,
+    Comma,
 }
 
 // Convenience methods
@@ -97,10 +105,43 @@ fn newline(input: &str) -> IResult<&str, AssemblyToken<'_>> {
 fn instruction(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     ident.map(AssemblyToken::Instruction).parse(input)
 }
+fn label(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    terminated(ident, tag(":"))
+        .map(AssemblyToken::Label)
+        .parse(input)
+}
+fn reference(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    preceded(tag("'"), ident)
+        .map(AssemblyToken::Reference)
+        .parse(input)
+}
+fn raw_string(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    delimited(tag("\""), recognize(many0(none_of("\""))), tag("\""))
+        .map(AssemblyToken::String)
+        .parse(input)
+}
+
+fn comma(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    value(AssemblyToken::Comma, tag(",")).parse(input)
+}
+fn raw_char(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    preceded(tag("\\"), alt((value('\n', tag("Newline")), anychar)))
+        .map(|c| AssemblyToken::Character(c as u8))
+        .parse(input)
+}
+fn literal(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    value(AssemblyToken::LispLiteral, tag("#")).parse(input)
+}
+
 fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     preceded(
         space0,
         alt((
+            label,
+            literal,
+            raw_string,
+            raw_char,
+            reference,
             directive,
             number,
             register,
@@ -111,6 +152,7 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
             minus,
             comment,
             instruction,
+            comma,
             newline,
         )),
     )

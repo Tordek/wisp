@@ -11,6 +11,9 @@ use sdl2::video::GLProfile;
 use crate::machine::FirmwareHelper;
 
 fn main() -> Result<(), String> {
+    let mem = vec![0; 2 << 24];
+    let mut machine = machine::WispMachine::new(cpu::Cpu::default(), mem);
+
     let sdl_context = sdl2::init()?;
 
     let video_subsystem = sdl_context.video()?;
@@ -34,9 +37,6 @@ fn main() -> Result<(), String> {
 
     let start = Instant::now();
     let mut event_pump = sdl_context.event_pump()?;
-
-    let mem = vec![0; 2 << 24];
-    let mut machine = machine::WispMachine::new(cpu::Cpu::default(), mem);
 
     machine.reset();
 

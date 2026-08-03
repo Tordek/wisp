@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    cpu::{
-        Cpu, InterruptTableOffset, MemoryLayout,
-        assembler::{assemble, layout, parse, resolve},
-    },
+    cpu::{Cpu, InterruptTableOffset, MemoryLayout, assembler::assemble},
     memory::Memory,
 };
 
@@ -31,10 +28,7 @@ impl FirmwareHelper {
 
         symbols.insert("bootstrap_objects", 0x3000);
 
-        let parsed_asm = parse(BIOS_ASM).unwrap();
-        let locate = layout(&parsed_asm);
-        let resolved = resolve(&parsed_asm, &locate).unwrap();
-        assemble(&resolved).unwrap()
+        assemble(BIOS_ASM).unwrap()
     }
 }
 
