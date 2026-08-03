@@ -1,8 +1,8 @@
+mod bus;
 mod cpu;
-mod machine;
-mod memory;
-
 mod gpu;
+mod machine;
+mod ram;
 
 use std::time::Instant;
 
@@ -38,6 +38,10 @@ fn main() -> Result<(), String> {
     let start = Instant::now();
     let mut event_pump = sdl_context.event_pump()?;
 
+    let mem = vec![0; 2 << 24];
+    let mut machine =
+        machine::WispMachine::new(cpu::Cpu::default(), mem).map_err(|_| "Error making machine")?;
+
     machine.reset();
 
     'running: loop {
@@ -56,10 +60,9 @@ fn main() -> Result<(), String> {
                 } => {
                     machine.interrupt(Firmware::KEYBOARD_INTERRUPT as u64);
                     let key = keycode.unwrap().into_i32() as u8;
-                    machine.ram.bytes[Firmware::PRESSED_KEY_ID] = key;
-                    if key == b'\r' {
-                        machine.ram.bytes[Firmware::PRESSED_KEY_ID] = b'\n';
-                    }
+                    machine
+                        .bus
+                        .write_byte(bus::Address(Firmware::PRESSED_KEY_ID as u64), key)
                 }
 
                 _ => (),
@@ -81,7 +84,7 @@ fn main() -> Result<(), String> {
 
         let elapsed_millis = start.elapsed().as_millis();
         unsafe {
-            gpu.render(machine.get_vga_ram(), elapsed_millis as u32);
+            gpu.render(&mut machine.bus, elapsed_millis as u32);
         }
         window.gl_swap_window();
     }

@@ -1,6 +1,8 @@
 use std::ffi::CString;
 use std::ptr;
 
+use crate::bus::{Address, Bus};
+
 const FRAGMENT_SHADER_SRC: &str = include_str!("crt.glsl.frag");
 const VERTEX_SHADER_SRC: &str = include_str!("vertex.glsl.vert");
 static FONT: &[u8; 4096] = include_bytes!("cp437-8x16.bin");
@@ -15,22 +17,10 @@ const TEX_H: usize = 400 + DEAD_V * 2;
 const BEZEL: f32 = 0.98;
 const VERTICES: [f32; 16] = [
     // PosX,  PosY,  TexU,  TexV
-    -BEZEL,
-    BEZEL,
-    0.0,
-    0.0, // Top-Left
-    BEZEL,
-    BEZEL,
-    1.0,
-    0.0, // Top-Right
-    BEZEL,
-    -BEZEL,
-    1.0,
-    1.0, // Bottom-Right
-    -BEZEL,
-    -BEZEL,
-    0.0,
-    1.0, // Bottom-Left
+    -BEZEL, BEZEL, 0.0, 0.0, // Top-Left
+    BEZEL, BEZEL, 1.0, 0.0, // Top-Right
+    BEZEL, -BEZEL, 1.0, 1.0, // Bottom-Right
+    -BEZEL, -BEZEL, 0.0, 1.0, // Bottom-Left
 ];
 
 pub struct Gpu {
@@ -129,18 +119,18 @@ impl Gpu {
             vao,
         })
     }
-    pub unsafe fn render(&self, vga_ram: &[u8], elapsed_millis: u32) {
+    pub unsafe fn render(&self, bus: &Bus, elapsed_millis: u32) {
         let mut vga_framebuffer = vec![0u8; 720 * 400 * 3];
         vga_framebuffer.fill(0);
         for i in 0..(25 * 80) {
             let position = 0x18000 + 2 * i;
-            let attributes = vga_ram[position];
-            let character = vga_ram[position + 1];
+            let attributes = bus.read_byte(Address(position));
+            let character = bus.read_byte(Address(position + 1));
 
             draw_char(
                 &mut vga_framebuffer,
-                (i % 80) * 9,
-                (i / 80) * 16,
+                ((i % 80) * 9) as usize,
+                ((i / 80) * 16) as usize,
                 character,
                 attributes,
                 (elapsed_millis / 1000) & 1 == 1,

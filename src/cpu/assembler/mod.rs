@@ -4,6 +4,7 @@ mod tokenizer;
 use std::collections::HashMap;
 
 use crate::{
+    bus,
     cpu::{
         self,
         assembler::{
@@ -11,7 +12,6 @@ use crate::{
             tokenizer::{TokenizeError, tokenize},
         },
     },
-    memory,
 };
 
 #[derive(Debug)]
@@ -35,8 +35,8 @@ impl<'a> From<ParserError<'a>> for AssemblerError<'a> {
 }
 
 pub struct Section {
-    data: Vec<u8>,
-    base: usize,
+    pub data: Vec<u8>,
+    pub base: usize,
 }
 
 pub fn assemble<'a>(input: &'a str) -> Result<Vec<Section>, AssemblerError<'a>> {
@@ -174,7 +174,7 @@ pub fn resolve_location<'a>(
             cpu::Location::Absolute(cpu::Address(resolve_reference(r, labels)? as u64))
         }
         Location::IndirectMachine(m, r) => {
-            cpu::Location::IndirectMachine(*m, memory::Offset(resolve_reference(r, labels)? as i64))
+            cpu::Location::IndirectMachine(*m, bus::Offset(resolve_reference(r, labels)? as i64))
         }
         Location::IndirectRegister(r) => cpu::Location::IndirectRegister(*r),
         Location::Literal(Native::Cons(r)) => {
@@ -422,7 +422,7 @@ fn emit<'a>(layout: &Layout<'a>) -> Result<Vec<Section>, AssemblerError<'a>> {
     for section in &layout.sections {
         let mut position: usize = 0;
         let mut result: Vec<u8> = Vec::new();
-        result.resize(section.size,0);
+        result.resize(section.size, 0);
 
         for line in &section.lines {
             match line {

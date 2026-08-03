@@ -5,7 +5,7 @@ use crate::{
         self, Count, EitherSource, Instruction, LispWord, Location, MachSource, MachineRegister,
         Native, RegSource, Register, Trap, TwoRegs,
     },
-    memory::{Address, Offset},
+    bus::{Address, Offset},
 };
 
 impl cpu::Register {

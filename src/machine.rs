@@ -1,12 +1,30 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error};
 
 use crate::{
-    cpu::{Cpu, InterruptTableOffset, MemoryLayout, assembler::assemble},
-    memory::Memory,
+    bus::{Bus, Device, Native},
+    cpu::{
+        Cpu, InterruptTableOffset, MemoryLayout,
+        assembler::{AssemblerError, Section, assemble},
+    },
+    ram::Memory,
 };
 
 const BIOS_ASM: &str = include_str!("bios.asm");
-pub struct Firmware {}
+
+#[derive(Debug)]
+enum FirmwareError<'a> {
+    AssemblerError(AssemblerError<'a>),
+}
+
+impl<'a> From<AssemblerError<'a>> for FirmwareError<'a> {
+    fn from(value: AssemblerError<'a>) -> Self {
+        FirmwareError::AssemblerError(value)
+    }
+}
+
+pub struct Firmware {
+    rom: Vec<Section>,
+}
 impl Firmware {
     pub const BOOTSTRAP_HOOK: usize = MemoryLayout::CPU_RESERVED_END.0 as usize;
     pub const BOOTSTRAP_ALLOC_HOOK: usize = 0x600;
@@ -23,49 +41,91 @@ impl Firmware {
     pub const KEYBOARD_INTERRUPT_ROUTINE: usize = 0x13000;
     pub const PRESSED_KEY_ID: usize = 0x18008;
 
-    fn make_firmware() -> Vec<u8> {
+    fn make_firmware<'a>() -> Result<Firmware, FirmwareError<'a>> {
         let mut symbols = HashMap::<&str, usize>::new();
 
         symbols.insert("bootstrap_objects", 0x3000);
 
-        assemble(BIOS_ASM)
+        let rom = assemble(BIOS_ASM)?;
+
+        Ok(Firmware { rom })
     }
 }
+impl Device for Firmware {
+    fn read_byte(&self, address: crate::bus::Address) -> u8 {
+        for section in &self.rom {
+            if section.base <= address.0 as usize
+                && ((address.0 as usize) < section.base + section.data.len())
+            {
+                return section.data[address.0 as usize - section.base];
+            }
+        }
+        0
+    }
 
-pub struct WispMachine {
+    fn read_word(&self, address: crate::bus::Address) -> crate::bus::Native {
+        for section in &self.rom {
+            if section.base <= address.0 as usize
+                && ((address.0 as usize) < section.base + section.data.len())
+            {
+                return Native(u64::from_le_bytes(
+                    section.data[address.0 as usize - section.base..][..8]
+                        .try_into()
+                        .expect("Out of bands memory access."),
+                ));
+            }
+        }
+        Native(0)
+    }
+
+    // NOP: ROMs.
+    fn write_byte(&mut self, _: crate::bus::Address, _: u8) {}
+    fn write_word(&mut self, _: crate::bus::Address, _: crate::bus::Native) {}
+}
+
+pub struct WispMachine<'a> {
     cpu: Cpu,
 
-    pub ram: Memory,
+    pub bus: Bus<'a>,
 
     pub halted: bool,
 }
 
-impl WispMachine {
+enum WispMachineError {
+    SetupError,
+}
+
+impl<'a> WispMachine<'a> {
     pub fn reset(&mut self) {
-        self.cpu.reset(&mut self.ram);
+        self.cpu.reset();
     }
 
     pub fn step(&mut self) {
-        self.cpu.full_step(&mut self.ram);
+        self.cpu.full_step(&mut self.bus);
         if self.cpu.halted {
             self.halted = true;
         }
     }
 
-    pub fn get_vga_ram(&self) -> &[u8] {
-        &self.ram.bytes[0xa0000..0xc0000]
-    }
+    pub fn new(cpu: Cpu, ram: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        let mut bus = Bus::new();
+        let ram = Memory { bytes: ram };
+        let firmware = Firmware::make_firmware().expect("compiled");
 
-    pub fn new(cpu: Cpu, ram: Vec<u8>) -> Self {
-        let mut machine = Self {
+        bus.install(0x00000000..0xffffffff, Box::new(ram))
+            .expect("install");
+
+        bus.install(
+            MemoryLayout::CPU_ROOT.0..MemoryLayout::CPU_ROOT_END.0,
+            Box::new(firmware),
+        )
+        .expect("install");
+
+        Ok(Self {
             cpu,
-            ram: Memory { bytes: ram },
+            bus,
             halted: false,
-        };
-
-        let firmware = Firmware::make_firmware();
-        machine.ram.bytes[0..firmware.len()].copy_from_slice(&firmware[..]);
-        machine
+        })
     }
 
     pub fn interrupt(&mut self, int_id: u64) {

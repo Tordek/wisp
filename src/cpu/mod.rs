@@ -1,9 +1,9 @@
 pub mod assembler;
 mod encoding;
 
-use std::{fmt::Debug, ops::Add};
+use std::fmt::Debug;
 
-use crate::memory::{Address, Memory, Offset};
+use crate::bus::{Address, Bus, Native, Offset};
 use int_enum::IntEnum;
 
 type WordSize = u64;
@@ -11,71 +11,21 @@ type WordSize = u64;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Count(u64);
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Native(pub u64);
-
-impl std::ops::Add<Native> for Native {
-    type Output = Native;
-
-    fn add(self, rhs: Native) -> Native {
-        Native(self.0 + rhs.0)
-    }
-}
-
-impl std::ops::Sub<Native> for Native {
-    type Output = Native;
-
-    fn sub(self, rhs: Native) -> Native {
-        Native(self.0.wrapping_sub_signed(rhs.0 as i64))
-    }
-}
-
-impl From<u64> for Native {
-    fn from(value: u64) -> Self {
-        Native(value)
-    }
-}
-
-impl From<Native> for u64 {
-    fn from(value: Native) -> Self {
-        value.0
-    }
-}
-
-impl From<Address> for Native {
-    fn from(value: Address) -> Self {
-        Native(value.0)
-    }
-}
-
-impl From<Native> for Address {
-    fn from(value: Native) -> Self {
-        Address(value.0)
-    }
-}
-
-impl Memory {
-    fn read_word(&self, addr: Address) -> Native {
-        Native(u64::from_le_bytes(
-            self.bytes[(addr.0 as usize)..][..8]
-                .try_into()
-                .expect("Out of bands memory access."),
-        ))
-    }
-    fn write_word(&mut self, addr: Address, data: Native) {
-        self.bytes[(addr.0 as usize)..][..8].copy_from_slice(&data.0.to_le_bytes())
-    }
-}
-
+/// Since lispwords are 58b (first 8 are taken up by tag), and to avoid
+/// holes at the start of memory, the CPU expects things at
+/// 0x00FFFFFF00000000
 pub enum MemoryLayout {}
 impl MemoryLayout {
     // Standard addresses.
-    pub const NIL_ROOT: Address = Address(0x0000000000000000);
-    pub const T_ROOT: Address = Address(0x0000000000000008);
+    pub const CPU_ROOT: Address = Address(0x00ffffff00000000);
+    pub const CPU_ROOT_END: Address = Address(0x00ffffffffffffff);
+    pub const NIL_ROOT: Address = Address(Self::CPU_ROOT.0);
+    pub const T_ROOT: Address = Address(Self::CPU_ROOT.0 + 0x00000008);
 
-    pub const RESET_VECTOR: Address = Address(0x000000000007ef0);
-    pub const INTERRUPT_TABLE: Address = Address(0x000000000007f00);
-    pub const CPU_RESERVED_END: Address = Address(0x000000000018000);
+    pub const RESET_VECTOR: Address = Address(Self::CPU_ROOT.0 + 0xffff7ef0);
+    pub const CPU_RESERVED_END: Address = Address(Self::CPU_ROOT.0 + 0xffff8000);
+
+    pub const INTERRUPT_TABLE: Address = Address(0x7f00);
 }
 
 pub enum InterruptTableOffset {}
@@ -204,6 +154,7 @@ pub struct Cpu {
     pub halted: bool,
     is_handling_interrupt: bool,
 }
+
 impl Cpu {
     pub const SP: MachineRegister = MachineRegister(5);
     pub const PC: MachineRegister = MachineRegister(6);
@@ -451,11 +402,11 @@ pub enum Instruction {
 }
 
 impl Cpu {
-    pub fn reset(&mut self, memory: &mut Memory) {
-        self.machine_reg[Cpu::PC.0 as usize] = memory.read_word(MemoryLayout::RESET_VECTOR);
+    pub fn reset(&mut self) {
+        self.machine_reg[Cpu::PC.0 as usize] = Native::from(MemoryLayout::RESET_VECTOR);
     }
 
-    fn fetch(&self, memory: &Memory) -> (Native, Native) {
+    fn fetch(&self, memory: &Bus) -> (Native, Native) {
         let instruction_low = memory.read_word(Address::from(self.machine_reg[Cpu::PC.0 as usize]));
         let instruction_high = memory.read_word(
             Address::from(self.machine_reg[Cpu::PC.0 as usize]) + Offset(Self::WORD_SIZE as i64),
@@ -463,21 +414,21 @@ impl Cpu {
         (instruction_low, instruction_high)
     }
 
-    fn read_word(memory: &Memory, address: Address) -> Result<LispWord, Trap> {
+    fn read_word(memory: &Bus, address: Address) -> Result<LispWord, Trap> {
         memory
             .read_word(address)
             .try_into()
             .map_err(|_| Trap::TypeError)
     }
 
-    fn nil(memory: &Memory) -> Result<LispWord, Trap> {
+    fn nil(memory: &Bus) -> Result<LispWord, Trap> {
         Self::read_word(memory, MemoryLayout::NIL_ROOT)
     }
-    fn t(memory: &Memory) -> Result<LispWord, Trap> {
+    fn t(memory: &Bus) -> Result<LispWord, Trap> {
         Self::read_word(memory, MemoryLayout::T_ROOT)
     }
 
-    fn to_machine_bool(memory: &mut Memory, val: bool) -> Result<LispWord, Trap> {
+    fn to_machine_bool(memory: &mut Bus, val: bool) -> Result<LispWord, Trap> {
         if val {
             Self::t(memory)
         } else {
@@ -485,14 +436,14 @@ impl Cpu {
         }
     }
 
-    fn push(&mut self, memory: &mut Memory, val: Native) {
+    fn push(&mut self, memory: &mut Bus, val: Native) {
         self.machine_reg[Cpu::SP.0 as usize] =
             (Address::from(self.machine_reg[Cpu::SP.0 as usize]) - Offset(Self::WORD_SIZE as i64))
                 .into();
         memory.write_word(Address::from(self.machine_reg[Cpu::SP.0 as usize]), val);
     }
 
-    fn pop(&mut self, memory: &mut Memory) -> Native {
+    fn pop(&mut self, memory: &mut Bus) -> Native {
         let res = memory.read_word(Address::from(self.machine_reg[Cpu::SP.0 as usize]));
         self.machine_reg[Cpu::SP.0 as usize] =
             (Address::from(self.machine_reg[Cpu::SP.0 as usize]) + Offset(Self::WORD_SIZE as i64))
@@ -500,7 +451,7 @@ impl Cpu {
         res
     }
 
-    fn pop_word(&mut self, memory: &mut Memory) -> Result<LispWord, Trap> {
+    fn pop_word(&mut self, memory: &mut Bus) -> Result<LispWord, Trap> {
         let res = Self::read_word(memory, Address::from(self.machine_reg[Cpu::SP.0 as usize]));
         self.machine_reg[Cpu::SP.0 as usize] =
             (Address::from(self.machine_reg[Cpu::SP.0 as usize]) + Offset(Self::WORD_SIZE as i64))
@@ -555,7 +506,7 @@ impl Cpu {
 
     fn run_interrupt(
         &mut self,
-        memory: &mut Memory,
+        memory: &mut Bus,
         interruption: u64,
         next_pc: Address,
     ) -> Result<Address, Trap> {
@@ -580,7 +531,7 @@ impl Cpu {
         Ok(location)
     }
 
-    fn get_jump_addr(&self, memory: &Memory, src: JumpTarget) -> Address {
+    fn get_jump_addr(&self, memory: &Bus, src: JumpTarget) -> Address {
         match src {
             JumpTarget::Absolute(v) => v,
             JumpTarget::Register(Register(r)) => Address(self.registers[r as usize].payload()),
@@ -598,7 +549,7 @@ impl Cpu {
         }
     }
 
-    fn read_location(&self, memory: &Memory, src: Location) -> Native {
+    fn read_location(&self, memory: &Bus, src: Location) -> Native {
         match src {
             Location::Literal(v) => v,
             Location::Absolute(a) => memory.read_word(a),
@@ -615,7 +566,7 @@ impl Cpu {
         }
     }
 
-    fn execute(&mut self, instruction: Instruction, memory: &mut Memory) -> Result<Address, Trap> {
+    fn execute(&mut self, instruction: Instruction, memory: &mut Bus) -> Result<Address, Trap> {
         match instruction {
             // Control flow
             Instruction::Halt => {
@@ -893,7 +844,7 @@ impl Cpu {
                 let value = self.read_location(memory, src).0 as u8;
                 match dst {
                     Location::Literal(_) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
-                    Location::Absolute(a) => memory.bytes[a.0 as usize] = value,
+                    Location::Absolute(a) => memory.write_byte(a, value),
                     Location::Machine(MachineRegister(r)) => {
                         self.machine_reg[(r as i64) as usize] = Native(value as u64)
                     }
@@ -901,8 +852,7 @@ impl Cpu {
                         return Err(Trap::InvalidInstruction);
                     }
                     Location::IndirectMachine(MachineRegister(r), off) => {
-                        memory.bytes
-                            [(Address::from(self.machine_reg[r as usize]) + off).0 as usize] = value
+                        memory.write_byte(Address::from(self.machine_reg[r as usize]) + off, value)
                     }
                     Location::IndirectRegister(_) => {
                         return Err(Trap::InvalidInstruction);
@@ -935,8 +885,10 @@ impl Cpu {
                 let srcadd = self.machine_reg[src.0 as usize];
                 let dstadd = self.machine_reg[dst.0 as usize];
                 for i in 0..count.0 {
-                    memory.bytes[dstadd.0 as usize + i as usize] =
-                        memory.bytes[srcadd.0 as usize + i as usize]
+                    memory.write_byte(
+                        Address::from(dstadd) + Offset(i as i64),
+                        memory.read_byte(Address::from(srcadd) + Offset(i as i64)),
+                    )
                 }
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
@@ -945,7 +897,10 @@ impl Cpu {
                 let srcadd = self.machine_reg[src.0 as usize];
                 let dstadd = self.machine_reg[dst.0 as usize];
                 for i in 0..count.0 {
-                    memory.bytes[dstadd.0 as usize + i as usize] = memory.bytes[srcadd.0 as usize]
+                    memory.write_byte(
+                        Address::from(dstadd) + Offset(i as i64),
+                        memory.read_byte(Address::from(srcadd)),
+                    )
                 }
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
@@ -960,7 +915,7 @@ impl Cpu {
         }
     }
 
-    pub fn step(&mut self, memory: &mut Memory) -> Result<(), Trap> {
+    pub fn step(&mut self, memory: &mut Bus) -> Result<(), Trap> {
         match self.interrupt {
             Some(i) => {
                 self.halted = false;
@@ -990,7 +945,7 @@ impl Cpu {
         Ok(())
     }
 
-    pub fn full_step(&mut self, memory: &mut Memory) {
+    pub fn full_step(&mut self, memory: &mut Bus) {
         match self.step(memory) {
             Ok(()) => {}
             Err(trap) => {
@@ -1015,9 +970,9 @@ pub enum Trap {
 
 //     use super::*;
 
-//     struct TestMemory {}
+//     struct TestBus {}
 
-//     impl TestMemory {
+//     impl TestBus {
 //         fn new() -> Vec<u8> {
 //             let mut data = vec![0_u8; 0x10000];
 //             data.as_mut_slice().write_word(0, Word::symbol(0).into());
@@ -1025,7 +980,7 @@ pub enum Trap {
 //             data
 //         }
 
-//         fn load_instructions(data: &mut Memory, start: Address, instructions: Vec<Instruction>) {
+//         fn load_instructions(data: &mut Bus, start: Address, instructions: Vec<Instruction>) {
 //             let mut pos = 0;
 //             for instr in instructions {
 //                 let (lo, hi) = instr.encode();
@@ -1040,9 +995,9 @@ pub enum Trap {
 //     #[test]
 //     fn test_halt() -> Result<(), String> {
 //         let mut cpu = Cpu::default();
-//         let mut memory = TestMemory::new();
+//         let mut memory = TestBus::new();
 //         cpu.address[Cpu::PC.0] = Address(0x1000);
-//         TestMemory::load_instructions(&mut memory, cpu.address[Cpu::PC.0], vec![Instruction::Halt]);
+//         TestBus::load_instructions(&mut memory, cpu.address[Cpu::PC.0], vec![Instruction::Halt]);
 //         cpu.full_step(memory.as_mut_slice());
 //         assert_eq!(cpu.address[Cpu::PC.0], Address(0x1000));
 //         assert!(cpu.halted);
@@ -1052,9 +1007,9 @@ pub enum Trap {
 //     #[test]
 //     fn test_nop() -> Result<(), String> {
 //         let mut cpu = Cpu::default();
-//         let mut memory = TestMemory::new();
+//         let mut memory = TestBus::new();
 //         cpu.address[Cpu::PC.0] = Address(0x1000);
-//         TestMemory::load_instructions(&mut memory, cpu.address[Cpu::PC.0], vec![Instruction::Nop]);
+//         TestBus::load_instructions(&mut memory, cpu.address[Cpu::PC.0], vec![Instruction::Nop]);
 //         cpu.full_step(memory.as_mut_slice());
 //         assert_eq!(cpu.address[Cpu::PC.0], Address(0x1010));
 //         Ok(())
@@ -1063,9 +1018,9 @@ pub enum Trap {
 //     #[test]
 //     fn test_multiple_nop() -> Result<(), String> {
 //         let mut cpu = Cpu::default();
-//         let mut memory = TestMemory::new();
+//         let mut memory = TestBus::new();
 //         cpu.address[Cpu::PC.0] = Address(0x1000);
-//         TestMemory::load_instructions(
+//         TestBus::load_instructions(
 //             &mut memory,
 //             cpu.address[Cpu::PC.0],
 //             parse_asm! {
@@ -1092,10 +1047,10 @@ pub enum Trap {
 //     #[test]
 //     fn test_jump_adr() -> Result<(), String> {
 //         let mut cpu = Cpu::default();
-//         let mut memory = TestMemory::new();
+//         let mut memory = TestBus::new();
 //         cpu.address[Cpu::PC.0] = Address(0x1000);
 //         cpu.address[0] = Address(0x2000);
-//         TestMemory::load_instructions(
+//         TestBus::load_instructions(
 //             &mut memory,
 //             cpu.address[Cpu::PC.0],
 //             parse_asm! {
@@ -1110,7 +1065,7 @@ pub enum Trap {
 //     #[test]
 //     fn test_cons_builds_cell() -> Result<(), String> {
 //         let mut cpu = Cpu::default();
-//         let mut memory = TestMemory::new();
+//         let mut memory = TestBus::new();
 
 //         let cons_hook = 0x2000;
 //         let trap_hook = 0x2100;
@@ -1135,7 +1090,7 @@ pub enum Trap {
 //         );
 //         cpu.reset(&mut memory);
 
-//         TestMemory::load_instructions(
+//         TestBus::load_instructions(
 //             &mut memory,
 //             code_base as u64,
 //             parse_asm! {
@@ -1149,7 +1104,7 @@ pub enum Trap {
 //         );
 
 //         // Fake CONS_HOOK
-//         TestMemory::load_instructions(
+//         TestBus::load_instructions(
 //             &mut memory,
 //             cons_hook,
 //             parse_asm! {
@@ -1158,7 +1113,7 @@ pub enum Trap {
 //             },
 //         );
 
-//         TestMemory::load_instructions(
+//         TestBus::load_instructions(
 //             &mut memory,
 //             trap_hook,
 //             parse_asm! {
