@@ -1,11 +1,32 @@
-.org 0
+.org 0x0028000
+cursorpos: .w #0 ; TODO: Map to VGA (00fffffff000b8000)
+pressedkeyid: .w #0 ; TODO: Map to KB DMA (00fffffff000c0000)
+freeptr: .w 0x30000
+kbstart: .w 'kbbufferstart
+kbend: .w 'kbbufferstart
+kblen: .w 10
+; TODO: A way to reserve space automagically.
+kbbufferstart:
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+        .w #0
+kbbufferend:
+        .w #0
+
+.org 0x00ffffff00000000
     nil: .w #!'nil_symbol
     t: .w #!'t_symbol
     symbol: .w #!'symbol_symbol
     cons: .w #!'cons_symbol
     fixnum: .w #!'fixnum_symbol
 
-.org 0x3000
+.org 0x00ffffff00020000
     nil_str: .str "nil"
     t_str: .str "t"
     symbol_str: .str "symbol"
@@ -41,53 +62,38 @@ symbol_entry:
 cons_entry:
     .w 'cons
     .w #['t_entry
-
 t_entry:
     .w 't
     .w 'nil
 
-
-.org 0x7ef0
-    .w 'bootstrap
-
-.org 0x7f00
-    .w 'trap
-    .w 'alloc
-    .w 'alloc
-    .w 'alloc
-
-.org 0x8680
-    video_interrupt_hook_address: .w 'video_interrupt
-    keyboard_interrupt_hook_address: .w 'keyboard_interrupt
-
-.org 0x18000
-cursorpos: .w #0
-pressedkeyid: .w #0
-freeptr: .w 0x30000
-kbstart: .w 'kbbufferstart
-kbend: .w 'kbbufferstart
-kblen: .w 10
-; TODO: A way to reserve space automagically.
-kbbufferstart:
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-kbbufferend:
-        .w #0
-
-
-
-.org 0x19000
+.org 0x00ffffff00019000
 bootstrap:
+    ; Initial setup: Stack, interrupts.
     MOV SP, 0x30000 ; TODO: pass initial symbols for resolution.
-    MOV R0, #0
-    MOV A0, R0
+    MOV A0, 0x7f00
+    MOV A1, 'trap
+    MOV [A0], A1
+    ADD A0, A0, 8
+    ADD A0, A0, 8
+    MOV A1, 'alloc
+    MOV [A0], A1
+    ADD A0, A0, 8
+    MOV [A0], A1
+    MOV A0, 0x8680
+    MOV A1, 'video_interrupt
+    MOV [A0], A1
+    ADD A0, A0, 8
+    MOV A1, 'keyboard_interrupt
+    MOV [A0], A1
+    MOV ['pressedkeyid], A1
+    MOV A1, 0x30000
+    MOV ['freeptr], A1
+    MOV A1, 'kbbufferstart
+    MOV ['kbstart], A1
+    MOV ['kbend], A1
+    MOV A1, #10
+    MOV ['kblen], A1
+    MOV A0, #0
     MOV ['cursorpos], A0
     MOV R0, #\H
     MOV R1, #0x07
@@ -389,3 +395,6 @@ repl:
     MOV R1, 0x07
     INT 0xf0
     JUMP 'repl
+
+.org 0x00ffffffffff7ef0
+    JUMP 'bootstrap

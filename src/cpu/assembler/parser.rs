@@ -493,9 +493,10 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             return Ok(JumpTarget::Register(reg));
         }
 
+        // TODO: indirect jumps
         let target = self.expect_mr_andor_offset()?;
         match target {
-            (Some(r), Some(off)) => Ok(JumpTarget::IndirectMachine(r, off)),
+            (Some(r), Some(off)) => Ok(JumpTarget::Machine(r, off)),
             (Some(r), None) => Ok(JumpTarget::Machine(r, Reference::Resolved(0))),
             (None, Some(adr)) => Ok(JumpTarget::Absolute(adr)),
             (None, None) => Err(ParserError::Expected {

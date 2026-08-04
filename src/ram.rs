@@ -1,9 +1,13 @@
 use crate::bus::{Address, Device, Native};
 
 pub struct Memory {
+    pub base: Address,
     pub bytes: Vec<u8>,
 }
 impl Device for Memory {
+    fn set_location(&mut self, base_address: Address) {
+        self.base = base_address
+    }
     fn read_byte(&self, address: Address) -> u8 {
         self.bytes[address.0 as usize]
     }

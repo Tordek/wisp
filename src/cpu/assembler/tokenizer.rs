@@ -78,14 +78,8 @@ fn machineregister(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     alt((
         preceded(tag("A"), decimal)
             .map(|c| AssemblyToken::MachineRegister(cpu::MachineRegister(c as u8))),
-        value(
-            AssemblyToken::MachineRegister(cpu::MachineRegister(6)),
-            tag("PC"),
-        ),
-        value(
-            AssemblyToken::MachineRegister(cpu::MachineRegister(5)),
-            tag("SP"),
-        ),
+        value(AssemblyToken::MachineRegister(cpu::Cpu::PC), tag("PC")),
+        value(AssemblyToken::MachineRegister(cpu::Cpu::SP), tag("SP")),
     ))
     .parse(input)
 }

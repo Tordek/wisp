@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::{
     bus,
     cpu::{
-        self,
+        self, LispWord,
         assembler::{
             parser::*,
             tokenizer::{TokenizeError, tokenize},
@@ -34,6 +34,7 @@ impl<'a> From<ParserError<'a>> for AssemblerError<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct Section {
     pub data: Vec<u8>,
     pub base: usize,
@@ -70,7 +71,7 @@ fn layout<'a>(lines: Vec<AssemblyLine<'a>>) -> Result<Layout<'a>, AssemblerError
     for line in lines {
         let should_push = match &line {
             AssemblyLine::ResolvedData(d) => {
-                position = position.next_multiple_of(8) + d.len();
+                position = (position + d.len()).next_multiple_of(8);
                 true
             }
             AssemblyLine::UnresolvedData(_) => {
@@ -177,21 +178,21 @@ pub fn resolve_location<'a>(
             cpu::Location::IndirectMachine(*m, bus::Offset(resolve_reference(r, labels)? as i64))
         }
         Location::IndirectRegister(r) => cpu::Location::IndirectRegister(*r),
-        Location::Literal(Native::Cons(r)) => {
-            cpu::Location::Literal(cpu::Native(resolve_reference(r, labels)? as u64))
-        }
-        Location::Literal(Native::Symbol(r)) => {
-            cpu::Location::Literal(cpu::Native(resolve_reference(r, labels)? as u64))
-        }
-        Location::Literal(Native::Fixnum(r)) => {
-            cpu::Location::Literal(cpu::Native(resolve_reference(r, labels)? as u64))
-        }
+        Location::Literal(Native::Cons(r)) => cpu::Location::Literal(cpu::Native(
+            LispWord::cons(resolve_reference(r, labels)? as u64).0,
+        )),
+        Location::Literal(Native::Symbol(r)) => cpu::Location::Literal(cpu::Native(
+            LispWord::symbol(resolve_reference(r, labels)? as u64).0,
+        )),
+        Location::Literal(Native::Fixnum(r)) => cpu::Location::Literal(cpu::Native(
+            LispWord::fixnum(resolve_reference(r, labels)? as u64).0,
+        )),
         Location::Literal(Native::Raw(r)) => {
             cpu::Location::Literal(cpu::Native(resolve_reference(r, labels)? as u64))
         }
-        Location::Literal(Native::Char(r)) => {
-            cpu::Location::Literal(cpu::Native(resolve_reference(r, labels)? as u64))
-        }
+        Location::Literal(Native::Char(r)) => cpu::Location::Literal(cpu::Native(
+            LispWord::char(resolve_reference(r, labels)? as u64).0,
+        )),
         Location::Machine(m) => cpu::Location::Machine(*m),
         Location::Register(r) => cpu::Location::Register(*r),
     })
@@ -407,10 +408,8 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                     })
                 }
 
-                AssemblyLine::ResolvedInstruction(r) => {
-                    *line = AssemblyLine::ResolvedInstruction(*r)
-                }
-                AssemblyLine::ResolvedData(d) => *line = AssemblyLine::ResolvedData(d.clone()),
+                AssemblyLine::ResolvedInstruction(_) => {}
+                AssemblyLine::ResolvedData(_) => {}
             }
         }
     }
@@ -430,11 +429,9 @@ fn emit<'a>(layout: &Layout<'a>) -> Result<Vec<Section>, AssemblerError<'a>> {
                 AssemblyLine::Label(_) => {}
                 AssemblyLine::Org(_) => {}
                 AssemblyLine::ResolvedData(d) => {
-                    position = position.next_multiple_of(8);
-                    // result.resize(position + d.len(), 0);
-                    dbg!(d, position, section.size);
                     result[position..][..d.len()].copy_from_slice(d);
-                    position += d.len()
+                    position += d.len();
+                    position = position.next_multiple_of(8);
                 }
                 AssemblyLine::ResolvedInstruction(i) => {
                     position = position.next_multiple_of(16);

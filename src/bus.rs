@@ -72,6 +72,7 @@ struct Mapping<'a> {
 }
 
 pub trait Device {
+    fn set_location(&mut self, base_address: Address);
     fn read_word(&self, address: Address) -> Native;
     fn write_word(&mut self, address: Address, data: Native);
     fn read_byte(&self, address: Address) -> u8;
@@ -91,11 +92,12 @@ impl<'a> Bus<'a> {
     pub fn install(
         &mut self,
         range: std::ops::Range<u64>,
-        device: Box<dyn Device + 'a>,
+        mut device: Box<dyn Device + 'a>,
     ) -> Result<(), BusError> {
         // TODO: Error if ranges overlap.
         // for Mapping { range, device } in &self.mappings {
         // }
+        device.set_location(Address(range.start));
         self.mappings.push(Mapping { range, device });
         Ok(())
     }

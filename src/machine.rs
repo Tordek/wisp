@@ -1,7 +1,7 @@
 use std::{collections::HashMap, error::Error};
 
 use crate::{
-    bus::{Bus, Device, Native},
+    bus::{Address, Bus, Device, Native},
     cpu::{
         Cpu, InterruptTableOffset, MemoryLayout,
         assembler::{AssemblerError, Section, assemble},
@@ -23,23 +23,13 @@ impl<'a> From<AssemblerError<'a>> for FirmwareError<'a> {
 }
 
 pub struct Firmware {
+    base: usize,
     rom: Vec<Section>,
 }
 impl Firmware {
-    pub const BOOTSTRAP_HOOK: usize = MemoryLayout::CPU_RESERVED_END.0 as usize;
-    pub const BOOTSTRAP_ALLOC_HOOK: usize = 0x600;
-    pub const BOOTSTRAP_TRAP_HOOK: usize = 0x800;
-    pub const BOOTSTRAP_OBJECTS: usize = 0x3000;
-    pub const BOOTSTRAP_STACK_POSITION: usize = 0x2000; // Grows backwards
-    pub const BOOTSTRAP_SCRATCH_ALLOC: usize = 0x2000; // Grows forwards
-    pub const VIDEO_INTERRUPT: usize =
-        (InterruptTableOffset::END_RESERVED_INTERRUPTS.0 + 0x00) as usize;
     pub const KEYBOARD_INTERRUPT: usize =
         (InterruptTableOffset::END_RESERVED_INTERRUPTS.0 + 0x01) as usize;
-    pub const CURSOR_POSITION: usize = 0x18000;
-    pub const VIDEO_INTERRUPT_ROUTINE: usize = 0x12000;
-    pub const KEYBOARD_INTERRUPT_ROUTINE: usize = 0x13000;
-    pub const PRESSED_KEY_ID: usize = 0x18008;
+    pub const PRESSED_KEY_ID: usize = 0x28008;
 
     fn make_firmware<'a>() -> Result<Firmware, FirmwareError<'a>> {
         let mut symbols = HashMap::<&str, usize>::new();
@@ -48,28 +38,29 @@ impl Firmware {
 
         let rom = assemble(BIOS_ASM)?;
 
-        Ok(Firmware { rom })
+        Ok(Firmware { base: 0, rom })
     }
 }
 impl Device for Firmware {
+    fn set_location(&mut self, base_address: crate::bus::Address) {
+        self.base = base_address.0 as usize
+    }
     fn read_byte(&self, address: crate::bus::Address) -> u8 {
+        let address = address.0 as usize + self.base;
         for section in &self.rom {
-            if section.base <= address.0 as usize
-                && ((address.0 as usize) < section.base + section.data.len())
-            {
-                return section.data[address.0 as usize - section.base];
+            if section.base <= address && ((address) < section.base + section.data.len()) {
+                return section.data[address - section.base];
             }
         }
         0
     }
 
     fn read_word(&self, address: crate::bus::Address) -> crate::bus::Native {
+        let address = address.0 as usize + self.base;
         for section in &self.rom {
-            if section.base <= address.0 as usize
-                && ((address.0 as usize) < section.base + section.data.len())
-            {
+            if section.base <= address as usize && ((address) < section.base + section.data.len()) {
                 return Native(u64::from_le_bytes(
-                    section.data[address.0 as usize - section.base..][..8]
+                    section.data[address - section.base..][..8]
                         .try_into()
                         .expect("Out of bands memory access."),
                 ));
@@ -109,7 +100,10 @@ impl<'a> WispMachine<'a> {
 
     pub fn new(cpu: Cpu, ram: Vec<u8>) -> Result<Self, Box<dyn Error>> {
         let mut bus = Bus::new();
-        let ram = Memory { bytes: ram };
+        let ram = Memory {
+            base: Address(0),
+            bytes: ram,
+        };
         let firmware = Firmware::make_firmware().expect("compiled");
 
         bus.install(0x00000000..0xffffffff, Box::new(ram))
