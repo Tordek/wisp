@@ -20,6 +20,7 @@ pub enum AssemblerError<'a> {
     ParserError(ParserError<'a>),
     UnresolvedReference(&'a str),
     InvalidState,
+    OverlappingSection(usize),
 }
 
 impl<'a> From<TokenizeError<'a>> for AssemblerError<'a> {
@@ -92,10 +93,18 @@ fn layout<'a>(lines: Vec<AssemblyLine<'a>>) -> Result<Layout<'a>, AssemblerError
             }
             AssemblyLine::Org(p) => {
                 if let Some(s) = current_section_lines.take() {
+                    let size = (position - current_section_base).next_multiple_of(8);
+                    for section in &sections {
+                        if !(current_section_base > (section.base + section.size)
+                            || position < section.base)
+                        {
+                            return Err(AssemblerError::OverlappingSection(current_section_base));
+                        }
+                    }
                     let section = LayoutSection {
                         lines: s,
                         base: current_section_base,
-                        size: (position - current_section_base).next_multiple_of(8),
+                        size: size,
                     };
                     sections.push(section)
                 }
@@ -114,10 +123,16 @@ fn layout<'a>(lines: Vec<AssemblyLine<'a>>) -> Result<Layout<'a>, AssemblerError
     }
 
     if let Some(s) = current_section_lines.take() {
+        let size = (position - current_section_base).next_multiple_of(8);
+        for section in &sections {
+            if !(current_section_base > (section.base + section.size) || position < section.base) {
+                return Err(AssemblerError::OverlappingSection(current_section_base));
+            }
+        }
         let section = LayoutSection {
             lines: s,
             base: current_section_base,
-            size: position - current_section_base,
+            size,
         };
         sections.push(section)
     }

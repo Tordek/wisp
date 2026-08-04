@@ -81,7 +81,7 @@ pub trait Device {
 
 #[derive(Debug)]
 pub enum BusError {
-    NoMapping,
+    Overlap,
 }
 
 impl<'a> Bus<'a> {
@@ -94,9 +94,12 @@ impl<'a> Bus<'a> {
         range: std::ops::Range<u64>,
         mut device: Box<dyn Device + 'a>,
     ) -> Result<(), BusError> {
-        // TODO: Error if ranges overlap.
-        // for Mapping { range, device } in &self.mappings {
-        // }
+        for mapping in &self.mappings {
+            if !(range.start > mapping.range.end || range.end < mapping.range.start) {
+                return Err(BusError::Overlap);
+            }
+        }
+
         device.set_location(Address(range.start));
         self.mappings.push(Mapping { range, device });
         Ok(())

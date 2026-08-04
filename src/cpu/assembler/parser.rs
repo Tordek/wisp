@@ -136,6 +136,20 @@ pub enum ParserError<'input> {
     UnknownInstruction {
         instruction: &'input str,
     },
+    InvalidInstruction,
+}
+
+impl<'a> Location<'a> {
+    fn has_extra_param(&self) -> bool {
+        match self {
+            Location::Literal(_) => true,
+            Location::Absolute(_) => true,
+            Location::Machine(_) => false,
+            Location::Register(_) => false,
+            Location::IndirectMachine(_, _) => true,
+            Location::IndirectRegister(_) => false,
+        }
+    }
 }
 
 struct NParser<'tokens, 'input> {
@@ -604,6 +618,9 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let dst = self.expect_location()?;
         self.expect_comma()?;
         let src = self.expect_location()?;
+        if dst.has_extra_param() && src.has_extra_param() {
+            return Err(ParserError::InvalidInstruction);
+        }
         Ok(AssemblyLine::UnresolvedInstruction(
             UnresolvedInstruction::Mov { dst, src },
         ))
@@ -613,6 +630,9 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let dst = self.expect_location()?;
         self.expect_comma()?;
         let src = self.expect_location()?;
+        if dst.has_extra_param() && src.has_extra_param() {
+            return Err(ParserError::InvalidInstruction);
+        }
         Ok(AssemblyLine::UnresolvedInstruction(
             UnresolvedInstruction::Mov8 { dst, src },
         ))
