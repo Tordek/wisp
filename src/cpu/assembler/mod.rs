@@ -34,7 +34,7 @@ impl<'a> From<ParserError<'a>> for AssemblerError<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Section {
     pub data: Vec<u8>,
     pub base: usize,
@@ -459,6 +459,7 @@ fn emit<'a>(layout: &Layout<'a>) -> Result<Vec<Section>, AssemblerError<'a>> {
     Ok(result_sections)
 }
 
+#[cfg(test)]
 pub mod test {
     use crate::cpu::{assembler::tokenizer, *};
     pub const SOURCE: &str = r#"

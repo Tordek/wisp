@@ -6,19 +6,16 @@ mod ram;
 
 use std::time::Instant;
 
-use sdl2::video::GLProfile;
-
-use crate::machine::Firmware;
+use sdl2;
 
 fn main() -> Result<(), String> {
-    let mem = vec![0; 2 << 24];
-    let mut machine = machine::WispMachine::new(cpu::Cpu::default(), mem);
+    let mut machine = machine::WispMachine::new().map_err(|_| "Error making machine")?;
 
     let sdl_context = sdl2::init()?;
 
     let video_subsystem = sdl_context.video()?;
     let gl_attr = video_subsystem.gl_attr();
-    gl_attr.set_context_profile(GLProfile::Core);
+    gl_attr.set_context_profile(sdl2::video::GLProfile::Core);
     gl_attr.set_context_version(3, 2);
 
     // Create the Window at proper 4:3 display scale
@@ -38,10 +35,6 @@ fn main() -> Result<(), String> {
     let start = Instant::now();
     let mut event_pump = sdl_context.event_pump()?;
 
-    let mem = vec![0; 2 << 24];
-    let mut machine =
-        machine::WispMachine::new(cpu::Cpu::default(), mem).map_err(|_| "Error making machine")?;
-
     machine.reset();
 
     'running: loop {
@@ -58,11 +51,11 @@ fn main() -> Result<(), String> {
                     keymod: _,
                     repeat: _,
                 } => {
-                    machine.interrupt(Firmware::KEYBOARD_INTERRUPT as u64);
+                    machine.interrupt(machine::Firmware::KEYBOARD_INTERRUPT as u64);
                     let key = keycode.unwrap().into_i32() as u8;
                     machine
                         .bus
-                        .write_byte(bus::Address(Firmware::PRESSED_KEY_ID as u64), key)
+                        .write_byte(bus::Address(machine::Firmware::PRESSED_KEY_ID as u64), key)
                 }
 
                 _ => (),
@@ -73,14 +66,6 @@ fn main() -> Result<(), String> {
             // Run 1 million cycles per draw.
             machine.step();
         }
-        // --- STEP A: EMULATOR WRITE ---
-        // Write text pixels out directly into your native 720x400 byte buffer
-        // Example: Turn some pixels bright green or gray to draw your letters
-        // for i in 0..1000 {
-        //     vga_framebuffer[i * 3] = 0; // R
-        //     vga_framebuffer[i * 3 + 1] = 255; // G (VGA Green)
-        //     vga_framebuffer[i * 3 + 2] = 0; // B
-        // }
 
         let elapsed_millis = start.elapsed().as_millis();
         unsafe {

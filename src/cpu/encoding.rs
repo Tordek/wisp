@@ -728,7 +728,7 @@ impl Instruction {
                 ]),
                 count.0,
             ),
-            Instruction::MemSet { dst, src, count } => todo!(),
+            Instruction::MemSet { dst: _, src: _, count: _ } => todo!(),
             Instruction::Mov8 { dst, src } => {
                 let (edst, doff) = dst.encode();
                 let (esrc, soff) = src.encode();

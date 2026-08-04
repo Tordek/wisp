@@ -54,7 +54,7 @@ fn decimal(input: &str) -> IResult<&str, i64> {
 
 fn hex(input: &str) -> IResult<&str, i64> {
     preceded(tag("0x"), recognize(hex_digit1))
-        .map_res(|str| i64::from_str_radix(str, 16))
+        .map_res(|str| u64::from_str_radix(str, 16).map(|c| c as i64))
         .parse(input)
 }
 
@@ -80,6 +80,7 @@ fn machineregister(input: &str) -> IResult<&str, AssemblyToken<'_>> {
             .map(|c| AssemblyToken::MachineRegister(cpu::MachineRegister(c as u8))),
         value(AssemblyToken::MachineRegister(cpu::Cpu::PC), tag("PC")),
         value(AssemblyToken::MachineRegister(cpu::Cpu::SP), tag("SP")),
+        value(AssemblyToken::MachineRegister(cpu::Cpu::VBR), tag("VBR")),
     ))
     .parse(input)
 }
@@ -174,7 +175,7 @@ pub enum TokenizeError<'a> {
 }
 
 pub fn tokenize<'a>(input: &'a str) -> Result<Vec<AssemblyToken<'a>>, TokenizeError<'a>> {
-    let (rest, tokens) = many0(token)
+    let (_rest, tokens) = many0(token)
         .parse(input)
         .map_err(|_| TokenizeError::UnexpectedInput { remaining: input })?;
 
@@ -184,11 +185,9 @@ pub fn tokenize<'a>(input: &'a str) -> Result<Vec<AssemblyToken<'a>>, TokenizeEr
     Ok(tokens)
 }
 
+#[cfg(test)]
 mod test {
-    use crate::cpu::{
-        assembler::{self, test::expected_tokens, tokenizer::*},
-        *,
-    };
+    use crate::cpu::assembler::{self, test::expected_tokens, tokenizer::*};
 
     #[test]
     fn test_tokenize() {

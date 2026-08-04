@@ -1,11 +1,8 @@
 use std::{collections::HashMap, error::Error};
 
 use crate::{
-    bus::{Address, Bus, Device, Native},
-    cpu::{
-        Cpu, InterruptTableOffset, MemoryLayout,
-        assembler::{AssemblerError, Section, assemble},
-    },
+    bus::{Bus, Device, Native},
+    cpu::{self, assembler},
     ram::Memory,
 };
 
@@ -13,22 +10,31 @@ const BIOS_ASM: &str = include_str!("bios.asm");
 
 #[derive(Debug)]
 enum FirmwareError<'a> {
-    AssemblerError(AssemblerError<'a>),
+    AssemblerError(assembler::AssemblerError<'a>),
 }
 
-impl<'a> From<AssemblerError<'a>> for FirmwareError<'a> {
-    fn from(value: AssemblerError<'a>) -> Self {
+impl<'a> From<assembler::AssemblerError<'a>> for FirmwareError<'a> {
+    fn from(value: assembler::AssemblerError<'a>) -> Self {
         FirmwareError::AssemblerError(value)
     }
 }
 
+impl<'a> std::fmt::Display for FirmwareError<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Error while generating firmware.",)
+    }
+}
+
+impl<'a> Error for FirmwareError<'a> {}
+
+#[derive(Clone)]
 pub struct Firmware {
     base: usize,
-    rom: Vec<Section>,
+    rom: Vec<assembler::Section>,
 }
 impl Firmware {
     pub const KEYBOARD_INTERRUPT: usize =
-        (InterruptTableOffset::END_RESERVED_INTERRUPTS.0 + 0x01) as usize;
+        (cpu::InterruptTableOffset::END_RESERVED_INTERRUPTS.0 + 0x01) as usize;
     pub const PRESSED_KEY_ID: usize = 0x28008;
 
     fn make_firmware<'a>() -> Result<Firmware, FirmwareError<'a>> {
@@ -36,7 +42,7 @@ impl Firmware {
 
         symbols.insert("bootstrap_objects", 0x3000);
 
-        let rom = assemble(BIOS_ASM)?;
+        let rom = assembler::assemble(BIOS_ASM)?;
 
         Ok(Firmware { base: 0, rom })
     }
@@ -75,11 +81,9 @@ impl Device for Firmware {
 }
 
 pub struct WispMachine<'a> {
-    cpu: Cpu,
+    cpu: cpu::Cpu,
 
     pub bus: Bus<'a>,
-
-    pub halted: bool,
 }
 
 enum WispMachineError {
@@ -88,38 +92,30 @@ enum WispMachineError {
 
 impl<'a> WispMachine<'a> {
     pub fn reset(&mut self) {
-        self.cpu.reset();
+        self.cpu.reset(&self.bus);
     }
 
     pub fn step(&mut self) {
         self.cpu.full_step(&mut self.bus);
-        if self.cpu.halted {
-            self.halted = true;
-        }
     }
 
-    pub fn new(cpu: Cpu, ram: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
         let mut bus = Bus::new();
-        let ram = Memory {
-            base: Address(0),
-            bytes: ram,
-        };
+        let cpu = cpu::Cpu::default();
+        let ram = Memory::new(2 << 20);
         let firmware = Firmware::make_firmware().expect("compiled");
 
         bus.install(0x00000000..0xffffffff, Box::new(ram))
             .expect("install");
-
         bus.install(
-            MemoryLayout::CPU_ROOT.0..MemoryLayout::CPU_ROOT_END.0,
-            Box::new(firmware),
+            0x00ffffff00000000..0x00ffffffffffffff,
+            Box::new(firmware.clone()),
         )
         .expect("install");
+        bus.install(0xffffffffffffff00..0xffffffffffffffff, Box::new(firmware))
+            .expect("install");
 
-        Ok(Self {
-            cpu,
-            bus,
-            halted: false,
-        })
+        Ok(Self { cpu, bus })
     }
 
     pub fn interrupt(&mut self, int_id: u64) {

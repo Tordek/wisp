@@ -1,12 +1,6 @@
-use nom::Err;
-use sdl2::libc::sleep;
-
 use crate::cpu::{
     self, TwoRegs,
-    assembler::{
-        parser,
-        tokenizer::AssemblyToken::{self, Instruction},
-    },
+    assembler::tokenizer::AssemblyToken::{self},
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1033,6 +1027,7 @@ pub fn parser_new<'input>(
     Ok(r)
 }
 
+#[cfg(test)]
 mod test {
     use crate::cpu::assembler::{parser, test::expected_tokens};
 

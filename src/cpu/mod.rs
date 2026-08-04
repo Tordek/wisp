@@ -11,21 +11,13 @@ type WordSize = u64;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Count(u64);
 
-/// Since lispwords are 58b (first 8 are taken up by tag), and to avoid
-/// holes at the start of memory, the CPU expects things at
-/// 0x00FFFFFF00000000
 pub enum MemoryLayout {}
 impl MemoryLayout {
     // Standard addresses.
-    pub const CPU_ROOT: Address = Address(0x00ffffff00000000);
-    pub const CPU_ROOT_END: Address = Address(0x00ffffffffffffff);
-    pub const NIL_ROOT: Address = Address(Self::CPU_ROOT.0);
-    pub const T_ROOT: Address = Address(Self::CPU_ROOT.0 + 0x00000008);
-
-    pub const RESET_VECTOR: Address = Address(Self::CPU_ROOT.0 + 0xffff7ef0);
-    pub const CPU_RESERVED_END: Address = Address(Self::CPU_ROOT.0 + 0xffff8000);
-
-    pub const INTERRUPT_TABLE: Address = Address(0x7f00);
+    pub const CPU_END: Address = Address(0xffffffffffffffff);
+    pub const NIL_ROOT: Address = Address(Self::CPU_END.0 - 0x08 + 1);
+    pub const T_ROOT: Address = Address(Self::CPU_END.0 - 0x10 + 1);
+    pub const RESET_VECTOR: Address = Address(Self::CPU_END.0 - 0x20 + 1);
 }
 
 pub enum InterruptTableOffset {}
@@ -144,28 +136,31 @@ impl From<LispWord> for Native {
 #[derive(Debug)]
 pub struct Cpu {
     /// Common registers.
-    registers: [LispWord; 16],
+    registers: [LispWord; 24],
 
     /// Machine registers
     machine_reg: [Native; 8],
 
-    interrupt: Option<u64>,
+    pending_interrupt: Option<u64>,
 
     pub halted: bool,
-    is_handling_interrupt: bool,
+    interrupts_disabled: bool,
 }
 
 impl Cpu {
-    pub const SP: MachineRegister = MachineRegister(5);
-    pub const PC: MachineRegister = MachineRegister(6);
-    pub const ENV: MachineRegister = MachineRegister(7);
+    pub const SP: MachineRegister = MachineRegister(4);
+    pub const PC: MachineRegister = MachineRegister(5);
+    pub const ENV: MachineRegister = MachineRegister(6);
+    pub const VBR: MachineRegister = MachineRegister(7);
+    pub const T: Register = Register(23);
+    pub const NIL: Register = Register(22);
     pub const WORD_SIZE: u64 = 8;
     pub const INSTRUCTION_SIZE: u64 = 2 * Self::WORD_SIZE;
 
     pub fn interrupt(&mut self, int: u64) {
-        if !self.is_handling_interrupt {
-            self.interrupt = Some(int);
-            self.is_handling_interrupt = true;
+        if !self.interrupts_disabled {
+            self.pending_interrupt = Some(int);
+            self.interrupts_disabled = true;
         }
     }
 }
@@ -173,11 +168,11 @@ impl Cpu {
 impl Default for Cpu {
     fn default() -> Self {
         Cpu {
-            registers: [LispWord::undefined(); 16],
+            registers: [LispWord::undefined(); 24],
             machine_reg: [Native(0); 8],
             halted: false,
-            interrupt: None,
-            is_handling_interrupt: false,
+            pending_interrupt: None,
+            interrupts_disabled: false,
         }
     }
 }
@@ -402,8 +397,14 @@ pub enum Instruction {
 }
 
 impl Cpu {
-    pub fn reset(&mut self) {
-        self.machine_reg[Cpu::PC.0 as usize] = Native::from(MemoryLayout::RESET_VECTOR);
+    pub fn reset(&mut self, bus: &Bus) {
+        dbg!(MemoryLayout::RESET_VECTOR);
+        self.machine_reg[Cpu::PC.0 as usize] = bus.read_word(MemoryLayout::RESET_VECTOR);
+        self.registers[Cpu::T.0 as usize] = LispWord(bus.read_word(MemoryLayout::T_ROOT).0);
+        self.registers[Cpu::NIL.0 as usize] = LispWord(bus.read_word(MemoryLayout::NIL_ROOT).0);
+        // self.interrupts_disabled = true;
+        self.halted = false;
+        self.pending_interrupt = None;
     }
 
     fn fetch(&self, memory: &Bus) -> (Native, Native) {
@@ -421,18 +422,11 @@ impl Cpu {
             .map_err(|_| Trap::TypeError)
     }
 
-    fn nil(memory: &Bus) -> Result<LispWord, Trap> {
-        Self::read_word(memory, MemoryLayout::NIL_ROOT)
-    }
-    fn t(memory: &Bus) -> Result<LispWord, Trap> {
-        Self::read_word(memory, MemoryLayout::T_ROOT)
-    }
-
-    fn to_machine_bool(memory: &mut Bus, val: bool) -> Result<LispWord, Trap> {
+    fn to_machine_bool(&self, val: bool) -> LispWord {
         if val {
-            Self::t(memory)
+            self.registers[Cpu::T.0 as usize]
         } else {
-            Self::nil(memory)
+            self.registers[Cpu::NIL.0 as usize]
         }
     }
 
@@ -510,7 +504,7 @@ impl Cpu {
         interruption: u64,
         next_pc: Address,
     ) -> Result<Address, Trap> {
-        self.interrupt = None;
+        self.pending_interrupt = None;
         match interruption {
             0x03 => {
                 self.push(memory, self.registers[0_usize].into());
@@ -526,7 +520,8 @@ impl Cpu {
         self.push(memory, Native(interruption));
         self.push(memory, Native(next_pc.0));
         let location = Address::from(memory.read_word(
-            MemoryLayout::INTERRUPT_TABLE + Offset(interruption as i64 * Self::WORD_SIZE as i64),
+            Address::from(self.machine_reg[Cpu::VBR.0 as usize])
+                + Offset(interruption as i64 * Self::WORD_SIZE as i64),
         ));
         Ok(location)
     }
@@ -578,7 +573,7 @@ impl Cpu {
                 + Offset(Cpu::INSTRUCTION_SIZE as i64)),
 
             Instruction::Jump { condition, target } => {
-                let nil = Self::nil(memory)?;
+                let nil = self.registers[Cpu::NIL.0 as usize];
 
                 let should_jump = match condition {
                     Condition::Always => true,
@@ -608,7 +603,7 @@ impl Cpu {
                 Ok(Address::from(return_address))
             }
 
-            Instruction::MakeClosure { dst, code } => todo!(),
+            Instruction::MakeClosure { dst: _, code: _ } => todo!(),
 
             // Comparison
             Instruction::MComparison {
@@ -619,17 +614,14 @@ impl Cpu {
                 let op1_obj = self.machine_reg[op1.0 as usize];
                 let op2_obj = self.get_offset_addr_val(op2, op3);
 
-                let result = Self::to_machine_bool(
-                    memory,
-                    match op {
-                        Comparison::Eq => op1_obj == op2_obj,
-                        Comparison::Ne => op1_obj != op2_obj,
-                        Comparison::Gt => op1_obj > op2_obj,
-                        Comparison::Gte => op1_obj >= op2_obj,
-                        Comparison::Lt => op1_obj < op2_obj,
-                        Comparison::Lte => op1_obj <= op2_obj,
-                    },
-                )?;
+                let result = self.to_machine_bool(match op {
+                    Comparison::Eq => op1_obj == op2_obj,
+                    Comparison::Ne => op1_obj != op2_obj,
+                    Comparison::Gt => op1_obj > op2_obj,
+                    Comparison::Gte => op1_obj >= op2_obj,
+                    Comparison::Lt => op1_obj < op2_obj,
+                    Comparison::Lte => op1_obj <= op2_obj,
+                });
                 self.registers[dst.0 as usize] = result;
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
@@ -643,17 +635,14 @@ impl Cpu {
                 let op1_obj = self.registers[op1.0 as usize];
                 let op2_obj = self.get_offset_reg_val_unchecked(op2, op3);
 
-                let result = Self::to_machine_bool(
-                    memory,
-                    match op {
-                        Comparison::Eq => op1_obj == op2_obj,
-                        Comparison::Ne => op1_obj != op2_obj,
-                        Comparison::Gt => op1_obj.as_fixnum()? > op2_obj.as_fixnum()?,
-                        Comparison::Gte => op1_obj.as_fixnum()? >= op2_obj.as_fixnum()?,
-                        Comparison::Lt => op1_obj.as_fixnum()? < op2_obj.as_fixnum()?,
-                        Comparison::Lte => op1_obj.as_fixnum()? <= op2_obj.as_fixnum()?,
-                    },
-                )?;
+                let result = self.to_machine_bool(match op {
+                    Comparison::Eq => op1_obj == op2_obj,
+                    Comparison::Ne => op1_obj != op2_obj,
+                    Comparison::Gt => op1_obj.as_fixnum()? > op2_obj.as_fixnum()?,
+                    Comparison::Gte => op1_obj.as_fixnum()? >= op2_obj.as_fixnum()?,
+                    Comparison::Lt => op1_obj.as_fixnum()? < op2_obj.as_fixnum()?,
+                    Comparison::Lte => op1_obj.as_fixnum()? <= op2_obj.as_fixnum()?,
+                });
                 self.registers[dst.0 as usize] = result;
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
@@ -707,7 +696,7 @@ impl Cpu {
                     }
                     _ => {}
                 }
-                self.is_handling_interrupt = false;
+                self.interrupts_disabled = false;
                 Ok(Address::from(return_address))
             }
 
@@ -908,7 +897,7 @@ impl Cpu {
             Instruction::Typep { dst, src, compare } => {
                 let src_obj = self.registers[src.0 as usize];
                 self.registers[dst.0 as usize] =
-                    Self::to_machine_bool(memory, src_obj.tag() as u8 as u64 == compare.0)?;
+                    self.to_machine_bool(src_obj.tag() as u8 as u64 == compare.0);
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
@@ -916,7 +905,7 @@ impl Cpu {
     }
 
     pub fn step(&mut self, memory: &mut Bus) -> Result<(), Trap> {
-        match self.interrupt {
+        match self.pending_interrupt {
             Some(i) => {
                 self.halted = false;
                 self.machine_reg[Cpu::PC.0 as usize] = Native::from(self.run_interrupt(
@@ -951,8 +940,10 @@ impl Cpu {
             Err(trap) => {
                 self.machine_reg[0_usize] = self.machine_reg[Cpu::PC.0 as usize];
                 self.registers[0_usize] = LispWord::new(WordType::Fixnum, trap as WordSize);
-                self.machine_reg[Cpu::PC.0 as usize] = memory
-                    .read_word(MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR)
+                self.machine_reg[Cpu::PC.0 as usize] = memory.read_word(
+                    Address::from(self.machine_reg[Cpu::VBR.0 as usize])
+                        + InterruptTableOffset::TRAP_VECTOR,
+                )
             }
         };
     }
@@ -964,187 +955,196 @@ pub enum Trap {
     InvalidInstruction,
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::parse_asm;
+#[cfg(test)]
+mod tests {
 
-//     use super::*;
+    use crate::ram::Memory;
 
-//     struct TestBus {}
+    use super::*;
 
-//     impl TestBus {
-//         fn new() -> Vec<u8> {
-//             let mut data = vec![0_u8; 0x10000];
-//             data.as_mut_slice().write_word(0, Word::symbol(0).into());
-//             data.as_mut_slice().write_word(8, Word::symbol(1).into());
-//             data
-//         }
+    struct TestMemory {}
 
-//         fn load_instructions(data: &mut Bus, start: Address, instructions: Vec<Instruction>) {
-//             let mut pos = 0;
-//             for instr in instructions {
-//                 let (lo, hi) = instr.encode();
-//                 data.write_word((start + Offset(pos * Cpu::Self::WORD_SIZE as i64)).0, lo);
-//                 pos += 1;
-//                 data.write_word((start + Offset(pos * Cpu::Self::WORD_SIZE as i64)).0, hi);
-//                 pos += 1;
-//             }
-//         }
-//     }
+    impl TestMemory {
+        fn load_instructions(bus: &mut Bus, start: Address, instructions: Vec<Instruction>) {
+            let mut pos = 0;
+            for instr in instructions {
+                let (lo, hi) = instr.encode();
+                bus.write_word(start + Offset(pos * Cpu::WORD_SIZE as i64), Native(lo));
+                pos += 1;
+                bus.write_word(start + Offset(pos * Cpu::WORD_SIZE as i64), Native(hi));
+                pos += 1;
+            }
+        }
+    }
 
-//     #[test]
-//     fn test_halt() -> Result<(), String> {
-//         let mut cpu = Cpu::default();
-//         let mut memory = TestBus::new();
-//         cpu.address[Cpu::PC.0] = Address(0x1000);
-//         TestBus::load_instructions(&mut memory, cpu.address[Cpu::PC.0], vec![Instruction::Halt]);
-//         cpu.full_step(memory.as_mut_slice());
-//         assert_eq!(cpu.address[Cpu::PC.0], Address(0x1000));
-//         assert!(cpu.halted);
-//         Ok(())
-//     }
+    fn test_setup<'a>() -> Bus<'a> {
+        let memory = Memory::new(0x10000);
+        let mut bus = Bus::new();
+        bus.install(0x0..0x10000, Box::new(memory));
+        bus
+    }
 
-//     #[test]
-//     fn test_nop() -> Result<(), String> {
-//         let mut cpu = Cpu::default();
-//         let mut memory = TestBus::new();
-//         cpu.address[Cpu::PC.0] = Address(0x1000);
-//         TestBus::load_instructions(&mut memory, cpu.address[Cpu::PC.0], vec![Instruction::Nop]);
-//         cpu.full_step(memory.as_mut_slice());
-//         assert_eq!(cpu.address[Cpu::PC.0], Address(0x1010));
-//         Ok(())
-//     }
+    #[test]
+    fn test_halt() -> Result<(), String> {
+        let mut cpu = Cpu::default();
+        let mut test_bus = test_setup();
+        cpu.machine_reg[Cpu::PC.0 as usize] = Native(0x1000);
+        TestMemory::load_instructions(
+            &mut test_bus,
+            Address::from(cpu.machine_reg[Cpu::PC.0 as usize]),
+            vec![Instruction::Halt],
+        );
+        cpu.full_step(&mut test_bus);
+        assert_eq!(cpu.machine_reg[Cpu::PC.0 as usize], Native(0x1010));
+        assert!(cpu.halted);
+        Ok(())
+    }
 
-//     #[test]
-//     fn test_multiple_nop() -> Result<(), String> {
-//         let mut cpu = Cpu::default();
-//         let mut memory = TestBus::new();
-//         cpu.address[Cpu::PC.0] = Address(0x1000);
-//         TestBus::load_instructions(
-//             &mut memory,
-//             cpu.address[Cpu::PC.0],
-//             parse_asm! {
-//                 NOP;
-//                 NOP;
-//                 NOP;
-//                 NOP;
-//                 NOP;
-//                 NOP;
-//                 NOP;
-//                 NOP;
-//                 HALT;
-//             },
-//         );
+    #[test]
+    fn test_nop() -> Result<(), String> {
+        let mut cpu = Cpu::default();
+        let mut test_bus = test_setup();
+        cpu.machine_reg[Cpu::PC.0 as usize] = Native(0x1000);
+        TestMemory::load_instructions(
+            &mut test_bus,
+            Address::from(cpu.machine_reg[Cpu::PC.0 as usize]),
+            vec![Instruction::Nop],
+        );
+        cpu.full_step(&mut test_bus);
+        assert_eq!(cpu.machine_reg[Cpu::PC.0 as usize], Native(0x1010));
+        assert!(!cpu.halted);
+        Ok(())
+    }
 
-//         while !cpu.halted {
-//             cpu.full_step(memory.as_mut_slice());
-//         }
-//         assert_eq!(cpu.address[Cpu::PC.0], Address(0x1080));
-//         assert!(cpu.halted);
-//         Ok(())
-//     }
+    #[test]
+    fn test_multiple_nop() -> Result<(), String> {
+        let mut cpu = Cpu::default();
+        let mut test_bus = test_setup();
+        cpu.machine_reg[Cpu::PC.0 as usize] = Native(0x1000);
+        TestMemory::load_instructions(
+            &mut test_bus,
+            Address::from(cpu.machine_reg[Cpu::PC.0 as usize]),
+            vec![
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Nop,
+                Instruction::Halt,
+            ],
+        );
+        while (!cpu.halted) {
+            cpu.full_step(&mut test_bus);
+        }
+        assert_eq!(cpu.machine_reg[Cpu::PC.0 as usize], Native(0x10a0));
+        Ok(())
+    }
 
-//     #[test]
-//     fn test_jump_adr() -> Result<(), String> {
-//         let mut cpu = Cpu::default();
-//         let mut memory = TestBus::new();
-//         cpu.address[Cpu::PC.0] = Address(0x1000);
-//         cpu.address[0] = Address(0x2000);
-//         TestBus::load_instructions(
-//             &mut memory,
-//             cpu.address[Cpu::PC.0],
-//             parse_asm! {
-//                 JUMP [A 0];
-//             },
-//         );
-//         cpu.full_step(memory.as_mut_slice());
-//         assert_eq!(cpu.address[Cpu::PC.0], Address(0x2000));
-//         Ok(())
-//     }
+    // #[test]
+    // fn test_jump_adr() -> Result<(), String> {
+    //     let mut cpu = Cpu::default();
+    //     let mut memory = TestMemory::new();
+    //     cpu.machine_reg[Cpu::PC.0 as usize] = Address(0x1000);
+    //     cpu.machine_reg[0] = Address(0x2000);
+    //     TestMemory::load_instructions(
+    //         &mut memory,
+    //         cpu.machine_reg[Cpu::PC.0 as usize],
+    //         parse_asm! {
+    //             JUMP [A 0];
+    //         },
+    //     );
+    //     cpu.full_step(memory.as_mut_slice());
+    //     assert_eq!(cpu.machine_reg[Cpu::PC.0 as usize], Address(0x2000));
+    //     Ok(())
+    // }
 
-//     #[test]
-//     fn test_cons_builds_cell() -> Result<(), String> {
-//         let mut cpu = Cpu::default();
-//         let mut memory = TestBus::new();
+    // #[test]
+    // fn test_cons_builds_cell() -> Result<(), String> {
+    //     let mut cpu = Cpu::default();
+    //     let mut memory = TestMemory::new();
 
-//         let cons_hook = 0x2000;
-//         let trap_hook = 0x2100;
-//         let cons_cell = 0x3000;
-//         let code_base = 0x4000;
+    //     let cons_hook = 0x2000;
+    //     let trap_hook = 0x2100;
+    //     let cons_cell = 0x3000;
+    //     let code_base = 0x4000;
 
-//         Cpu::write_word(&mut memory, MemoryLayout::RESET_VECTOR, code_base);
-//         Cpu::write_word(
-//             &mut memory,
-//             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
-//             cons_hook,
-//         );
-//         Cpu::write_word(
-//             &mut memory,
-//             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_CONS_VECTOR,
-//             cons_hook,
-//         );
-//         Cpu::write_word(
-//             &mut memory,
-//             MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR,
-//             trap_hook,
-//         );
-//         cpu.reset(&mut memory);
+    //     Cpu::write_word(&mut memory, MemoryLayout::RESET_VECTOR, code_base);
+    //     Cpu::write_word(
+    //         &mut memory,
+    //         MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_VECTOR,
+    //         cons_hook,
+    //     );
+    //     Cpu::write_word(
+    //         &mut memory,
+    //         MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::ALLOC_CONS_VECTOR,
+    //         cons_hook,
+    //     );
+    //     Cpu::write_word(
+    //         &mut memory,
+    //         MemoryLayout::INTERRUPT_TABLE + InterruptTableOffset::TRAP_VECTOR,
+    //         trap_hook,
+    //     );
+    //     cpu.reset(&mut memory);
 
-//         TestBus::load_instructions(
-//             &mut memory,
-//             code_base as u64,
-//             parse_asm! {
-//                 MOV A Cpu::SP, 0x800;
-//                 MOV R 0, Word::fixnum(42);
-//                 MOV R 1, Word::fixnum(99);
-//                 CONS;
-//                 NOP;
-//                 HALT;
-//             },
-//         );
+    //     TestMemory::load_instructions(
+    //         &mut memory,
+    //         code_base as u64,
+    //         parse_asm! {
+    //             MOV A Cpu::SP, 0x800;
+    //             MOV R 0, Word::fixnum(42);
+    //             MOV R 1, Word::fixnum(99);
+    //             CONS;
+    //             NOP;
+    //             HALT;
+    //         },
+    //     );
 
-//         // Fake CONS_HOOK
-//         TestBus::load_instructions(
-//             &mut memory,
-//             cons_hook,
-//             parse_asm! {
-//                 MOV A 0, cons_cell;
-//                 IRETURN;
-//             },
-//         );
+    //     // Fake CONS_HOOK
+    //     TestMemory::load_instructions(
+    //         &mut memory,
+    //         cons_hook,
+    //         parse_asm! {
+    //             MOV A 0, cons_cell;
+    //             IRETURN;
+    //         },
+    //     );
 
-//         TestBus::load_instructions(
-//             &mut memory,
-//             trap_hook,
-//             parse_asm! {
-//                 HALT;
-//             },
-//         );
+    //     TestMemory::load_instructions(
+    //         &mut memory,
+    //         trap_hook,
+    //         parse_asm! {
+    //             HALT;
+    //         },
+    //     );
 
-//         cpu.reset(&mut memory);
-//         while !cpu.halted {
-//             cpu.full_step(memory.as_mut_slice());
-//         }
+    //     cpu.reset(&mut memory);
+    //     while !cpu.halted {
+    //         cpu.full_step(memory.as_mut_slice());
+    //     }
 
-//         assert_eq!(
-//             cpu.registers[0_usize],
-//             Word::new(WordType::Cons, cons_cell as u64)
-//         );
+    //     assert_eq!(
+    //         cpu.registers[0_usize],
+    //         Word::new(WordType::Cons, cons_cell as u64)
+    //     );
 
-//         assert_eq!(
-//             Word::try_from(memory.as_mut_slice().read_word(cons_cell))
-//                 .expect("couldn't parse word"),
-//             Word::new(WordType::Fixnum, 42)
-//         );
+    //     assert_eq!(
+    //         Word::try_from(memory.as_mut_slice().read_word(cons_cell))
+    //             .expect("couldn't parse word"),
+    //         Word::new(WordType::Fixnum, 42)
+    //     );
 
-//         assert_eq!(
-//             Word::try_from(memory.as_mut_slice().read_word(cons_cell + Self::WORD_SIZE))
-//                 .expect("couldn't parse word"),
-//             Word::new(WordType::Fixnum, 99).into()
-//         );
+    //     assert_eq!(
+    //         Word::try_from(memory.as_mut_slice().read_word(cons_cell + Self::WORD_SIZE))
+    //             .expect("couldn't parse word"),
+    //         Word::new(WordType::Fixnum, 99).into()
+    //     );
 
-//         assert!(cpu.halted);
+    //     assert!(cpu.halted);
 
-//         Ok(())
-//     }
-// }
+    //     Ok(())
+    // }
+}

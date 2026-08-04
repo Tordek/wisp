@@ -19,13 +19,6 @@ kbbufferstart:
 kbbufferend:
         .w #0
 
-.org 0x00ffffff00000000
-    nil: .w #!'nil_symbol
-    t: .w #!'t_symbol
-    symbol: .w #!'symbol_symbol
-    cons: .w #!'cons_symbol
-    fixnum: .w #!'fixnum_symbol
-
 .org 0x00ffffff00020000
     nil_str: .str "nil"
     t_str: .str "t"
@@ -38,53 +31,49 @@ kbbufferend:
     t_symbol:
         .w 't_str
         .w 'nil
-    symbol_symbol:
-        .w 'symbol_str
-        .w 'nil
-    cons_symbol:
-        .w 'cons_str
-        .w 'nil
-    fixnum_symbol:
-        .w 'fixnum_str
-        .w 'nil 
-symbol_table:
-    .w 'nil
-    .w #['fixnum_entry
+;     symbol_symbol:
+;         .w 'symbol_str
+;         .w 'nil
+;     cons_symbol:
+;         .w 'cons_str
+;         .w 'nil
+;     fixnum_symbol:
+;         .w 'fixnum_str
+;         .w 'nil 
+; symbol_table:
+;     .w 'nil
+;     .w #['fixnum_entry
 
-fixnum_entry:
-    .w 'fixnum
-    .w #['symbol_entry
+; fixnum_entry:
+;     .w 'fixnum
+;     .w #['symbol_entry
 
-symbol_entry:
-    .w 'symbol
-    .w #['cons_entry
+; symbol_entry:
+;     .w 'symbol
+;     .w #['cons_entry
 
-cons_entry:
-    .w 'cons
-    .w #['t_entry
-t_entry:
-    .w 't
-    .w 'nil
+; cons_entry:
+;     .w 'cons
+;     .w #['t_entry
+; t_entry:
+;     .w 't
+;     .w 'nil
 
-.org 0x00ffffff00019000
+.org 0x00fffffffff19000
 bootstrap:
     ; Initial setup: Stack, interrupts.
     MOV SP, 0x30000 ; TODO: pass initial symbols for resolution.
-    MOV A0, 0x7f00
+    MOV VBR, 0x7f00
     MOV A1, 'trap
-    MOV [A0], A1
-    ADD A0, A0, 8
-    ADD A0, A0, 8
+    MOV [VBR], A1
     MOV A1, 'alloc
-    MOV [A0], A1
-    ADD A0, A0, 8
-    MOV [A0], A1
-    MOV A0, 0x8680
+    MOV [VBR + 16], A1
+    ADD VBR, A0, 8
+    MOV [VBR + 24], A1
     MOV A1, 'video_interrupt
-    MOV [A0], A1
-    ADD A0, A0, 8
+    MOV [VBR + 1920], A1
     MOV A1, 'keyboard_interrupt
-    MOV [A0], A1
+    MOV [VBR + 1928], A1
     MOV ['pressedkeyid], A1
     MOV A1, 0x30000
     MOV ['freeptr], A1
@@ -396,5 +385,7 @@ repl:
     INT 0xf0
     JUMP 'repl
 
-.org 0x00ffffffffff7ef0
-    JUMP 'bootstrap
+.org 0xffffffffffffffe0
+    .w 'bootstrap
+    nil: .w #!'nil_symbol
+    t: .w #!'t_symbol

@@ -1,9 +1,19 @@
 use crate::bus::{Address, Device, Native};
 
 pub struct Memory {
-    pub base: Address,
+    base: Address,
     pub bytes: Vec<u8>,
 }
+
+impl Memory {
+    pub fn new(size: usize) -> Self {
+        Self {
+            base: Address(0),
+            bytes: vec![0; size],
+        }
+    }
+}
+
 impl Device for Memory {
     fn set_location(&mut self, base_address: Address) {
         self.base = base_address
