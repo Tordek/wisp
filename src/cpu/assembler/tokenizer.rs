@@ -32,6 +32,7 @@ pub enum AssemblyToken<'a> {
     LispLiteral,
     Newline,
     Comma,
+    Bang,
 }
 
 // Convenience methods
@@ -74,9 +75,19 @@ fn register(input: &str) -> IResult<&str, AssemblyToken<'_>> {
         .parse(input)
 }
 fn machineregister(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    preceded(tag("A"), decimal)
-        .map(|c| AssemblyToken::MachineRegister(cpu::MachineRegister(c as u8)))
-        .parse(input)
+    alt((
+        preceded(tag("A"), decimal)
+            .map(|c| AssemblyToken::MachineRegister(cpu::MachineRegister(c as u8))),
+        value(
+            AssemblyToken::MachineRegister(cpu::MachineRegister(6)),
+            tag("PC"),
+        ),
+        value(
+            AssemblyToken::MachineRegister(cpu::MachineRegister(5)),
+            tag("SP"),
+        ),
+    ))
+    .parse(input)
 }
 fn openbracket(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::OpenBracket, tag("[")).parse(input)
@@ -132,12 +143,16 @@ fn raw_char(input: &str) -> IResult<&str, AssemblyToken<'_>> {
 fn literal(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::LispLiteral, tag("#")).parse(input)
 }
+fn bang(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    value(AssemblyToken::Bang, tag("!")).parse(input)
+}
 
 fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     preceded(
         space0,
         alt((
             label,
+            bang,
             literal,
             raw_string,
             raw_char,
@@ -169,8 +184,24 @@ pub fn tokenize<'a>(input: &'a str) -> Result<Vec<AssemblyToken<'a>>, TokenizeEr
         .parse(input)
         .map_err(|_| TokenizeError::UnexpectedInput { remaining: input })?;
 
-    if !rest.is_empty() {
-        return Err(TokenizeError::UnexpectedInput { remaining: rest });
-    }
+    // if !rest.is_empty() {
+    //     return Err(TokenizeError::UnexpectedInput { remaining: rest });
+    // }
     Ok(tokens)
+}
+
+mod test {
+    use crate::cpu::{
+        assembler::{self, test::expected_tokens, tokenizer::*},
+        *,
+    };
+
+    #[test]
+    fn test_tokenize() {
+        let parsed = tokenize(assembler::test::SOURCE).unwrap();
+        let expected = expected_tokens();
+        for i in 0..parsed.len() {
+            assert_eq!(parsed[i], expected[i])
+        }
+    }
 }

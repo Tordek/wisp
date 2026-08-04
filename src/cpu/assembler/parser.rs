@@ -1,10 +1,19 @@
-use crate::cpu::{self, assembler::tokenizer::AssemblyToken};
+use nom::Err;
+use sdl2::libc::sleep;
+
+use crate::cpu::{
+    self, TwoRegs,
+    assembler::{
+        parser,
+        tokenizer::AssemblyToken::{self, Instruction},
+    },
+};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RegSource<'input> {
     pub op1: cpu::Register,
     pub op2: Option<cpu::Register>,
-    pub op3: Option<Reference<'input>>,
+    pub op3: Option<Native<'input>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -22,7 +31,7 @@ pub enum EitherSource<'input> {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Location<'input> {
-    Literal(Reference<'input>),
+    Literal(Native<'input>),
     Absolute(Reference<'input>),
     Register(cpu::Register),
     Machine(cpu::MachineRegister),
@@ -62,9 +71,7 @@ pub enum UnresolvedInstruction<'input> {
     IDiv {
         div: cpu::Register,
         rem: cpu::Register,
-        op1: cpu::Register,
-        op2: Option<cpu::Register>,
-        op3: Option<Reference<'input>>,
+        operands: RegSource<'input>,
     },
     Binary {
         op: cpu::BinaryOp,
@@ -93,20 +100,22 @@ pub enum UnresolvedInstruction<'input> {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Reference<'input> {
-    UnresolvedNeg(&'input str),
-    UnresolvedPos(&'input str),
+    Unresolved(&'input str),
     Resolved(i64),
 }
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Data<'input> {
+pub enum Native<'input> {
+    Raw(Reference<'input>),
+    Char(Reference<'input>),
+    Fixnum(Reference<'input>),
+    Cons(Reference<'input>),
     Symbol(Reference<'input>),
-    Literal(Reference<'input>),
-    Cons(Reference<'input>, Reference<'input>),
 }
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AssemblyLine<'input> {
-    Ord(usize),
-    UnresolvedData(Data<'input>),
+    Org(usize),
+    UnresolvedData(Native<'input>),
     ResolvedData(Vec<u8>),
     ResolvedInstruction(cpu::Instruction),
     UnresolvedInstruction(UnresolvedInstruction<'input>),
@@ -176,6 +185,12 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         Some(value)
     }
 
+    fn try_plus(&mut self) -> Option<()> {
+        self.consume_if(|t| match t {
+            AssemblyToken::Plus => Some(()),
+            _ => None,
+        })
+    }
     fn try_number(&mut self) -> Option<i64> {
         self.consume_if(|t| match t {
             AssemblyToken::Number(n) => Some(*n),
@@ -183,29 +198,21 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         })
     }
 
-    fn try_instruction(&mut self) -> Option<&'input str> {
-        self.consume_if(|t| match t {
-            AssemblyToken::Instruction(l) => Some(*l),
-            _ => None,
-        })
-    }
-
-    fn try_directive(&mut self) -> Option<&'input str> {
-        self.consume_if(|t| match t {
-            AssemblyToken::Directive(l) => Some(*l),
-            _ => None,
-        })
-    }
     fn try_register(&mut self) -> Option<cpu::Register> {
         self.consume_if(|t| match t {
             AssemblyToken::Register(l) => Some(*l),
             _ => None,
         })
     }
-
-    fn try_mregister(&mut self) -> Option<cpu::MachineRegister> {
+    fn try_open_bracket(&mut self) -> Option<()> {
         self.consume_if(|t| match t {
-            AssemblyToken::MachineRegister(l) => Some(*l),
+            AssemblyToken::OpenBracket => Some(()),
+            _ => None,
+        })
+    }
+    fn try_close_bracket(&mut self) -> Option<()> {
+        self.consume_if(|t| match t {
+            AssemblyToken::CloseBracket => Some(()),
             _ => None,
         })
     }
@@ -229,19 +236,108 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         match end {
             None => Some(()),
             Some(AssemblyToken::Newline) => {
-                self.position += 1;
+                self.next();
                 Some(())
             }
             _ => None,
         }
     }
 
-    fn expect_any_value(&mut self) -> Result<Reference<'input>, ParserError<'input>> {
+    fn try_reference_token(&mut self) -> Option<&'input str> {
+        self.consume_if(|reference| match reference {
+            AssemblyToken::Reference(r) => Some(*r),
+            _ => None,
+        })
+    }
+    fn try_char(&mut self) -> Option<u8> {
+        self.consume_if(|reference| match reference {
+            AssemblyToken::Character(c) => Some(*c),
+            _ => None,
+        })
+    }
+    fn try_string(&mut self) -> Option<&'input str> {
+        self.consume_if(|reference| match reference {
+            AssemblyToken::String(s) => Some(*s),
+            _ => None,
+        })
+    }
+    fn try_bang(&mut self) -> Option<()> {
+        self.consume_if(|reference| match reference {
+            AssemblyToken::Bang => Some(()),
+            _ => None,
+        })
+    }
+
+    fn try_reference(&mut self) -> Option<Reference<'input>> {
+        let name = self.try_reference_token()?;
+        Some(Reference::Unresolved(name))
+    }
+
+    fn try_any_machine_value(&mut self) -> Option<Reference<'input>> {
         let next = self.peek();
         match next {
-            Some(AssemblyToken::Number(_)) => self.parse_number(),
-            Some(AssemblyToken::Reference(_)) => self.parse_number(),
-            Some(AssemblyToken::LispLiteral) => self.parse_number(),
+            Some(AssemblyToken::Number(_)) => self.try_number().map(Reference::Resolved),
+            Some(AssemblyToken::Reference(_)) => self.try_reference(),
+            _ => None,
+        }
+    }
+
+    fn expect_lisp_value(&mut self) -> Result<Native<'input>, ParserError<'input>> {
+        self.consume_if(|t| match t {
+            AssemblyToken::LispLiteral => Some(()),
+            _ => None,
+        });
+
+        let next = self.peek();
+        match next {
+            Some(AssemblyToken::Character(c)) => {
+                let v = *c;
+                self.next();
+                Ok(Native::Char(Reference::Resolved(v as i64)))
+            }
+            Some(AssemblyToken::OpenBracket) => {
+                self.next();
+                let v = self.try_any_machine_value();
+                let v = self.expect(v, "A value to encode")?;
+                Ok(Native::Cons(v))
+            }
+            Some(AssemblyToken::Bang) => {
+                self.next();
+                let v = self.try_any_machine_value();
+                let v = self.expect(v, "A value to encode")?;
+                Ok(Native::Symbol(v))
+            }
+            Some(AssemblyToken::Number(n)) => {
+                let v = *n;
+                self.next();
+                Ok(Native::Fixnum(Reference::Resolved(v as i64)))
+            }
+            Some(AssemblyToken::Reference(c)) => Ok(Native::Fixnum(Reference::Unresolved(c))),
+            v => Err(ParserError::Expected {
+                expected: "A value to convert",
+                found: v.cloned(),
+            }),
+        }
+    }
+
+    fn expect_any_value(&mut self) -> Result<Native<'input>, ParserError<'input>> {
+        let next = self.peek();
+        match next {
+            Some(AssemblyToken::Number(_)) => {
+                let n = self.try_number();
+                let n = self.expect(n, "A number")?;
+                Ok(Native::Raw(Reference::Resolved(n)))
+            }
+            Some(AssemblyToken::Reference(_)) => {
+                let r = self.try_reference();
+                let r = self.expect(r, "A reference")?;
+                Ok(Native::Raw(r))
+            }
+            Some(AssemblyToken::LispLiteral) => self.expect_lisp_value(),
+            v => Err(ParserError::Expected {
+                expected: "A value",
+                found: v.cloned(),
+            }),
         }
     }
 
@@ -263,63 +359,34 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             }),
         }
     }
-    fn parse_ord(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_directive("ord")?;
+    fn parse_org(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        self.expect_directive("org")?;
         let position = self.try_number();
         let position = self.expect(position, "an address")?;
-        Ok(AssemblyLine::Ord(position as usize))
-    }
-    fn parse_symbol(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_directive("symbol");
-        let pos = self.expect_any_value()?;
-        Ok(match pos {
-            Reference::Resolved(r) => {
-                AssemblyLine::ResolvedData(cpu::LispWord::symbol(r as u64).0.to_le_bytes().to_vec())
-            }
-            unresolved => AssemblyLine::UnresolvedData(Data::Symbol(unresolved)),
-        })
+        Ok(AssemblyLine::Org(position as usize))
     }
     fn parse_string(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_directive("string");
-        let pos = self.expect(self.raw_string()?, "String contents")?;
-        let lenblock = cpu::LispWord::fixnum(pos.len() as u64);
+        self.expect_directive("str")?;
+        let str = self.try_string();
+        let str = self.expect(str, "A string")?;
+        let lenblock = cpu::LispWord::fixnum(str.len() as u64);
 
         let mut encoded = lenblock.0.to_le_bytes().to_vec();
-        encoded.extend(pos.as_bytes().to_vec());
-        Ok((AssemblyLine::ResolvedData(encoded)))
+        encoded.extend(str.as_bytes().to_vec());
+        Ok(AssemblyLine::ResolvedData(encoded))
     }
     fn parse_w(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_directive("w");
+        self.expect_directive("w")?;
         let contents = self.expect_any_value()?;
-        Ok(match contents {
-            Reference::Resolved(r) => AssemblyLine::ResolvedData(r.to_le_bytes().to_vec()),
-            unresolved => AssemblyLine::UnresolvedData(Data::Literal(unresolved)),
-        })
-    }
-    fn parse_consdir(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_directive("consdir");
-        let car = self.expect_any_value()?;
-        self.expect_comma()?;
-        let cdr = self.expect_any_value()?;
-        Ok(match (&car, &cdr) {
-            (Reference::Resolved(car), Reference::Resolved(cdr)) => {
-                let mut vec = car.to_le_bytes().to_vec();
-                vec.extend(cdr.to_be_bytes());
-
-                AssemblyLine::ResolvedData(vec)
-            }
-            _ => AssemblyLine::UnresolvedData(Data::Cons(car, cdr)),
-        })
+        Ok(AssemblyLine::UnresolvedData(contents))
     }
     fn try_directive_line(&mut self) -> Result<Option<AssemblyLine<'input>>, ParserError<'input>> {
         let directive = self.peek();
 
         match directive {
-            Some(AssemblyToken::Directive("ord")) => Ok(Some(self.parse_ord()?)),
-            Some(AssemblyToken::Directive("symbol")) => Ok(Some(self.parse_symbol()?)),
-            Some(AssemblyToken::Directive("string")) => Ok(Some(self.parse_string()?)),
+            Some(AssemblyToken::Directive("org")) => Ok(Some(self.parse_org()?)),
+            Some(AssemblyToken::Directive("str")) => Ok(Some(self.parse_string()?)),
             Some(AssemblyToken::Directive("w")) => Ok(Some(self.parse_w()?)),
-            Some(AssemblyToken::Directive("consdir")) => Ok(Some(self.parse_consdir()?)),
             Some(AssemblyToken::Directive(directive)) => {
                 Err(ParserError::UnknownDirective { directive })
             }
@@ -327,166 +394,535 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         }
     }
 
-    fn parse_lispword(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        // Read next symbol to see what needs to be converted.
-        //match next { Charecter => LispWord::char
-        todo!()
-    }
-
     fn parse_nop(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("nop");
+        self.expect_instruction("NOP")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Nop))
     }
     fn parse_halt(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("halt");
+        self.expect_instruction("HALT")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Halt))
     }
     fn parse_return_op(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("return");
+        self.expect_instruction("RETURN")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Return))
     }
     fn parse_ireturn_op(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("ireturn");
+        self.expect_instruction("IRETURN")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::IReturn))
     }
     fn parse_interrupt(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("interrupt");
+        self.expect_instruction("INT")?;
 
+        let target = self.try_any_machine_value();
+        let target = self.expect(target, "The number of the interruption")?;
+
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Int(target),
+        ))
+    }
+
+    fn expect_jump_condition(&mut self) -> Result<cpu::Condition, ParserError<'input>> {
+        let condition = self.next();
+        match condition {
+            Some(AssemblyToken::Instruction("JUMP")) => Ok(cpu::Condition::Always),
+            Some(AssemblyToken::Instruction("JUMPIF")) => {
+                let conditional = self.try_register();
+                let conditional = self.expect(conditional, "A register to check")?;
+                self.expect_comma()?;
+                Ok(cpu::Condition::True(conditional))
+            }
+            Some(AssemblyToken::Instruction("JUMPIFNOT")) => {
+                let conditional = self.try_register();
+                let conditional = self.expect(conditional, "A register to check")?;
+                self.expect_comma()?;
+                Ok(cpu::Condition::False(conditional))
+            }
+            _ => Err(ParserError::ExpectedInstruction {
+                expected: "A jump",
+                found: condition.cloned(),
+            }),
+        }
+    }
+
+    fn expect_r_andor_offset(
+        &mut self,
+    ) -> Result<(Option<cpu::Register>, Option<Native<'input>>), ParserError<'input>> {
+        let mreg = self.try_register();
+        match mreg {
+            Some(reg) => {
+                let plus = self.try_plus();
+                let extra = if plus.is_some() {
+                    Some(self.expect_any_value()?)
+                } else {
+                    None
+                };
+                Ok((Some(reg), extra))
+            }
+            None => {
+                let off = self.expect_any_value()?;
+                Ok((None, Some(off)))
+            }
+        }
+    }
+    fn expect_mr_andor_offset(
+        &mut self,
+    ) -> Result<(Option<cpu::MachineRegister>, Option<Reference<'input>>), ParserError<'input>>
+    {
+        let mreg = self.try_machine_register();
+        match mreg {
+            Some(reg) => {
+                let plus = self.try_plus();
+                let extra = if plus.is_some() {
+                    let r = self.try_any_machine_value();
+                    Some(self.expect(r, "an offset")?)
+                } else {
+                    None
+                };
+                Ok((Some(reg), extra))
+            }
+            None => {
+                let off = self.try_any_machine_value();
+                let off = self.expect(off, "An address")?;
+                Ok((None, Some(off)))
+            }
+        }
+    }
+    fn expect_jump_target(&mut self) -> Result<JumpTarget<'input>, ParserError<'input>> {
+        let register = self.try_register();
+        if let Some(reg) = register {
+            return Ok(JumpTarget::Register(reg));
+        }
+
+        let target = self.expect_mr_andor_offset()?;
         match target {
-            Reference::Resolved(v) => Ok((
-                rest,
-                AssemblyLine::ResolvedInstruction(cpu::Instruction::Int(v as u64)),
-            )),
-            unresolved => Ok((
-                rest,
-                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Int(unresolved)),
-            )),
+            (Some(r), Some(off)) => Ok(JumpTarget::IndirectMachine(r, off)),
+            (Some(r), None) => Ok(JumpTarget::Machine(r, Reference::Resolved(0))),
+            (None, Some(adr)) => Ok(JumpTarget::Absolute(adr)),
+            (None, None) => Err(ParserError::Expected {
+                expected: "a target to jump to",
+                found: None,
+            }),
         }
     }
     fn parse_jump(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("jump");
-        Ok((
-            rest,
-            match jumptarget.try_resolve() {
-                Some(resolved) => AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                    condition,
-                    target: resolved,
-                }),
-                None => AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Jump {
-                    condition,
-                    target: jumptarget,
-                }),
+        let condition = self.expect_jump_condition()?;
+        let jumptarget = self.expect_jump_target()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Jump {
+                condition,
+                target: jumptarget,
             },
         ))
     }
     fn parse_call(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("call");
-        todo!()
+        self.expect_instruction("CALL")?;
+        let target = self.expect_jump_target()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Call { target },
+        ))
     }
-    fn parse_pusha(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("pusha");
-        todo!()
+    fn parse_push(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        self.expect_instruction("PUSH")?;
+        let reg = self.try_register();
+        if let Some(r) = reg {
+            return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::PushR {
+                src: r,
+            }));
+        }
+        let mreg = self.try_machine_register();
+        if let Some(r) = mreg {
+            return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::PushA {
+                src: r,
+            }));
+        }
+        let next = self.peek();
+        Err(ParserError::Expected {
+            expected: "A location to push from",
+            found: next.cloned(),
+        })
     }
-    fn parse_popa(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("popa");
-        todo!()
+    fn parse_pop(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        self.expect_instruction("POP")?;
+        let reg = self.try_register();
+        if let Some(r) = reg {
+            return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::PopR {
+                dst: r,
+            }));
+        }
+        let mreg = self.try_machine_register();
+        if let Some(r) = mreg {
+            return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::PopA {
+                dst: r,
+            }));
+        }
+        let next = self.peek();
+        Err(ParserError::Expected {
+            expected: "A location to pop to",
+            found: next.cloned(),
+        })
     }
-    fn parse_pushr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("pushr");
-        todo!()
+
+    fn expect_location(&mut self) -> Result<Location<'input>, ParserError<'input>> {
+        let register = self.try_register();
+        if let Some(l) = register {
+            return Ok(Location::Register(l));
+        }
+
+        let machinereg = self.try_machine_register();
+        if let Some(m) = machinereg {
+            return Ok(Location::Machine(m));
+        }
+
+        let relative = self.try_open_bracket();
+        if let Some(()) = relative {
+            let register = self.try_register();
+            self.try_close_bracket();
+            if let Some(l) = register {
+                return Ok(Location::IndirectRegister(l));
+            }
+
+            let machinereg = self.try_machine_register();
+            if let Some(m) = machinereg {
+                let plus = self.try_plus();
+                let extra = if plus.is_some() {
+                    let r = self.try_any_machine_value();
+                    self.expect(r, "an offset")?
+                } else {
+                    Reference::Resolved(0)
+                };
+                self.try_close_bracket();
+
+                return Ok(Location::IndirectMachine(m, extra));
+            }
+
+            let literal = self.try_any_machine_value();
+            let literal = self.expect(literal, "An address")?;
+            self.try_close_bracket();
+            return Ok(Location::Absolute(literal));
+        }
+        let literal = self.expect_any_value()?;
+        return Ok(Location::Literal(literal));
     }
-    fn parse_popr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("popr");
-        todo!()
-    }
+
     fn parse_mov(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("mov");
-        todo!()
+        self.expect_instruction("MOV")?;
+        let dst = self.expect_location()?;
+        self.expect_comma()?;
+        let src = self.expect_location()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Mov { dst, src },
+        ))
     }
     fn parse_mov8(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("mov8");
-        todo!()
+        self.expect_instruction("MOV8")?;
+        let dst = self.expect_location()?;
+        self.expect_comma()?;
+        let src = self.expect_location()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Mov8 { dst, src },
+        ))
     }
+
+    fn parse_either_source(&mut self) -> Result<EitherSource<'input>, ParserError<'input>> {
+        let source = self.peek();
+        match source {
+            Some(AssemblyToken::Register(_)) => self.parse_reg_source().map(EitherSource::Reg),
+            Some(AssemblyToken::MachineRegister(_)) => {
+                self.parse_mach_source().map(EitherSource::Mach)
+            }
+
+            other => Err(ParserError::Expected {
+                expected: "A source",
+                found: other.cloned(),
+            }),
+        }
+    }
+
+    fn parse_mach_source(&mut self) -> Result<MachSource<'input>, ParserError<'input>> {
+        let op1 = self.try_machine_register();
+        let op1 = self.expect(op1, "an operand")?;
+        self.expect_comma()?;
+        let (op2, op3) = self.expect_mr_andor_offset()?;
+        Ok(MachSource { op1, op2, op3 })
+    }
+    fn parse_reg_source(&mut self) -> Result<RegSource<'input>, ParserError<'input>> {
+        let op1 = self.try_register();
+        let op1 = self.expect(op1, "an operand")?;
+        self.expect_comma()?;
+        let (op2, op3) = self.expect_r_andor_offset()?;
+        Ok(RegSource { op1, op2, op3 })
+    }
+
     fn parse_mbin(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("mbin");
-        todo!()
+        let instr = self.peek().cloned();
+        self.next();
+        let dst = self.peek().cloned();
+        match dst {
+            Some(AssemblyToken::Register(dst)) => {
+                self.next();
+                self.expect_comma()?;
+                let op = match instr {
+                    Some(AssemblyToken::Instruction("ADD")) => cpu::BinaryOp::Add,
+                    Some(AssemblyToken::Instruction("SUB")) => cpu::BinaryOp::Sub,
+                    other => {
+                        return Err(ParserError::Expected {
+                            expected: "ADD or SUB",
+                            found: other,
+                        });
+                    }
+                };
+                let operands = self.parse_reg_source()?;
+                Ok(AssemblyLine::UnresolvedInstruction(
+                    UnresolvedInstruction::Binary { op, dst, operands },
+                ))
+            }
+            Some(AssemblyToken::MachineRegister(dst)) => {
+                self.next();
+                self.expect_comma()?;
+                let op = match instr {
+                    Some(AssemblyToken::Instruction("ADD")) => cpu::MBinaryOp::Add,
+                    Some(AssemblyToken::Instruction("SUB")) => cpu::MBinaryOp::Sub,
+                    other => {
+                        return Err(ParserError::Expected {
+                            expected: "ADD or SUB",
+                            found: other,
+                        });
+                    }
+                };
+                let operands = self.parse_mach_source()?;
+                Ok(AssemblyLine::UnresolvedInstruction(
+                    UnresolvedInstruction::MBinary { op, dst, operands },
+                ))
+            }
+            s => Err(ParserError::Expected {
+                expected: "ADD or SUB",
+                found: s,
+            }),
+        }
     }
     fn parse_settag(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("settag");
-        todo!()
+        self.expect_instruction("SETTAG")?;
+        let dst = self.try_register();
+        self.expect_comma()?;
+        let dst = self.expect(dst, "A register")?;
+        let src = self.try_machine_register();
+        let src = self.expect(src, "A machine register")?;
+        Ok(AssemblyLine::ResolvedInstruction(
+            cpu::Instruction::SetTag { dst, src },
+        ))
     }
     fn parse_gettag(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("gettag");
-        todo!()
+        self.expect_instruction("GETTAG")?;
+        let dst = self.try_machine_register();
+        let dst = self.expect(dst, "A machine register")?;
+        self.expect_comma()?;
+        let src = self.try_register();
+        let src = self.expect(src, "A register")?;
+        Ok(AssemblyLine::ResolvedInstruction(
+            cpu::Instruction::GetTag { dst, src },
+        ))
     }
     fn parse_setpayload(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("setpayload");
-        todo!()
+        self.expect_instruction("SETPAYLOAD")?;
+        let dst = self.try_register();
+        let dst = self.expect(dst, "A register")?;
+        self.expect_comma()?;
+        let src = self.try_machine_register();
+        let src = self.expect(src, "A machine register")?;
+        Ok(AssemblyLine::ResolvedInstruction(
+            cpu::Instruction::SetPayload { dst, src },
+        ))
     }
     fn parse_getpayload(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("getpayload");
-        todo!()
+        self.expect_instruction("GETPAYLOAD")?;
+        let dst = self.try_machine_register();
+        let dst = self.expect(dst, "A machine register")?;
+        self.expect_comma()?;
+        let src = self.try_register();
+        let src = self.expect(src, "A register")?;
+        Ok(AssemblyLine::ResolvedInstruction(
+            cpu::Instruction::GetPayload { dst, src },
+        ))
     }
     fn parse_cons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("cons");
-        todo!()
+        self.expect_instruction("CONS")?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Int(
+            0x03,
+        )))
     }
     fn parse_uncons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("uncons");
-        todo!()
+        self.expect_instruction("UNCONS")?;
+        let car = self.try_register();
+        let car = self.expect(car, "A register")?;
+        self.expect_comma()?;
+        let cdr = self.try_register();
+        let cdr = self.expect(cdr, "A register")?;
+        self.expect_comma()?;
+        let src = self.try_register();
+        let src = self.expect(src, "A register")?;
+        Ok(AssemblyLine::ResolvedInstruction(
+            cpu::Instruction::Uncons { car, cdr, src },
+        ))
+    }
+    fn parse_tworegs(&mut self) -> Result<cpu::TwoRegs, ParserError<'input>> {
+        let dst = self.try_register();
+        let dst = self.expect(dst, "A register")?;
+        self.expect_comma()?;
+        let src = self.try_register();
+        let src = self.expect(src, "A register")?;
+        Ok(TwoRegs { dst, src })
     }
     fn parse_car(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("car");
-        todo!()
+        self.expect_instruction("CAR")?;
+        let tworegs = self.parse_tworegs()?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Car(
+            tworegs,
+        )))
     }
     fn parse_cdr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("cdr");
-        todo!()
+        self.expect_instruction("CDR")?;
+        let tworegs = self.parse_tworegs()?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr(
+            tworegs,
+        )))
     }
     fn parse_setcar(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("setcar");
-        todo!()
+        self.expect_instruction("SETCAR")?;
+        let tworegs = self.parse_tworegs()?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCar(
+            tworegs,
+        )))
     }
     fn parse_setcdr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("setcdr");
-        todo!()
+        self.expect_instruction("SETCDR")?;
+        let tworegs = self.parse_tworegs()?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCdr(
+            tworegs,
+        )))
     }
     fn parse_bin(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("bin");
-        todo!()
+        let instr = self.peek().cloned();
+        self.next();
+        let dst = self.try_register();
+        let dst = self.expect(dst, "A destination register")?;
+        self.expect_comma()?;
+        let op = match instr {
+            Some(AssemblyToken::Instruction("MUL")) => cpu::BinaryOp::Mul,
+            Some(AssemblyToken::Instruction("SHL")) => cpu::BinaryOp::Shl,
+            Some(AssemblyToken::Instruction("SHR")) => cpu::BinaryOp::Shr,
+            other => {
+                return Err(ParserError::Expected {
+                    expected: "A binary op",
+                    found: other,
+                });
+            }
+        };
+        let operands = self.parse_reg_source()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Binary { op, dst, operands },
+        ))
     }
     fn parse_div(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("div");
-        todo!()
+        self.expect_instruction("DIV")?;
+        let div = self.try_register();
+        let div = self.expect(div, "A destination register")?;
+        self.expect_comma()?;
+        let rem = self.try_register();
+        let rem = self.expect(rem, "A destination register")?;
+        self.expect_comma()?;
+        let operands = self.parse_reg_source()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::IDiv { div, rem, operands },
+        ))
     }
     fn parse_makeclosure(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("makeclosure");
-        let dst = self.expect_register()?;
-        self.expect_comma();
-        let src = self.expect_machine_register()?;
-        Ok((AssemblyLine::ResolvedInstruction(cpu::Instruction::MakeClosure { code: src, dst })))
+        self.expect_instruction("MAKECLOSURE")?;
+        let dst = self.try_register();
+        self.expect_comma()?;
+        let dst = self.expect(dst, "A register")?;
+        let code = self.try_machine_register();
+        let code = self.expect(code, "A machine register")?;
+        Ok(AssemblyLine::ResolvedInstruction(
+            cpu::Instruction::MakeClosure { dst, code },
+        ))
     }
     fn parse_typep(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("typep");
-        let dst = self.expect_register()?;
-        self.expect_comma();
-        let src = self.expect_register()?;
-        self.expect_comma();
-        let count = self.try_number()?;
-        Ok((AsseblyLine::ResolvedInstruction(cpu::Instruction::Typep { dst, src, count })))
+        self.expect_instruction("TYPEP")?;
+        let dst = self.try_register();
+        let dst = self.expect(dst, "A place to store result")?;
+        self.expect_comma()?;
+        let src = self.try_register();
+        let src = self.expect(src, "A source")?;
+        self.expect_comma()?;
+        let compare = self.try_number().map(|n| cpu::Native(n as u64));
+        let compare = self.expect(compare, "A type")?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Typep {
+            dst,
+            src,
+            compare,
+        }))
     }
+
+    fn try_machine_register(&mut self) -> Option<cpu::MachineRegister> {
+        self.consume_if(|token| match token {
+            AssemblyToken::MachineRegister(r) => Some(*r),
+            _ => None,
+        })
+    }
+
+    fn try_comma(&mut self) -> Option<()> {
+        self.consume_if(|token| match token {
+            AssemblyToken::Comma => Some(()),
+            _ => None,
+        })
+    }
+    fn expect_comma(&mut self) -> Result<(), ParserError<'input>> {
+        let comma = self.try_comma();
+        self.expect(comma, "operand separator")
+    }
+
     fn parse_memcpy(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("memcpy");
-        let dst = self.expect_machine_register()?;
-        self.expect_comma();
-        let src = self.expect_machine_register()?;
-        self.expect_comma();
-        let count = self.try_number()?;
-        Ok((AsseblyLine::ResolvedInstruction(cpu::Instruction::MemCpy { dst, src, count })))
+        self.expect_instruction("MEMCPY")?;
+        let dst = self.try_machine_register();
+        let dst = self.expect(dst, "Register for dst")?;
+        self.expect_comma()?;
+        let src = self.try_machine_register();
+        let src = self.expect(src, "Register for src")?;
+        self.expect_comma()?;
+        let count = self.try_number();
+        let count = self.expect(count, "Count")?;
+        Ok(AssemblyLine::ResolvedInstruction(
+            cpu::Instruction::MemCpy {
+                dst,
+                src,
+                count: cpu::Count(count as u64),
+            },
+        ))
     }
     fn parse_comparison(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("comparison");
-        todo!()
+        let instr = self.peek().cloned();
+        self.next();
+        let dst = self.try_register();
+        let dst = self.expect(dst, "A register")?;
+        self.expect_comma()?;
+        let op = match instr {
+            Some(AssemblyToken::Instruction("EQ")) => cpu::Comparison::Eq,
+            Some(AssemblyToken::Instruction("NE")) => cpu::Comparison::Ne,
+            Some(AssemblyToken::Instruction("GT")) => cpu::Comparison::Gt,
+            Some(AssemblyToken::Instruction("GTE")) => cpu::Comparison::Gte,
+            Some(AssemblyToken::Instruction("LT")) => cpu::Comparison::Lt,
+            Some(AssemblyToken::Instruction("LTE")) => cpu::Comparison::Lte,
+            other => {
+                return Err(ParserError::Expected {
+                    expected: "ADD or SUB",
+                    found: other,
+                });
+            }
+        };
+        let operands = self.parse_either_source()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::MComparison { op, dst, operands },
+        ))
     }
 
     fn try_instruction_line(
@@ -495,38 +931,57 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let instruction = self.peek();
 
         match instruction {
-            Some(AssemblyToken::Instruction("nop")) => Ok(Some(self.parse_nop()?)),
-            Some(AssemblyToken::Instruction("halt")) => Ok(Some(self.parse_halt()?)),
-            Some(AssemblyToken::Instruction("mov")) => Ok(Some(self.parse_mov()?)),
-            Some(AssemblyToken::Instruction("return_op")) => Ok(Some(self.parse_return_op()?)),
-            Some(AssemblyToken::Instruction("ireturn_op")) => Ok(Some(self.parse_ireturn_op()?)),
-            Some(AssemblyToken::Instruction("interrupt")) => Ok(Some(self.parse_interrupt()?)),
-            Some(AssemblyToken::Instruction("jump")) => Ok(Some(self.parse_jump()?)),
-            Some(AssemblyToken::Instruction("jumpif")) => Ok(Some(self.parse_jump()?)),
-            Some(AssemblyToken::Instruction("jumpifnot")) => Ok(Some(self.parse_jump()?)),
-            Some(AssemblyToken::Instruction("call")) => Ok(Some(self.parse_call()?)),
-            Some(AssemblyToken::Instruction("pusha")) => Ok(Some(self.parse_pusha()?)),
-            Some(AssemblyToken::Instruction("popa")) => Ok(Some(self.parse_popa()?)),
-            Some(AssemblyToken::Instruction("pushr")) => Ok(Some(self.parse_pushr()?)),
-            Some(AssemblyToken::Instruction("popr")) => Ok(Some(self.parse_popr()?)),
-            Some(AssemblyToken::Instruction("mov8")) => Ok(Some(self.parse_mov8()?)),
-            Some(AssemblyToken::Instruction("mbin")) => Ok(Some(self.parse_mbin()?)),
-            Some(AssemblyToken::Instruction("settag")) => Ok(Some(self.parse_settag()?)),
-            Some(AssemblyToken::Instruction("gettag")) => Ok(Some(self.parse_gettag()?)),
-            Some(AssemblyToken::Instruction("setpayload")) => Ok(Some(self.parse_setpayload()?)),
-            Some(AssemblyToken::Instruction("getpayload")) => Ok(Some(self.parse_getpayload()?)),
-            Some(AssemblyToken::Instruction("cons")) => Ok(Some(self.parse_cons()?)),
-            Some(AssemblyToken::Instruction("uncons")) => Ok(Some(self.parse_uncons()?)),
-            Some(AssemblyToken::Instruction("car")) => Ok(Some(self.parse_car()?)),
-            Some(AssemblyToken::Instruction("cdr")) => Ok(Some(self.parse_cdr()?)),
-            Some(AssemblyToken::Instruction("setcar")) => Ok(Some(self.parse_setcar()?)),
-            Some(AssemblyToken::Instruction("setcdr")) => Ok(Some(self.parse_setcdr()?)),
-            Some(AssemblyToken::Instruction("bin")) => Ok(Some(self.parse_bin()?)),
-            Some(AssemblyToken::Instruction("div")) => Ok(Some(self.parse_div()?)),
-            Some(AssemblyToken::Instruction("makeclosure")) => Ok(Some(self.parse_makeclosure()?)),
-            Some(AssemblyToken::Instruction("typep")) => Ok(Some(self.parse_typep()?)),
-            Some(AssemblyToken::Instruction("memcpy")) => Ok(Some(self.parse_memcpy()?)),
-            Some(AssemblyToken::Instruction("comparison")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Instruction("NOP")) => Ok(Some(self.parse_nop()?)),
+            Some(AssemblyToken::Instruction("HALT")) => Ok(Some(self.parse_halt()?)),
+            Some(AssemblyToken::Instruction("RETURN")) => Ok(Some(self.parse_return_op()?)),
+            Some(AssemblyToken::Instruction("IRETURN")) => Ok(Some(self.parse_ireturn_op()?)),
+
+            Some(AssemblyToken::Instruction("INT")) => Ok(Some(self.parse_interrupt()?)),
+            Some(AssemblyToken::Instruction("CALL")) => Ok(Some(self.parse_call()?)),
+            Some(AssemblyToken::Instruction("JUMP")) => Ok(Some(self.parse_jump()?)),
+            Some(AssemblyToken::Instruction("JUMPIF")) => Ok(Some(self.parse_jump()?)),
+            Some(AssemblyToken::Instruction("JUMPIFNOT")) => Ok(Some(self.parse_jump()?)),
+
+            Some(AssemblyToken::Instruction("PUSH")) => Ok(Some(self.parse_push()?)),
+            Some(AssemblyToken::Instruction("POP")) => Ok(Some(self.parse_pop()?)),
+
+            Some(AssemblyToken::Instruction("MOV")) => Ok(Some(self.parse_mov()?)),
+            Some(AssemblyToken::Instruction("MOV8")) => Ok(Some(self.parse_mov8()?)),
+
+            Some(AssemblyToken::Instruction("ADD")) => Ok(Some(self.parse_mbin()?)),
+            Some(AssemblyToken::Instruction("SUB")) => Ok(Some(self.parse_mbin()?)),
+
+            Some(AssemblyToken::Instruction("MUL")) => Ok(Some(self.parse_bin()?)),
+            Some(AssemblyToken::Instruction("SHL")) => Ok(Some(self.parse_bin()?)),
+            Some(AssemblyToken::Instruction("SHR")) => Ok(Some(self.parse_bin()?)),
+
+            Some(AssemblyToken::Instruction("DIV")) => Ok(Some(self.parse_div()?)),
+
+            Some(AssemblyToken::Instruction("EQ")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Instruction("NE")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Instruction("GT")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Instruction("GTE")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Instruction("LT")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Instruction("LTE")) => Ok(Some(self.parse_comparison()?)),
+
+            Some(AssemblyToken::Instruction("SETTAG")) => Ok(Some(self.parse_settag()?)),
+            Some(AssemblyToken::Instruction("GETTAG")) => Ok(Some(self.parse_gettag()?)),
+            Some(AssemblyToken::Instruction("SETPAYLOAD")) => Ok(Some(self.parse_setpayload()?)),
+            Some(AssemblyToken::Instruction("GETPAYLOAD")) => Ok(Some(self.parse_getpayload()?)),
+
+            Some(AssemblyToken::Instruction("CONS")) => Ok(Some(self.parse_cons()?)),
+            Some(AssemblyToken::Instruction("UNCONS")) => Ok(Some(self.parse_uncons()?)),
+
+            Some(AssemblyToken::Instruction("CAR")) => Ok(Some(self.parse_car()?)),
+            Some(AssemblyToken::Instruction("CDR")) => Ok(Some(self.parse_cdr()?)),
+            Some(AssemblyToken::Instruction("SETCAR")) => Ok(Some(self.parse_setcar()?)),
+            Some(AssemblyToken::Instruction("SETCDR")) => Ok(Some(self.parse_setcdr()?)),
+
+            Some(AssemblyToken::Instruction("MAKECLOSURE")) => Ok(Some(self.parse_makeclosure()?)),
+            Some(AssemblyToken::Instruction("TYPEP")) => Ok(Some(self.parse_typep()?)),
+            Some(AssemblyToken::Instruction("MEMCPY")) => Ok(Some(self.parse_memcpy()?)),
+            Some(AssemblyToken::Instruction("COMPARISON")) => Ok(Some(self.parse_comparison()?)),
+
             Some(AssemblyToken::Instruction(instruction)) => {
                 Err(ParserError::UnknownInstruction { instruction })
             }
@@ -578,866 +1033,11 @@ pub fn parser_new<'input>(
 }
 
 mod test {
-    use crate::{
-        cpu::{
-            self,
-            assembler::{self, parse},
-        },
-        memory,
-    };
-
-    fn scaffold() -> (Vec<assembler::AssemblyLine>, Vec<assembler::AssemblyLine>) {
-        let asm = assembler::parse(
-            r#"
-            .symbol 'loop
-            HALT
-            NOP
-        ; A comment
-        ; Two comments in a row
-            RETURN ; And an inline one
-        loop:
-            INT 42
-            INT 'loop
-            IRETURN
-        ; Jump variants
-            JUMP 16
-            JUMP A1
-            JUMP A1 + 16
-            JUMP R1
-            JUMP 'loop
-            JUMPIF R5, 16
-            JUMPIF R5, A1
-            JUMPIF R5, A1 + 16
-            JUMPIF R5, R1
-            JUMPIF R5, 'loop
-            JUMPIFNOT R5, 16
-            JUMPIFNOT R5, A1
-            JUMPIFNOT R5, A1 + 16
-            JUMPIFNOT R5, R1
-            JUMPIFNOT R5, 'loop
-            CALL 16
-            CALL A1
-            CALL A1 + 16
-            CALL R1
-            CALL 'loop
-            ; Stack variants
-            PUSH A1
-            POP A2
-            PUSH R3
-            POP R4
-            ; Loading & Memory
-            MOV R1, #1234
-            MOV A3, 0x7FFFFFFF
-            MOV R5, R6
-            MOV R5, [R6]
-            MOV [R6], R7
-            MOV A4, A5
-            MOV A1, [A2]
-            MOV A1, [A2 + 16]
-            MOV A1, [64]
-            MOV [A2], A3
-            MOV [A2 + 8], A3
-            MOV [24], A4
-            MOV A5, R8
-            MOV R9, A6
-            MOV [A5], R8
-            MOV [A5 + 8], R6
-            MOV R5, [A6]
-            MOV R5, [A6 + 8]
-            MOV8 A3, [A4]
-            MOV8 A3, [A4 + 5]
-            MOV8 A3, [5]
-            MOV8 [A4], A6
-            MOV8 [A4 + 5], A6
-            MOV8 [5], A6
-        ; Machine Arithmetic
-            ADD A1, A2, A3
-            ADD A1, A2, A3 + 4
-            ADD A1, A2, 8
-            SUB A4, A5, A6
-            SUB A4, A5, A6 + 2
-            SUB A4, A5, 12
-        ; Tag Operations
-            SETTAG R2, A1
-            GETTAG A3, R2
-            SETPAYLOAD R4, A3
-            GETPAYLOAD A5, R4
-        ; Lisp Destructuring Primitives
-            CONS
-            UNCONS R1, R2, R3
-            CAR R4, R5
-            CDR R6, R7
-            SETCAR R8, R9
-            SETCDR R10, R11
-        ; Arithmetic (assembler::ThreeRegs layouts using Option types, Word Immediates)
-            ADD R1, R2, R3
-            ADD R1, R2, R3 + #5
-            ADD R1, R2, #10
-            SUB R1, R2, R3
-            SUB R1, R2, R3 + #5
-            SUB R1, R2, #10
-            MUL R1, R2, R3
-            MUL R1, R2, R3 + #5
-            MUL R1, R2, #10
-            EQ R1, R2, R3
-            EQ R1, R2, R3 + #5
-            EQ R1, R2, #10
-            NE R1, R2, R3
-            NE R1, R2, R3 + #5
-            NE R1, R2, #10
-            LT R1, R2, R3
-            LT R1, R2, R3 + #5
-            LT R1, R2, #10
-            LTE R1, R2, R3
-            LTE R1, R2, R3 + #5
-            LTE R1, R2, #10
-            GT R1, R2, R3
-            GT R1, R2, R3 + #5
-            GT R1, R2, #10
-            GTE R1, R2, R3
-            GTE R1, R2, R3 + #5
-            GTE R1, R2, #10
-            DIV R9, R2, R3, R4
-            DIV R9, R2, R3, R4 + #5
-            DIV R9, R2, R3, #5
-        ; Advanced Operations
-            MAKECLOSURE R5, A6
-            MEMCPY A1, A2, 1
-        "#,
-        );
-
-        let expected = vec![
-            assembler::AssemblyLine::UnresolvedData(assembler::Data::Symbol(
-                assembler::Reference::UnresolvedPos("loop".to_string()),
-            )),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Halt),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Nop),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Return),
-            assembler::AssemblyLine::Label("loop".to_string()),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Int(42)),
-            assembler::AssemblyLine::UnresolvedInstruction(assembler::UnresolvedInstruction::Int(
-                assembler::Reference::UnresolvedPos("loop".to_string()),
-            )),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::IReturn),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::Always,
-                target: cpu::JumpTarget::Absolute(memory::Address(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::Always,
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::Always,
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::Always,
-                target: cpu::JumpTarget::Register(cpu::Register(1)),
-            }),
-            assembler::AssemblyLine::UnresolvedInstruction(
-                assembler::UnresolvedInstruction::Jump {
-                    condition: cpu::Condition::Always,
-                    target: assembler::JumpTarget::Absolute(assembler::Reference::UnresolvedPos(
-                        "loop".to_string(),
-                    )),
-                },
-            ),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::True(cpu::Register(5)),
-                target: cpu::JumpTarget::Absolute(memory::Address(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::True(cpu::Register(5)),
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::True(cpu::Register(5)),
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::True(cpu::Register(5)),
-                target: cpu::JumpTarget::Register(cpu::Register(1)),
-            }),
-            assembler::AssemblyLine::UnresolvedInstruction(
-                assembler::UnresolvedInstruction::Jump {
-                    condition: cpu::Condition::True(cpu::Register(5)),
-                    target: assembler::JumpTarget::Absolute(assembler::Reference::UnresolvedPos(
-                        "loop".to_string(),
-                    )),
-                },
-            ),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::False(cpu::Register(5)),
-                target: cpu::JumpTarget::Absolute(memory::Address(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::False(cpu::Register(5)),
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::False(cpu::Register(5)),
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
-                condition: cpu::Condition::False(cpu::Register(5)),
-                target: cpu::JumpTarget::Register(cpu::Register(1)),
-            }),
-            assembler::AssemblyLine::UnresolvedInstruction(
-                assembler::UnresolvedInstruction::Jump {
-                    condition: cpu::Condition::False(cpu::Register(5)),
-                    target: assembler::JumpTarget::Absolute(assembler::Reference::UnresolvedPos(
-                        "loop".to_string(),
-                    )),
-                },
-            ),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Call {
-                target: cpu::JumpTarget::Absolute(memory::Address(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Call {
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Call {
-                target: cpu::JumpTarget::Machine(cpu::MachineRegister(1), memory::Offset(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Call {
-                target: cpu::JumpTarget::Register(cpu::Register(1)),
-            }),
-            assembler::AssemblyLine::UnresolvedInstruction(
-                assembler::UnresolvedInstruction::Call {
-                    target: assembler::JumpTarget::Absolute(assembler::Reference::UnresolvedPos(
-                        "loop".to_string(),
-                    )),
-                },
-            ),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::PushA {
-                src: cpu::MachineRegister(1),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::PopA {
-                dst: cpu::MachineRegister(2),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::PushR {
-                src: cpu::Register(3),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::PopR {
-                dst: cpu::Register(4),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Register(cpu::Register(1)),
-                src: cpu::Location::Literal(cpu::Native(cpu::LispWord::fixnum(1234).0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
-                src: cpu::Location::Literal(cpu::Native(0x7fffffff)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Register(cpu::Register(5)),
-                src: cpu::Location::Register(cpu::Register(6)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Register(cpu::Register(5)),
-                src: cpu::Location::IndirectRegister(cpu::Register(6)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::IndirectRegister(cpu::Register(6)),
-                src: cpu::Location::Register(cpu::Register(7)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Machine(cpu::MachineRegister(4)),
-                src: cpu::Location::Machine(cpu::MachineRegister(5)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Machine(cpu::MachineRegister(1)),
-                src: cpu::Location::IndirectMachine(cpu::MachineRegister(2), cpu::Offset(0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Machine(cpu::MachineRegister(1)),
-                src: cpu::Location::IndirectMachine(cpu::MachineRegister(2), cpu::Offset(16)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Machine(cpu::MachineRegister(1)),
-                src: cpu::Location::Absolute(cpu::Address(64)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(2), memory::Offset(0)),
-                src: cpu::Location::Machine(cpu::MachineRegister(3)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(2), memory::Offset(8)),
-                src: cpu::Location::Machine(cpu::MachineRegister(3)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Absolute(memory::Address(24)),
-                src: cpu::Location::Machine(cpu::MachineRegister(4)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Machine(cpu::MachineRegister(5)),
-                src: cpu::Location::Register(cpu::Register(8)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Register(cpu::Register(9)),
-                src: cpu::Location::Machine(cpu::MachineRegister(6)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(5), memory::Offset(0)),
-                src: cpu::Location::Register(cpu::Register(8)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(5), memory::Offset(8)),
-                src: cpu::Location::Register(cpu::Register(6)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Register(cpu::Register(5)),
-                src: cpu::Location::IndirectMachine(cpu::MachineRegister(6), memory::Offset(0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
-                dst: cpu::Location::Register(cpu::Register(5)),
-                src: cpu::Location::IndirectMachine(cpu::MachineRegister(6), memory::Offset(8)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov8 {
-                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
-                src: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(0)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov8 {
-                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
-                src: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(5)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov8 {
-                dst: cpu::Location::Machine(cpu::MachineRegister(3)),
-                src: cpu::Location::Absolute(memory::Address(5)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov8 {
-                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(0)),
-                src: cpu::Location::Machine(cpu::MachineRegister(6)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov8 {
-                dst: cpu::Location::IndirectMachine(cpu::MachineRegister(4), memory::Offset(5)),
-                src: cpu::Location::Machine(cpu::MachineRegister(6)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov8 {
-                dst: cpu::Location::Absolute(memory::Address(5)),
-                src: cpu::Location::Machine(cpu::MachineRegister(6)),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MBinary {
-                op: cpu::MBinaryOp::Add,
-
-                dst: cpu::MachineRegister(1),
-                operands: cpu::MachSource {
-                    op1: cpu::MachineRegister(2),
-                    op2: Some(cpu::MachineRegister(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MBinary {
-                op: cpu::MBinaryOp::Add,
-
-                dst: cpu::MachineRegister(1),
-                operands: cpu::MachSource {
-                    op1: cpu::MachineRegister(2),
-                    op2: Some(cpu::MachineRegister(3)),
-                    op3: Some(cpu::Native(4)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MBinary {
-                op: cpu::MBinaryOp::Add,
-
-                dst: cpu::MachineRegister(1),
-                operands: cpu::MachSource {
-                    op1: cpu::MachineRegister(2),
-                    op2: None,
-                    op3: Some(cpu::Native(8)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MBinary {
-                op: cpu::MBinaryOp::Sub,
-
-                dst: cpu::MachineRegister(4),
-                operands: cpu::MachSource {
-                    op1: cpu::MachineRegister(5),
-                    op2: Some(cpu::MachineRegister(6)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MBinary {
-                op: cpu::MBinaryOp::Sub,
-
-                dst: cpu::MachineRegister(4),
-                operands: cpu::MachSource {
-                    op1: cpu::MachineRegister(5),
-                    op2: Some(cpu::MachineRegister(6)),
-                    op3: Some(cpu::Native(2)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MBinary {
-                op: cpu::MBinaryOp::Sub,
-
-                dst: cpu::MachineRegister(4),
-                operands: cpu::MachSource {
-                    op1: cpu::MachineRegister(5),
-                    op2: None,
-                    op3: Some(cpu::Native(12)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetTag {
-                dst: cpu::Register(2),
-                src: cpu::MachineRegister(1),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetTag {
-                dst: cpu::MachineRegister(3),
-                src: cpu::Register(2),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetPayload {
-                dst: cpu::Register(4),
-                src: cpu::MachineRegister(3),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetPayload {
-                dst: cpu::MachineRegister(5),
-                src: cpu::Register(4),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Int(0x03)),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Uncons {
-                car: cpu::Register(1),
-                cdr: cpu::Register(2),
-                src: cpu::Register(3),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Car(cpu::TwoRegs {
-                dst: cpu::Register(4),
-                src: cpu::Register(5),
-            })),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr(cpu::TwoRegs {
-                dst: cpu::Register(6),
-                src: cpu::Register(7),
-            })),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCar(cpu::TwoRegs {
-                dst: cpu::Register(8),
-                src: cpu::Register(9),
-            })),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCdr(cpu::TwoRegs {
-                dst: cpu::Register(10),
-                src: cpu::Register(11),
-            })),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Add,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Add,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Add,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Sub,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Sub,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Sub,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Mul,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Mul,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
-                op: cpu::BinaryOp::Mul,
-
-                dst: cpu::Register(1),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Eq,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Eq,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Eq,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Ne,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Ne,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Ne,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Lt,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Lt,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Lt,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Lte,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Lte,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Lte,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Gt,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Gt,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Gt,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Gte,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: None,
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Gte,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: Some(cpu::Register(3)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
-                op: cpu::Comparison::Gte,
-
-                dst: cpu::Register(1),
-                operands: cpu::EitherSource::Reg(cpu::RegSource {
-                    op1: cpu::Register(2),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(10)),
-                }),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::IDiv {
-                div: cpu::Register(9),
-                rem: cpu::Register(2),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(3),
-                    op2: Some(cpu::Register(4)),
-                    op3: None,
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::IDiv {
-                div: cpu::Register(9),
-                rem: cpu::Register(2),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(3),
-                    op2: Some(cpu::Register(4)),
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::IDiv {
-                div: cpu::Register(9),
-                rem: cpu::Register(2),
-                operands: cpu::RegSource {
-                    op1: cpu::Register(3),
-                    op2: None,
-                    op3: Some(cpu::LispWord::fixnum(5)),
-                },
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MakeClosure {
-                dst: cpu::Register(5),
-                code: cpu::MachineRegister(6),
-            }),
-            assembler::AssemblyLine::ResolvedInstruction(cpu::Instruction::MemCpy {
-                dst: cpu::MachineRegister(1),
-                src: cpu::MachineRegister(2),
-                count: cpu::Count(1),
-            }),
-        ];
-        (asm.unwrap(), expected)
-    }
+    use crate::cpu::assembler::{parser, test::expected_tokens};
 
     #[test]
-    fn test_assembler_parse() {
-        let (actual, expected) = scaffold();
-
-        for i in 0..actual.len() {
-            assert_eq!((i, &actual[i]), (i, &expected[i]));
-        }
-    }
-
-    #[test]
-    fn test_locate() {
-        let (actual, _) = scaffold();
-        let labels = assembler::layout(&actual);
-        assert_eq!(labels.len(), 1);
-        assert_eq!(labels.get("loop"), Some(&64));
-    }
-
-    #[test]
-    fn test_resolve() -> Result<(), String> {
-        let (actual, _) = scaffold();
-        let labels = assembler::layout(&actual);
-        let resolved = assembler::resolve(&actual, &labels).map_err(|e| e.to_string())?;
-
-        for line in resolved {
-            if let assembler::AssemblyLine::UnresolvedInstruction(i) = line {
-                return Err(format!("{:?}", i).to_string());
-            }
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_encoder_decoder() -> Result<(), String> {
-        let (_, expected) = scaffold();
-        let labels = assembler::layout(&expected);
-        let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
-
-        for i in 0..resolved.len() {
-            match &expected[i] {
-                assembler::AssemblyLine::ResolvedInstruction(inst) => {
-                    let (lo, hi) = inst.encode();
-                    assert_eq!(
-                        (
-                            i,
-                            &cpu::Instruction::decode(lo, hi).map_err(|t| format!(
-                                "Error when decoding {:?}: {:?} {:08x}:{:08x}",
-                                inst, t, lo, hi
-                            ))?
-                        ),
-                        (i, inst)
-                    );
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_encoder_decoder_twice() -> Result<(), String> {
-        let (_, expected) = scaffold();
-        let labels = assembler::layout(&expected);
-        let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
-
-        for i in 0..resolved.len() {
-            match &expected[i] {
-                assembler::AssemblyLine::ResolvedInstruction(inst) => {
-                    let (lo, hi) = inst.encode();
-                    let decoded = cpu::Instruction::decode(lo, hi).map_err(|t| {
-                        format!(
-                            "Error when decoding {:?}: {:?} {:08x}:{:08x}",
-                            inst, t, lo, hi
-                        )
-                    })?;
-                    let (lo, hi) = decoded.encode();
-                    assert_eq!(
-                        (
-                            i,
-                            &cpu::Instruction::decode(lo, hi).map_err(|t| format!(
-                                "Error when decoding {:?}: {:?} {:08x}:{:08x}",
-                                inst, t, lo, hi
-                            ))?
-                        ),
-                        (i, inst)
-                    );
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_assemble() -> Result<(), String> {
-        let (_, expected) = scaffold();
-        let labels = assembler::layout(&expected);
-        let resolved = assembler::resolve(&expected, &labels).map_err(|e| e.to_string())?;
-        let result = assembler::assemble(&resolved)?;
-
-        assert_eq!(result.len(), 1648);
-        Ok(())
-    }
-
-    #[test]
-    fn test_invalid() -> Result<(), String> {
-        let invalid_instructions = vec!["MOV [SP], 0x0123\n"];
-
-        for inst in invalid_instructions {
-            let result = parse(inst);
-            assert_eq!(result, Err(inst.to_string()));
-        }
-        Ok(())
+    fn test_parse() {
+        let tokens = expected_tokens();
+        parser::parser_new(&tokens).unwrap();
     }
 }

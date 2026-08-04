@@ -6,8 +6,8 @@ use crate::{
 };
 
 const BIOS_ASM: &str = include_str!("bios.asm");
-pub struct FirmwareHelper {}
-impl FirmwareHelper {
+pub struct Firmware {}
+impl Firmware {
     pub const BOOTSTRAP_HOOK: usize = MemoryLayout::CPU_RESERVED_END.0 as usize;
     pub const BOOTSTRAP_ALLOC_HOOK: usize = 0x600;
     pub const BOOTSTRAP_TRAP_HOOK: usize = 0x800;
@@ -28,7 +28,7 @@ impl FirmwareHelper {
 
         symbols.insert("bootstrap_objects", 0x3000);
 
-        assemble(BIOS_ASM).unwrap()
+        assemble(BIOS_ASM)
     }
 }
 
@@ -63,7 +63,7 @@ impl WispMachine {
             halted: false,
         };
 
-        let firmware = FirmwareHelper::make_firmware();
+        let firmware = Firmware::make_firmware();
         machine.ram.bytes[0..firmware.len()].copy_from_slice(&firmware[..]);
         machine
     }

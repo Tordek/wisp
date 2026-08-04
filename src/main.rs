@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use sdl2::video::GLProfile;
 
-use crate::machine::FirmwareHelper;
+use crate::machine::Firmware;
 
 fn main() -> Result<(), String> {
     let mem = vec![0; 2 << 24];
@@ -54,11 +54,11 @@ fn main() -> Result<(), String> {
                     keymod: _,
                     repeat: _,
                 } => {
-                    machine.interrupt(FirmwareHelper::KEYBOARD_INTERRUPT as u64);
+                    machine.interrupt(Firmware::KEYBOARD_INTERRUPT as u64);
                     let key = keycode.unwrap().into_i32() as u8;
-                    machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = key;
+                    machine.ram.bytes[Firmware::PRESSED_KEY_ID] = key;
                     if key == b'\r' {
-                        machine.ram.bytes[FirmwareHelper::PRESSED_KEY_ID] = b'\n';
+                        machine.ram.bytes[Firmware::PRESSED_KEY_ID] = b'\n';
                     }
                 }
 

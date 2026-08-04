@@ -1,11 +1,11 @@
-.ord 0
-    nil: .symbol 'nil_symbol
-    t: .symbol 't_symbol
-    symbol: .symbol 'symbol_symbol
-    cons: .symbol 'cons_symbol
-    fixnum: .symbol 'fixnum_symbol
+.org 0
+    nil: .w #!'nil_symbol
+    t: .w #!'t_symbol
+    symbol: .w #!'symbol_symbol
+    cons: .w #!'cons_symbol
+    fixnum: .w #!'fixnum_symbol
 
-.ord 0x3000
+.org 0x3000
     nil_str: .str "nil"
     t_str: .str "t"
     symbol_str: .str "symbol"
@@ -27,35 +27,40 @@
         .w 'fixnum_str
         .w 'nil 
 symbol_table:
-    .cons 'nil, 'fixnum_entry
+    .w 'nil
+    .w #['fixnum_entry
 
 fixnum_entry:
-    .cons 'fixnum, 'symbol_entry
+    .w 'fixnum
+    .w #['symbol_entry
 
 symbol_entry:
-    .cons 'symbol, 'cons_entry
+    .w 'symbol
+    .w #['cons_entry
 
 cons_entry:
-    .cons 'cons, 't_entry
+    .w 'cons
+    .w #['t_entry
 
 t_entry:
-    .cons 't, 'nil
+    .w 't
+    .w 'nil
 
 
-.ord 0x7ef0
+.org 0x7ef0
     .w 'bootstrap
 
-.ord 0x7f00
+.org 0x7f00
     .w 'trap
     .w 'alloc
     .w 'alloc
     .w 'alloc
 
-.ord 0x8680
+.org 0x8680
     video_interrupt_hook_address: .w 'video_interrupt
     keyboard_interrupt_hook_address: .w 'keyboard_interrupt
 
-.ord 0x18000
+.org 0x18000
 cursorpos: .w #0
 pressedkeyid: .w #0
 freeptr: .w 0x30000
@@ -78,7 +83,7 @@ kbbufferend:
 
 
 
-.ord 0x19000
+.org 0x19000
 bootstrap:
     MOV SP, 0x30000 ; TODO: pass initial symbols for resolution.
     MOV R0, #0
