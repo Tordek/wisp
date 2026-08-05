@@ -108,6 +108,7 @@ pub enum Native<'input> {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AssemblyLine<'input> {
+    Equ(&'input str, usize),
     Org(usize),
     UnresolvedData(Native<'input>),
     ResolvedData(Vec<u8>),
@@ -225,11 +226,15 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         })
     }
 
-    fn try_label(&mut self) -> Option<AssemblyLine<'input>> {
+    fn try_label(&mut self) -> Option<&'input str> {
         self.consume_if(|t| match t {
-            AssemblyToken::Label(l) => Some(AssemblyLine::Label(*l)),
+            AssemblyToken::Label(l) => Some(*l),
             _ => None,
         })
+    }
+
+    fn try_label_line(&mut self) -> Option<AssemblyLine<'input>> {
+        self.try_label().map(AssemblyLine::Label)
     }
 
     fn try_comment(&mut self) -> Option<()> {
@@ -388,6 +393,14 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let contents = self.expect_any_value()?;
         Ok(AssemblyLine::UnresolvedData(contents))
     }
+    fn parse_eq(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        self.expect_directive("equ")?;
+        let name = self.try_label();
+        let name = self.expect(name, "A label to assign.")?;
+        let value = self.try_number();
+        let value = self.expect(value, "A literal value")?;
+        Ok(AssemblyLine::Equ(name, value as usize))
+    }
     fn try_directive_line(&mut self) -> Result<Option<AssemblyLine<'input>>, ParserError<'input>> {
         let directive = self.peek();
 
@@ -395,6 +408,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(AssemblyToken::Directive("org")) => Ok(Some(self.parse_org()?)),
             Some(AssemblyToken::Directive("str")) => Ok(Some(self.parse_string()?)),
             Some(AssemblyToken::Directive("w")) => Ok(Some(self.parse_w()?)),
+            Some(AssemblyToken::Directive("equ")) => Ok(Some(self.parse_eq()?)),
             Some(AssemblyToken::Directive(directive)) => {
                 Err(ParserError::UnknownDirective { directive })
             }
@@ -1006,7 +1020,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
 
     fn try_line(&mut self) -> Result<Vec<AssemblyLine<'input>>, ParserError<'input>> {
         let mut parts = vec![];
-        let label = self.try_label();
+        let label = self.try_label_line();
         let dir = self.try_directive_line()?;
         let instr = self.try_instruction_line()?;
         self.try_comment();

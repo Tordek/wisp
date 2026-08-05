@@ -21,6 +21,7 @@ pub enum AssemblerError<'a> {
     UnresolvedReference(&'a str),
     InvalidState,
     OverlappingSection(usize),
+    DuplicateLabel(&'a str),
 }
 
 impl<'a> From<TokenizeError<'a>> for AssemblerError<'a> {
@@ -88,7 +89,17 @@ fn layout<'a>(lines: Vec<AssemblyLine<'a>>) -> Result<Layout<'a>, AssemblerError
                 true
             }
             AssemblyLine::Label(label) => {
+                if symbols.contains_key(label) {
+                    return Err(AssemblerError::DuplicateLabel(label));
+                }
                 symbols.insert(label, position);
+                false
+            }
+            AssemblyLine::Equ(label, value) => {
+                if symbols.contains_key(label) {
+                    return Err(AssemblerError::DuplicateLabel(label));
+                }
+                symbols.insert(label, *value);
                 false
             }
             AssemblyLine::Org(p) => {
@@ -218,8 +229,9 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
     for section in &mut layout.sections {
         for line in &mut section.lines {
             match line {
-                AssemblyLine::Org(o) => *line = AssemblyLine::Org(*o),
-                AssemblyLine::Label(l) => *line = AssemblyLine::Label(l),
+                AssemblyLine::Org(_) => {}
+                AssemblyLine::Label(_) => {}
+                AssemblyLine::Equ(_, _) => {}
                 AssemblyLine::UnresolvedData(d) => {
                     *line =
                         AssemblyLine::ResolvedData(resolve_data(d, symbols)?.to_le_bytes().to_vec())
@@ -443,6 +455,7 @@ fn emit<'a>(layout: &Layout<'a>) -> Result<Vec<Section>, AssemblerError<'a>> {
                 // These were elided on layout
                 AssemblyLine::Label(_) => {}
                 AssemblyLine::Org(_) => {}
+                AssemblyLine::Equ(_, _) => {}
                 AssemblyLine::ResolvedData(d) => {
                     result[position..][..d.len()].copy_from_slice(d);
                     position += d.len();

@@ -1,23 +1,11 @@
-.org 0x0028000
-cursorpos: .w #0 ; TODO: Map to VGA (00fffffff000b8000)
-pressedkeyid: .w #0 ; TODO: Map to KB DMA (00fffffff000c0000)
-freeptr: .w 0x30000
-kbstart: .w 'kbbufferstart
-kbend: .w 'kbbufferstart
-kblen: .w 10
-; TODO: A way to reserve space automagically.
-kbbufferstart:
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-        .w #0
-kbbufferend:
-        .w #0
+.equ cursorpos: 0x28000 ; TODO: Map to VGA (00fffffff000b8000)
+.equ pressedkeyid: 0x28008 ; TODO: Map to KB DMA (00fffffff000c0000)
+.equ freeptr: 0x28010
+.equ kbstart: 0x28018
+.equ kbend: 0x28020
+.equ kblen: 0x28028
+.equ kbbufferstart: 0x28030
+.equ kbbufferend: 0x28080
 
 .org 0x00ffffff00020000
     nil_str: .str "nil"

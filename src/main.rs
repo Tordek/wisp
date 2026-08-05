@@ -2,6 +2,7 @@ mod bus;
 mod cpu;
 mod gpu;
 mod machine;
+// mod disk;
 mod ram;
 
 use std::time::Instant;
