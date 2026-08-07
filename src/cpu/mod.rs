@@ -181,17 +181,37 @@ impl Default for Cpu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Register(pub u8);
+impl Debug for Register {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "R{}", self.0)
+    }
+}
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct MachineRegister(pub u8);
+impl Debug for MachineRegister {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "A{}", self.0)
+    }
+}
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub struct RegSource {
     pub op1: Register,
     pub op2: Option<Register>,
     pub op3: Option<LispWord>,
+}
+impl Debug for RegSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.op2, self.op3) {
+            (Some(op2), Some(op3)) => write!(f, "{:?}, {:?} + {:?}", self.op1, op2, op3),
+            (Some(op2), None) => write!(f, "{:?}, {:?}", self.op1, op2),
+            (None, Some(op3)) => write!(f, "{:?}, {:?}", self.op1, op3),
+            (None, None) => write!(f, "!!!Invalid {:?}, NONE, NONE", self.op1),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -926,7 +946,7 @@ impl Cpu {
         };
 
         let (lo, hi) = self.fetch(memory);
-        let instruction = Instruction::decode(lo.0, hi.0)?;
+        let instruction = Instruction::decode(lo.0, hi.0).map_err(|_| Trap::InvalidInstruction)?;
         println!(
             "PC: 0x{:x} SP:{:x} {:?}",
             Address(self.machine_reg[Cpu::PC.0 as usize].0).0,
@@ -972,7 +992,7 @@ mod tests {
         fn load_instructions(bus: &mut Bus, start: Address, instructions: Vec<Instruction>) {
             let mut pos = 0;
             for instr in instructions {
-                let (lo, hi) = instr.encode();
+                let (lo, hi) = instr.encode().unwrap();
                 bus.write_word(start + Offset(pos * Cpu::WORD_SIZE as i64), Native(lo));
                 pos += 1;
                 bus.write_word(start + Offset(pos * Cpu::WORD_SIZE as i64), Native(hi));

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::{
     bus,
     cpu::{
-        self, LispWord,
+        self,
         assembler::{
             parser::*,
             tokenizer::{TokenizeError, tokenize},
@@ -16,6 +16,7 @@ use crate::{
 
 #[derive(Debug)]
 pub enum AssemblerError<'a> {
+    InvalidInstruction,
     TokenizerError(TokenizeError<'a>),
     ParserError(ParserError<'a>),
     UnresolvedReference(&'a str),
@@ -185,9 +186,9 @@ pub fn resolve_data<'a>(
     symbols: &HashMap<&'a str, usize>,
 ) -> Result<u64, AssemblerError<'a>> {
     Ok(match data {
+        Native::Raw(refr) => resolve_reference(refr, symbols)? as u64,
         Native::Char(refr) => cpu::LispWord::char(resolve_reference(refr, symbols)? as u64).0,
         Native::Symbol(refr) => cpu::LispWord::symbol(resolve_reference(refr, symbols)? as u64).0,
-        Native::Raw(refr) => resolve_reference(refr, symbols)? as u64,
         Native::Cons(refr) => cpu::LispWord::cons(resolve_reference(refr, symbols)? as u64).0,
         Native::Fixnum(refr) => cpu::LispWord::fixnum(resolve_reference(refr, symbols)? as u64).0,
         Native::String(refr) => cpu::LispWord::string(resolve_reference(refr, symbols)? as u64).0,
@@ -464,7 +465,7 @@ fn emit<'a>(layout: &Layout<'a>) -> Result<Vec<Section>, AssemblerError<'a>> {
                 }
                 AssemblyLine::ResolvedInstruction(i) => {
                     position = position.next_multiple_of(16);
-                    let (lo, hi) = i.encode();
+                    let (lo, hi) = i.encode().map_err(|_| AssemblerError::InvalidInstruction)?;
                     result[position..][..8].copy_from_slice(&lo.to_le_bytes());
                     position += 8;
                     result[position..][..8].copy_from_slice(&hi.to_le_bytes());

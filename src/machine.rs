@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error};
+use std::error::Error;
 
 use crate::{
     bus::{Bus, Device, Native},
@@ -82,7 +82,7 @@ pub struct WispMachine<'a> {
     pub bus: Bus<'a>,
 }
 
-enum WispMachineError {
+pub enum WispMachineError {
     SetupError,
 }
 
@@ -95,11 +95,11 @@ impl<'a> WispMachine<'a> {
         self.cpu.full_step(&mut self.bus);
     }
 
-    pub fn new() -> Result<Self, Box<dyn Error>> {
+    pub fn new() -> Result<Self, WispMachineError> {
         let mut bus = Bus::new();
         let cpu = cpu::Cpu::default();
         let ram = Memory::new(2 << 20);
-        let firmware = Firmware::make_firmware().expect("compiled");
+        let firmware = Firmware::make_firmware().map_err(|_| WispMachineError::SetupError)?;
 
         bus.install(0x00000000..0xffffffff, Box::new(ram))
             .expect("install");

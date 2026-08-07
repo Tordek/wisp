@@ -4,7 +4,7 @@ use nom::{
     bytes::complete::{tag, take_until},
     character::{
         anychar,
-        complete::{alpha1, alphanumeric1, digit1, hex_digit1, multispace0, none_of, space0},
+        complete::{alpha1, alphanumeric1, digit1, hex_digit1, multispace0, space0},
     },
     combinator::{recognize, value},
     multi::{many0, many0_count},

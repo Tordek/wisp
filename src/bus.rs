@@ -1,5 +1,12 @@
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+use std::fmt::Debug;
+
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub struct Address(pub u64);
+impl Debug for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@0x{:016x}", self.0)
+    }
+}
 
 impl std::ops::Add<Offset> for Address {
     type Output = Address;

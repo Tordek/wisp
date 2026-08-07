@@ -146,19 +146,6 @@ pub enum ParserError<'input> {
     InvalidInstruction,
 }
 
-impl<'a> Location<'a> {
-    fn has_extra_param(&self) -> bool {
-        match self {
-            Location::Literal(_) => true,
-            Location::Absolute(_) => true,
-            Location::Machine(_) => false,
-            Location::Register(_) => false,
-            Location::IndirectMachine(_, _) => true,
-            Location::IndirectRegister(_) => false,
-        }
-    }
-}
-
 struct NParser<'tokens, 'input> {
     tokens: &'tokens [AssemblyToken<'input>],
     position: usize,
@@ -571,16 +558,43 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             return Ok(JumpTarget::Register(reg));
         }
 
-        // TODO: indirect jumps
-        let target = self.expect_mr_andor_offset()?;
-        match target {
-            (Some(r), Some(off)) => Ok(JumpTarget::Machine(r, off)),
-            (Some(r), None) => Ok(JumpTarget::Machine(r, Reference::Resolved(0))),
-            (None, Some(adr)) => Ok(JumpTarget::Absolute(adr)),
-            (None, None) => Err(ParserError::Expected {
-                expected: "a target to jump to",
-                rest: self.tokens[self.position..].to_vec(),
-            }),
+        let indirect = self.try_open_bracket();
+        match indirect {
+            None => {
+                let target = self.expect_mr_andor_offset()?;
+                match target {
+                    (Some(r), Some(off)) => Ok(JumpTarget::Machine(r, off)),
+                    (Some(r), None) => Ok(JumpTarget::Machine(r, Reference::Resolved(0))),
+                    (None, Some(adr)) => Ok(JumpTarget::Absolute(adr)),
+                    (None, None) => Err(ParserError::Expected {
+                        expected: "a target to jump to",
+                        rest: self.tokens[self.position..].to_vec(),
+                    }),
+                }
+            }
+            Some(_) => {
+                self.next();
+
+                let register = self.try_register();
+                if let Some(reg) = register {
+                    let close = self.try_close_bracket();
+                    self.expect(close, "Close bracket")?;
+                    return Ok(JumpTarget::IndirectRegister(reg));
+                }
+
+                let target = self.expect_mr_andor_offset()?;
+                let close = self.try_close_bracket();
+                self.expect(close, "Close bracket")?;
+                match target {
+                    (Some(r), Some(off)) => Ok(JumpTarget::IndirectMachine(r, off)),
+                    (Some(r), None) => Ok(JumpTarget::IndirectMachine(r, Reference::Resolved(0))),
+                    (None, Some(_)) => Err(ParserError::InvalidInstruction),
+                    (None, None) => Err(ParserError::Expected {
+                        expected: "a target to jump to",
+                        rest: self.tokens[self.position..].to_vec(),
+                    }),
+                }
+            }
         }
     }
     fn parse_jump(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
@@ -686,9 +700,6 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let dst = self.expect_location()?;
         self.expect_comma()?;
         let src = self.expect_location()?;
-        if dst.has_extra_param() && src.has_extra_param() {
-            return Err(ParserError::InvalidInstruction);
-        }
         Ok(AssemblyLine::UnresolvedInstruction(
             UnresolvedInstruction::Mov { dst, src },
         ))
@@ -698,9 +709,6 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let dst = self.expect_location()?;
         self.expect_comma()?;
         let src = self.expect_location()?;
-        if dst.has_extra_param() && src.has_extra_param() {
-            return Err(ParserError::InvalidInstruction);
-        }
         Ok(AssemblyLine::UnresolvedInstruction(
             UnresolvedInstruction::Mov8 { dst, src },
         ))

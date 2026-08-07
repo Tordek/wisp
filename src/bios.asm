@@ -59,11 +59,9 @@ numberstr:
 .org 0x00fffffffff19000
 bootstrap:
     ; Initial setup
-    ; Set stack position
-    MOV SP, 'freeptr
     ; Set starting values
     MOV ['pressedkeyid], A1
-    MOV A1, 0x30000
+    MOV A1, 0x40000
     MOV ['freeptr], A1
     MOV A1, 'kbbufferstart
     MOV ['kbstart], A1
@@ -72,6 +70,8 @@ bootstrap:
     MOV ['kblen], A1
     MOV A0, #0
     MOV ['cursorpos], A0
+    ; Set stack position
+    MOV SP, ['freeptr]
 
     ; Set interrupt handlers
     MOV VBR, 0x7f00
@@ -159,9 +159,9 @@ bootstrap:
     ; MOV R0, #0
     ; ADD R0, R0, #!0
 ; --- String-reader
-    MOV R0, #$'numberstr
-    CALL 'read_string
-    CALL 'print
+    ; MOV R0, #$'numberstr
+    ; CALL 'read_string
+    ; CALL 'print
 
 loop:
     CALL 'repl
@@ -374,11 +374,11 @@ print_stringslice:
   
 trap:
     MOV R1, 0x70
-    MOV R0, #$'trap_str
+    ; MOV R0, #$'trap_str
     CALL 'print
   trap_loop:
     HALT
-    JUMP 'trap_loop
+    ; JUMP 'trap_loop
 
 ; Puts A0 into the keyboard circular buffer.
 ; Traps if full.
