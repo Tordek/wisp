@@ -6,6 +6,11 @@
 .equ kblen: 0x28028
 .equ kbbufferstart: 0x28030
 .equ kbbufferend: 0x28080
+.equ fixnumtag: 1
+.equ symboltag: 2
+.equ constag: 3
+.equ chartag: 6
+.equ stringtag: 7
 
 .org 0x00ffffff00020000
     nil_str: .str "nil"
@@ -14,11 +19,12 @@
     cons_str: .str "cons"
     fixnum_str: .str "fixnum"
     nil_symbol:
-        .w 'nil_str
+        .w #$'nil_str
         .w 'nil
     t_symbol:
-        .w 't_str
+        .w #$'t_str
         .w 'nil
+    trap_str: .str "You broke the computer!"
 ;     symbol_symbol:
 ;         .w 'symbol_str
 ;         .w 'nil
@@ -47,21 +53,15 @@
 ;     .w 't
 ;     .w 'nil
 
+numberstr:
+    .str "1234"
+
 .org 0x00fffffffff19000
 bootstrap:
-    ; Initial setup: Stack, interrupts.
-    MOV SP, 0x30000 ; TODO: pass initial symbols for resolution.
-    MOV VBR, 0x7f00
-    MOV A1, 'trap
-    MOV [VBR], A1
-    MOV A1, 'alloc
-    MOV [VBR + 16], A1
-    ADD VBR, A0, 8
-    MOV [VBR + 24], A1
-    MOV A1, 'video_interrupt
-    MOV [VBR + 1920], A1
-    MOV A1, 'keyboard_interrupt
-    MOV [VBR + 1928], A1
+    ; Initial setup
+    ; Set stack position
+    MOV SP, 'freeptr
+    ; Set starting values
     MOV ['pressedkeyid], A1
     MOV A1, 0x30000
     MOV ['freeptr], A1
@@ -72,6 +72,20 @@ bootstrap:
     MOV ['kblen], A1
     MOV A0, #0
     MOV ['cursorpos], A0
+
+    ; Set interrupt handlers
+    MOV VBR, 0x7f00
+    MOV A1, 'trap
+    MOV [VBR], A1
+    MOV A1, 'alloc
+    MOV [VBR + 16], A1
+    MOV [VBR + 24], A1
+    MOV A1, 'video_interrupt
+    MOV [VBR + 1920], A1
+    MOV A1, 'keyboard_interrupt
+    MOV [VBR + 1928], A1
+
+    ; Hello world!
     MOV R0, #\H
     MOV R1, #0x07
     INT 0xf0
@@ -85,7 +99,7 @@ bootstrap:
     INT 0xf0
     MOV R0, #\,
     INT 0xf0
-    MOV R0, #\ 
+    MOV R0, #\Space
     INT 0xf0
     MOV R0, #\n
     INT 0xf0
@@ -93,7 +107,7 @@ bootstrap:
     INT 0xf0
     MOV R0, #\w
     INT 0xf0
-    MOV R0, #\ 
+    MOV R0, #\Space
     INT 0xf0
     MOV R0, #\w
     INT 0xf0
@@ -119,8 +133,8 @@ bootstrap:
     INT 0xf0
     MOV R0, #\Newline
     INT 0xf0
-    MOV R0, #\A
-    MOV R1, #0x61
+
+    ; Print objects
     MOV R0, ['nil]
     CALL 'print
     MOV R0, #\Newline
@@ -132,19 +146,23 @@ bootstrap:
     MOV R0, #0
     CALL 'print
     MOV R0, #\Newline
+    INT 0xf0
     MOV R0, #123
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
-    MOV R1, #0x10
-    MOV R0, #\A
+    MOV R0, #$'fixnum_str
+    CALL 'print
+    MOV R0, #\Newline
     INT 0xf0
-    MOV R1, #0x10
-    MOV R0, #\A
-    INT 0xf0
-    MOV R1, #0x10
-    MOV R0, #\A
-    INT 0xf0
+; --- Error
+    ; MOV R0, #0
+    ; ADD R0, R0, #!0
+; --- String-reader
+    MOV R0, #$'numberstr
+    CALL 'read_string
+    CALL 'print
+
 loop:
     CALL 'repl
     JUMP 'loop
@@ -204,7 +222,7 @@ video_interrupt:
     MOV A1, 0x07
     MOV8 [A0], A1
     ADD A0, A0, 1
-    MOV A1, #\ 
+    MOV A1, #\Space
     MOV8 [A0], A1
     ADD A0, A0, 1
     EQ R0, A0, 0xb8fa0
@@ -254,54 +272,113 @@ alloc:
     IRETURN
 
 print:
-    TYPEP R1, R0, 2 ; Tag == symbol?
-    JUMPIFNOT R1, '_aftersym
-    GETPAYLOAD A0, R0 ; Read payload (pointer to symbol table)
-    MOV A0, [A0] ; Read first element of symbol (pointer to name)
-    CALL 'printstring
-    JUMP '_endprint
-_aftersym:
-    TYPEP R1, R0, 1 ; Tag == fixnum?
-    JUMPIFNOT R1, '_afterfixnum
-    EQ R1, R0, #0 ; zerop
-    JUMPIFNOT R1, '_nonzero
-    MOV A0, 0x30
-    PUSH A0
-    MOV R2, #1
-    PUSH R2
-    MOV A0, SP
-    CALL 'printstring
-    ADD SP, SP, 16
-    JUMP '_endprint
-    ; TODO: Handle negatives
-    _nonzero:   
+    TYPEP R1, R0, 'symboltag ; Tag == symbol?
+    JUMPIFNOT R1, 'print_notsym
+    CALL 'print_symbol
+    JUMP 'print_end
+print_notsym:
+    TYPEP R1, R0, 'fixnumtag ; Tag == fixnum?
+    JUMPIFNOT R1, 'print_notfixnum
+    GETPAYLOAD A0, R0
+    CALL 'print_number
+    JUMP 'print_end
+print_notfixnum:
+    TYPEP R1, R0, 'stringtag ; Tag == string?
+    JUMPIFNOT R1, 'print_notstring
+    CALL 'print_string
+    JUMP 'print_end
 
-_afterfixnum:
-_endprint:
+print_notstring:
+    CALL 'print_arbitrary
+print_end:
     RETURN
 
-printstring: ; Prints the string at A0
-    MOV R2, [A0] ; Read length
+print_symbol:
+    GETPAYLOAD A0, R0 ; Read payload (pointer to symbol table)
+    MOV R0, [A0] ; Read first element of symbol (pointer to name)
+    TYPEP R1, R0, 'stringtag ; Tag == string?
+    JUMPIFNOT R1, 'print_arbitrary
+    CALL 'print_string
+    RETURN
+
+print_string: ; Prints the string at A0
+    GETPAYLOAD A0, R0
+    MOV R0, [A0] ; Get length
+    ADD A0, A0, 8 ; Skip header
+    CALL 'print_stringslice
+    RETURN
+
+; TODO
+; Takes a fixnum in r0.
+print_number:
+    EQ R1, R0, #0 ; zerop
+    JUMPIFNOT R1, 'print_number_nonzero
+    MOV R1, 0x07
+    MOV R0, #\0
+    INT 0xf0
+    RETURN
+  print_number_nonzero:
+    ; ...build number string
+    ; A0: points to head of string
+    ; R0: points to length
+    ; CALL 'print_string
+    MOV R1, 0x07
+    MOV R0, #\0
+    INT 0xf0
+    RETURN
+
+; takes an unknown word in r0
+print_arbitrary:
+    MOV R4, R0
     MOV R1, #0x07
-    ADD A0, A0, 8 ; 
-  printstringloop:
-    EQ R4, R2, #0
-    JUMPIF R4, 'endprintloop
-    SUB R2, R2, #1
+    MOV R0, #\#
+    INT 0xf0
+    MOV R1, #0x07
+    MOV R0, #\<
+    INT 0xf0
+    MOV R0, #0
+    GETTAG A0, R4
+    SETPAYLOAD R0, A0
+    CALL 'print
+    MOV R1, #0x07
+    MOV R0, #\:
+    INT 0xf0
+    MOV R0, #0
+    GETPAYLOAD A0, R4
+    SETPAYLOAD R0, A0
+    CALL 'print
+    MOV R1, #0x07
+    MOV R0, #\>
+    INT 0xf0
+    RETURN
+
+; Expects Length in R0, Data in [A0]
+print_stringslice:
+    MOV R1, #0x07
+  print_stringslice_loop:
+    LTE R4, R0, #0
+    JUMPIFNOT R4, 'print_stringslice_loop_continue
+    RETURN
+  print_stringslice_loop_continue:
     MOV A3, 6
+    PUSH R0
     SETTAG R0, A3 ; Make char
     MOV8 A1, [A0]
     ADD A0, A0, 1
     SETPAYLOAD R0, A1
     MOV R1, 0x07
     INT 0xf0
-    JUMP 'printstringloop
-    endprintloop:
-    RETURN
-
+    POP R0
+    SUB R0, R0, #1
+    JUMP 'print_stringslice_loop
+  
 trap:
+    MOV R1, 0x70
+    MOV R0, #$'trap_str
+    CALL 'print
+  trap_loop:
     HALT
-    JUMP 'trap
+    JUMP 'trap_loop
 
 ; Puts A0 into the keyboard circular buffer.
 ; Traps if full.
@@ -372,6 +449,135 @@ repl:
     MOV R1, 0x07
     INT 0xf0
     JUMP 'repl
+
+; (read-string "string" 0)
+; Receives a String in R0, returns some lisp object in R0.
+; Returns offset to start from in R1, end of read symbol in R1
+; As helpers: R2 contains remaining characters, A0 the char being read
+read_string:
+    TYPEP R2, R0, 2       ; is string?
+    JUMPIF R2, 'read_is_string
+    MOV R7, #0            ; if not, return nothing
+    RETURN
+  read_is_string:
+    GETPAYLOAD A0, R0    
+    MOV R2, [A0]
+    SUB R2, R2, R1
+    LTE R3, R2, #0 ; finished? (len <= 0)
+    JUMPIF R3, 'read_end
+
+
+    ADD A0, A0, 8 ; Skip header
+    GETPAYLOAD A4, R1 ; skip first n
+    ADD A0, A0, A4
+
+    ; peek
+    MOV8 A2, [A0]
+
+    EQ R3, A2, \' ; Quote?
+    JUMPIFNOT R3, 'read_notquote
+    CALL 'read_quote
+    RETURN
+
+  read_notquote:
+    EQ R2, A2, \( ; List?
+    CALL 'read_list
+    RETURN
+
+  read_notlist:
+    LT R3, A2, \0
+    JUMPIF R3, 'read_notnumber
+    GT R3, A2, \9
+    JUMPIF R3, 'read_notnumber ; Number?
+    CALL 'read_number
+    RETURN
+
+  read_notnumber:
+    CALL 'read_symbol ; Symbol?
+    RETURN
+
+
+read_end:
+    RETURN
+
+; Expects:
+; A0: Pointer to string
+; R1: Start
+; R2: Length
+; Returns:
+; A0: pointer to string + 1
+; A1: char at string[n]
+; R1: Start + 1
+; R2: Length - 1
+read_string_next_char:
+    ADD A0, A0, 1
+    ADD R1, R1, #1
+    SUB R2, R2, #1
+    LTE R3, R2, 0
+    JUMPIFNOT R3, 'more
+    MOV A1, 0xffff
+    RETURN
+more:
+    MOV8 A1, [A0]
+    RETURN
+
+; Expects:
+; A0: Pointer to string
+; A1: char at string
+; R1: Start
+; R2: Length
+; Returns:
+; A0: pointer to string + n
+; A1: char at string[n]
+; R1: Start + n
+; R2: Length - n
+; where n depends on the number of whitespace characters
+skip_whitespace:
+    EQ R3, A1, \Space
+    JUMPIFNOT R3, 'done
+    EQ R3, A1, 0xffff
+    JUMPIF R3, 'done
+    CALL 'read_string_next_char
+    JUMP 'skip_whitespace
+done:
+    RETURN
+
+
+; Expects:
+; A0: Pointer to string
+; A1: char at string
+; R1: Start
+; R2: Length
+; Returns:
+; A0: pointer to string + n
+; R0: a number
+; A1: char at string[n]
+; R1: Start + n
+; R2: Length - n
+read_number:
+    MOV R0, #0
+  read_number_loop:
+    LT R3, A2, \0
+    JUMPIF R3, 'rnnotnumber
+    GT R3, A2, \9
+    JUMPIF R3, 'rnnotnumber ; Number?
+
+    MOV R4, #0
+    SETPAYLOAD R4, A1
+    SUB R4, R4, #0
+    JUMP 'read_number_loop
+  rnnotnumber:
+    RETURN
+
+read_quote:
+    RETURN
+
+read_list:
+    RETURN
+
+read_symbol:
+    RETURN
+
 
 .org 0xffffffffffffffe0
     .w 'bootstrap

@@ -38,10 +38,6 @@ impl Firmware {
     pub const PRESSED_KEY_ID: usize = 0x28008;
 
     fn make_firmware<'a>() -> Result<Firmware, FirmwareError<'a>> {
-        let mut symbols = HashMap::<&str, usize>::new();
-
-        symbols.insert("bootstrap_objects", 0x3000);
-
         let rom = assembler::assemble(BIOS_ASM)?;
 
         Ok(Firmware { base: 0, rom })
@@ -64,7 +60,7 @@ impl Device for Firmware {
     fn read_word(&self, address: crate::bus::Address) -> crate::bus::Native {
         let address = address.0 as usize + self.base;
         for section in &self.rom {
-            if section.base <= address as usize && ((address) < section.base + section.data.len()) {
+            if section.base <= address as usize && ((address - section.data.len()) < section.base) {
                 return Native(u64::from_le_bytes(
                     section.data[address - section.base..][..8]
                         .try_into()

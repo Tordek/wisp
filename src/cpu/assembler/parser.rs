@@ -90,6 +90,11 @@ pub enum UnresolvedInstruction<'input> {
     Call {
         target: JumpTarget<'input>,
     },
+    Typep {
+        dst: cpu::Register,
+        src: cpu::Register,
+        compare: Reference<'input>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -104,6 +109,7 @@ pub enum Native<'input> {
     Fixnum(Reference<'input>),
     Cons(Reference<'input>),
     Symbol(Reference<'input>),
+    String(Reference<'input>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -121,7 +127,7 @@ pub enum AssemblyLine<'input> {
 pub enum ParserError<'input> {
     Expected {
         expected: &'static str,
-        found: Option<AssemblyToken<'input>>,
+        rest: Vec<AssemblyToken<'input>>,
     },
     ExpectedDirective {
         expected: &'static str,
@@ -167,7 +173,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(v) => Ok(v),
             None => Err(ParserError::Expected {
                 expected,
-                found: self.peek().cloned(),
+                rest: self.tokens[self.position..].to_vec(),
             }),
         }
     }
@@ -225,12 +231,26 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             _ => None,
         })
     }
-
-    fn try_label(&mut self) -> Option<&'input str> {
+    fn try_colon(&mut self) -> Option<()> {
         self.consume_if(|t| match t {
-            AssemblyToken::Label(l) => Some(*l),
+            AssemblyToken::Colon => Some(()),
             _ => None,
         })
+    }
+
+    fn try_label(&mut self) -> Option<&'input str> {
+        let refr = self.consume_if(|t| match t {
+            AssemblyToken::Identifier(name) => Some(*name),
+            _ => None,
+        })?;
+        let colon = self.try_colon();
+        match colon {
+            Some(()) => Some(refr),
+            None => {
+                self.position -= 1;
+                None
+            }
+        }
     }
 
     fn try_label_line(&mut self) -> Option<AssemblyLine<'input>> {
@@ -256,12 +276,20 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         }
     }
 
-    fn try_reference_token(&mut self) -> Option<&'input str> {
+    fn try_quote(&mut self) -> Option<()> {
         self.consume_if(|reference| match reference {
-            AssemblyToken::Reference(r) => Some(*r),
+            AssemblyToken::Quote => Some(()),
             _ => None,
         })
     }
+
+    fn try_identifier(&mut self) -> Option<&'input str> {
+        self.consume_if(|reference| match reference {
+            AssemblyToken::Identifier(r) => Some(*r),
+            _ => None,
+        })
+    }
+
     fn try_char(&mut self) -> Option<u8> {
         self.consume_if(|reference| match reference {
             AssemblyToken::Character(c) => Some(*c),
@@ -282,22 +310,33 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
 
     fn try_reference(&mut self) -> Option<Reference<'input>> {
-        let name = self.try_reference_token()?;
-        Some(Reference::Unresolved(name))
+        self.try_quote()?;
+        let name = self.try_identifier();
+
+        match name {
+            Some(name) => Some(Reference::Unresolved(name)),
+            None => {
+                self.position -= 1;
+                None
+            }
+        }
     }
 
     fn try_any_machine_value(&mut self) -> Option<Reference<'input>> {
         let next = self.peek();
         match next {
             Some(AssemblyToken::Number(_)) => self.try_number().map(Reference::Resolved),
-            Some(AssemblyToken::Reference(_)) => self.try_reference(),
+            Some(AssemblyToken::Character(_)) => {
+                self.try_char().map(|c| Reference::Resolved(c as i64))
+            }
+            Some(AssemblyToken::Quote) => self.try_reference(),
             _ => None,
         }
     }
 
     fn expect_lisp_value(&mut self) -> Result<Native<'input>, ParserError<'input>> {
         self.consume_if(|t| match t {
-            AssemblyToken::LispLiteral => Some(()),
+            AssemblyToken::Hash => Some(()),
             _ => None,
         });
 
@@ -325,10 +364,20 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 self.next();
                 Ok(Native::Fixnum(Reference::Resolved(v as i64)))
             }
-            Some(AssemblyToken::Reference(c)) => Ok(Native::Fixnum(Reference::Unresolved(c))),
-            v => Err(ParserError::Expected {
+            Some(AssemblyToken::Quote) => {
+                let refr = self.try_identifier();
+                let refr = self.expect(refr, "A reference name")?;
+                Ok(Native::Fixnum(Reference::Unresolved(refr)))
+            }
+            Some(AssemblyToken::Cash) => {
+                self.next();
+                let refr = self.try_any_machine_value();
+                let refr = self.expect(refr, "A reference name")?;
+                Ok(Native::String(refr))
+            }
+            _ => Err(ParserError::Expected {
                 expected: "A value to convert",
-                found: v.cloned(),
+                rest: self.tokens[self.position..].to_vec(),
             }),
         }
     }
@@ -341,31 +390,31 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 let n = self.expect(n, "A number")?;
                 Ok(Native::Raw(Reference::Resolved(n)))
             }
-            Some(AssemblyToken::Reference(_)) => {
+            Some(AssemblyToken::Quote) => {
                 let r = self.try_reference();
                 let r = self.expect(r, "A reference")?;
                 Ok(Native::Raw(r))
             }
-            Some(AssemblyToken::LispLiteral) => self.expect_lisp_value(),
-            v => Err(ParserError::Expected {
+            Some(AssemblyToken::Hash) => self.expect_lisp_value(),
+            _ => Err(ParserError::Expected {
                 expected: "A value",
-                found: v.cloned(),
+                rest: self.tokens[self.position..].to_vec(),
             }),
         }
     }
 
     fn expect_directive(&mut self, name: &'static str) -> Result<(), ParserError<'input>> {
         match self.next() {
-            Some(AssemblyToken::Directive(actual)) if *actual == name => Ok(()),
+            Some(AssemblyToken::Identifier(actual)) if *actual == name => Ok(()),
             found => Err(ParserError::ExpectedDirective {
                 expected: name,
                 found: found.cloned(),
             }),
         }
     }
-    fn expect_instruction(&mut self, name: &'static str) -> Result<(), ParserError<'input>> {
+    fn expect_identifier(&mut self, name: &'static str) -> Result<(), ParserError<'input>> {
         match self.next() {
-            Some(AssemblyToken::Instruction(actual)) if *actual == name => Ok(()),
+            Some(AssemblyToken::Identifier(actual)) if *actual == name => Ok(()),
             found => Err(ParserError::ExpectedInstruction {
                 expected: name,
                 found: found.cloned(),
@@ -402,14 +451,21 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         Ok(AssemblyLine::Equ(name, value as usize))
     }
     fn try_directive_line(&mut self) -> Result<Option<AssemblyLine<'input>>, ParserError<'input>> {
+        let directive_marker = self.consume_if(|d| match d {
+            AssemblyToken::Dot => Some(()),
+            _ => None,
+        });
+        if directive_marker.is_none() {
+            return Ok(None);
+        }
         let directive = self.peek();
 
         match directive {
-            Some(AssemblyToken::Directive("org")) => Ok(Some(self.parse_org()?)),
-            Some(AssemblyToken::Directive("str")) => Ok(Some(self.parse_string()?)),
-            Some(AssemblyToken::Directive("w")) => Ok(Some(self.parse_w()?)),
-            Some(AssemblyToken::Directive("equ")) => Ok(Some(self.parse_eq()?)),
-            Some(AssemblyToken::Directive(directive)) => {
+            Some(AssemblyToken::Identifier("org")) => Ok(Some(self.parse_org()?)),
+            Some(AssemblyToken::Identifier("str")) => Ok(Some(self.parse_string()?)),
+            Some(AssemblyToken::Identifier("w")) => Ok(Some(self.parse_w()?)),
+            Some(AssemblyToken::Identifier("equ")) => Ok(Some(self.parse_eq()?)),
+            Some(AssemblyToken::Identifier(directive)) => {
                 Err(ParserError::UnknownDirective { directive })
             }
             _ => return Ok(None),
@@ -417,23 +473,23 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
 
     fn parse_nop(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("NOP")?;
+        self.expect_identifier("NOP")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Nop))
     }
     fn parse_halt(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("HALT")?;
+        self.expect_identifier("HALT")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Halt))
     }
     fn parse_return_op(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("RETURN")?;
+        self.expect_identifier("RETURN")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Return))
     }
     fn parse_ireturn_op(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("IRETURN")?;
+        self.expect_identifier("IRETURN")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::IReturn))
     }
     fn parse_interrupt(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("INT")?;
+        self.expect_identifier("INT")?;
 
         let target = self.try_any_machine_value();
         let target = self.expect(target, "The number of the interruption")?;
@@ -446,14 +502,14 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     fn expect_jump_condition(&mut self) -> Result<cpu::Condition, ParserError<'input>> {
         let condition = self.next();
         match condition {
-            Some(AssemblyToken::Instruction("JUMP")) => Ok(cpu::Condition::Always),
-            Some(AssemblyToken::Instruction("JUMPIF")) => {
+            Some(AssemblyToken::Identifier("JUMP")) => Ok(cpu::Condition::Always),
+            Some(AssemblyToken::Identifier("JUMPIF")) => {
                 let conditional = self.try_register();
                 let conditional = self.expect(conditional, "A register to check")?;
                 self.expect_comma()?;
                 Ok(cpu::Condition::True(conditional))
             }
-            Some(AssemblyToken::Instruction("JUMPIFNOT")) => {
+            Some(AssemblyToken::Identifier("JUMPIFNOT")) => {
                 let conditional = self.try_register();
                 let conditional = self.expect(conditional, "A register to check")?;
                 self.expect_comma()?;
@@ -523,7 +579,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             (None, Some(adr)) => Ok(JumpTarget::Absolute(adr)),
             (None, None) => Err(ParserError::Expected {
                 expected: "a target to jump to",
-                found: None,
+                rest: self.tokens[self.position..].to_vec(),
             }),
         }
     }
@@ -538,14 +594,14 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_call(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("CALL")?;
+        self.expect_identifier("CALL")?;
         let target = self.expect_jump_target()?;
         Ok(AssemblyLine::UnresolvedInstruction(
             UnresolvedInstruction::Call { target },
         ))
     }
     fn parse_push(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("PUSH")?;
+        self.expect_identifier("PUSH")?;
         let reg = self.try_register();
         if let Some(r) = reg {
             return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::PushR {
@@ -558,14 +614,13 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 src: r,
             }));
         }
-        let next = self.peek();
         Err(ParserError::Expected {
             expected: "A location to push from",
-            found: next.cloned(),
+            rest: self.tokens[self.position..].to_vec(),
         })
     }
     fn parse_pop(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("POP")?;
+        self.expect_identifier("POP")?;
         let reg = self.try_register();
         if let Some(r) = reg {
             return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::PopR {
@@ -578,10 +633,9 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 dst: r,
             }));
         }
-        let next = self.peek();
         Err(ParserError::Expected {
             expected: "A location to pop to",
-            found: next.cloned(),
+            rest: self.tokens[self.position..].to_vec(),
         })
     }
 
@@ -628,7 +682,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
 
     fn parse_mov(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("MOV")?;
+        self.expect_identifier("MOV")?;
         let dst = self.expect_location()?;
         self.expect_comma()?;
         let src = self.expect_location()?;
@@ -640,7 +694,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_mov8(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("MOV8")?;
+        self.expect_identifier("MOV8")?;
         let dst = self.expect_location()?;
         self.expect_comma()?;
         let src = self.expect_location()?;
@@ -660,9 +714,9 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 self.parse_mach_source().map(EitherSource::Mach)
             }
 
-            other => Err(ParserError::Expected {
+            _ => Err(ParserError::Expected {
                 expected: "A source",
-                found: other.cloned(),
+                rest: self.tokens[self.position..].to_vec(),
             }),
         }
     }
@@ -691,12 +745,12 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 self.next();
                 self.expect_comma()?;
                 let op = match instr {
-                    Some(AssemblyToken::Instruction("ADD")) => cpu::BinaryOp::Add,
-                    Some(AssemblyToken::Instruction("SUB")) => cpu::BinaryOp::Sub,
-                    other => {
+                    Some(AssemblyToken::Identifier("ADD")) => cpu::BinaryOp::Add,
+                    Some(AssemblyToken::Identifier("SUB")) => cpu::BinaryOp::Sub,
+                    _ => {
                         return Err(ParserError::Expected {
                             expected: "ADD or SUB",
-                            found: other,
+                            rest: self.tokens[self.position..].to_vec(),
                         });
                     }
                 };
@@ -709,12 +763,12 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 self.next();
                 self.expect_comma()?;
                 let op = match instr {
-                    Some(AssemblyToken::Instruction("ADD")) => cpu::MBinaryOp::Add,
-                    Some(AssemblyToken::Instruction("SUB")) => cpu::MBinaryOp::Sub,
-                    other => {
+                    Some(AssemblyToken::Identifier("ADD")) => cpu::MBinaryOp::Add,
+                    Some(AssemblyToken::Identifier("SUB")) => cpu::MBinaryOp::Sub,
+                    _ => {
                         return Err(ParserError::Expected {
                             expected: "ADD or SUB",
-                            found: other,
+                            rest: self.tokens[self.position..].to_vec(),
                         });
                     }
                 };
@@ -723,14 +777,14 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                     UnresolvedInstruction::MBinary { op, dst, operands },
                 ))
             }
-            s => Err(ParserError::Expected {
+            _ => Err(ParserError::Expected {
                 expected: "ADD or SUB",
-                found: s,
+                rest: self.tokens[self.position..].to_vec(),
             }),
         }
     }
     fn parse_settag(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("SETTAG")?;
+        self.expect_identifier("SETTAG")?;
         let dst = self.try_register();
         self.expect_comma()?;
         let dst = self.expect(dst, "A register")?;
@@ -741,7 +795,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_gettag(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("GETTAG")?;
+        self.expect_identifier("GETTAG")?;
         let dst = self.try_machine_register();
         let dst = self.expect(dst, "A machine register")?;
         self.expect_comma()?;
@@ -752,7 +806,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_setpayload(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("SETPAYLOAD")?;
+        self.expect_identifier("SETPAYLOAD")?;
         let dst = self.try_register();
         let dst = self.expect(dst, "A register")?;
         self.expect_comma()?;
@@ -763,7 +817,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_getpayload(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("GETPAYLOAD")?;
+        self.expect_identifier("GETPAYLOAD")?;
         let dst = self.try_machine_register();
         let dst = self.expect(dst, "A machine register")?;
         self.expect_comma()?;
@@ -774,13 +828,13 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_cons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("CONS")?;
+        self.expect_identifier("CONS")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Int(
             0x03,
         )))
     }
     fn parse_uncons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("UNCONS")?;
+        self.expect_identifier("UNCONS")?;
         let car = self.try_register();
         let car = self.expect(car, "A register")?;
         self.expect_comma()?;
@@ -802,28 +856,28 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         Ok(TwoRegs { dst, src })
     }
     fn parse_car(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("CAR")?;
+        self.expect_identifier("CAR")?;
         let tworegs = self.parse_tworegs()?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Car(
             tworegs,
         )))
     }
     fn parse_cdr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("CDR")?;
+        self.expect_identifier("CDR")?;
         let tworegs = self.parse_tworegs()?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr(
             tworegs,
         )))
     }
     fn parse_setcar(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("SETCAR")?;
+        self.expect_identifier("SETCAR")?;
         let tworegs = self.parse_tworegs()?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCar(
             tworegs,
         )))
     }
     fn parse_setcdr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("SETCDR")?;
+        self.expect_identifier("SETCDR")?;
         let tworegs = self.parse_tworegs()?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCdr(
             tworegs,
@@ -836,13 +890,13 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let dst = self.expect(dst, "A destination register")?;
         self.expect_comma()?;
         let op = match instr {
-            Some(AssemblyToken::Instruction("MUL")) => cpu::BinaryOp::Mul,
-            Some(AssemblyToken::Instruction("SHL")) => cpu::BinaryOp::Shl,
-            Some(AssemblyToken::Instruction("SHR")) => cpu::BinaryOp::Shr,
-            other => {
+            Some(AssemblyToken::Identifier("MUL")) => cpu::BinaryOp::Mul,
+            Some(AssemblyToken::Identifier("SHL")) => cpu::BinaryOp::Shl,
+            Some(AssemblyToken::Identifier("SHR")) => cpu::BinaryOp::Shr,
+            _ => {
                 return Err(ParserError::Expected {
                     expected: "A binary op",
-                    found: other,
+                    rest: self.tokens[self.position..].to_vec(),
                 });
             }
         };
@@ -852,7 +906,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_div(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("DIV")?;
+        self.expect_identifier("DIV")?;
         let div = self.try_register();
         let div = self.expect(div, "A destination register")?;
         self.expect_comma()?;
@@ -865,7 +919,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_makeclosure(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("MAKECLOSURE")?;
+        self.expect_identifier("MAKECLOSURE")?;
         let dst = self.try_register();
         self.expect_comma()?;
         let dst = self.expect(dst, "A register")?;
@@ -876,20 +930,18 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         ))
     }
     fn parse_typep(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("TYPEP")?;
+        self.expect_identifier("TYPEP")?;
         let dst = self.try_register();
         let dst = self.expect(dst, "A place to store result")?;
         self.expect_comma()?;
         let src = self.try_register();
         let src = self.expect(src, "A source")?;
         self.expect_comma()?;
-        let compare = self.try_number().map(|n| cpu::Native(n as u64));
+        let compare = self.try_any_machine_value();
         let compare = self.expect(compare, "A type")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Typep {
-            dst,
-            src,
-            compare,
-        }))
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Typep { dst, src, compare },
+        ))
     }
 
     fn try_machine_register(&mut self) -> Option<cpu::MachineRegister> {
@@ -911,7 +963,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
 
     fn parse_memcpy(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_instruction("MEMCPY")?;
+        self.expect_identifier("MEMCPY")?;
         let dst = self.try_machine_register();
         let dst = self.expect(dst, "Register for dst")?;
         self.expect_comma()?;
@@ -935,16 +987,16 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let dst = self.expect(dst, "A register")?;
         self.expect_comma()?;
         let op = match instr {
-            Some(AssemblyToken::Instruction("EQ")) => cpu::Comparison::Eq,
-            Some(AssemblyToken::Instruction("NE")) => cpu::Comparison::Ne,
-            Some(AssemblyToken::Instruction("GT")) => cpu::Comparison::Gt,
-            Some(AssemblyToken::Instruction("GTE")) => cpu::Comparison::Gte,
-            Some(AssemblyToken::Instruction("LT")) => cpu::Comparison::Lt,
-            Some(AssemblyToken::Instruction("LTE")) => cpu::Comparison::Lte,
-            other => {
+            Some(AssemblyToken::Identifier("EQ")) => cpu::Comparison::Eq,
+            Some(AssemblyToken::Identifier("NE")) => cpu::Comparison::Ne,
+            Some(AssemblyToken::Identifier("GT")) => cpu::Comparison::Gt,
+            Some(AssemblyToken::Identifier("GTE")) => cpu::Comparison::Gte,
+            Some(AssemblyToken::Identifier("LT")) => cpu::Comparison::Lt,
+            Some(AssemblyToken::Identifier("LTE")) => cpu::Comparison::Lte,
+            _ => {
                 return Err(ParserError::Expected {
                     expected: "ADD or SUB",
-                    found: other,
+                    rest: self.tokens[self.position..].to_vec(),
                 });
             }
         };
@@ -960,58 +1012,58 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let instruction = self.peek();
 
         match instruction {
-            Some(AssemblyToken::Instruction("NOP")) => Ok(Some(self.parse_nop()?)),
-            Some(AssemblyToken::Instruction("HALT")) => Ok(Some(self.parse_halt()?)),
-            Some(AssemblyToken::Instruction("RETURN")) => Ok(Some(self.parse_return_op()?)),
-            Some(AssemblyToken::Instruction("IRETURN")) => Ok(Some(self.parse_ireturn_op()?)),
+            Some(AssemblyToken::Identifier("NOP")) => Ok(Some(self.parse_nop()?)),
+            Some(AssemblyToken::Identifier("HALT")) => Ok(Some(self.parse_halt()?)),
+            Some(AssemblyToken::Identifier("RETURN")) => Ok(Some(self.parse_return_op()?)),
+            Some(AssemblyToken::Identifier("IRETURN")) => Ok(Some(self.parse_ireturn_op()?)),
 
-            Some(AssemblyToken::Instruction("INT")) => Ok(Some(self.parse_interrupt()?)),
-            Some(AssemblyToken::Instruction("CALL")) => Ok(Some(self.parse_call()?)),
-            Some(AssemblyToken::Instruction("JUMP")) => Ok(Some(self.parse_jump()?)),
-            Some(AssemblyToken::Instruction("JUMPIF")) => Ok(Some(self.parse_jump()?)),
-            Some(AssemblyToken::Instruction("JUMPIFNOT")) => Ok(Some(self.parse_jump()?)),
+            Some(AssemblyToken::Identifier("INT")) => Ok(Some(self.parse_interrupt()?)),
+            Some(AssemblyToken::Identifier("CALL")) => Ok(Some(self.parse_call()?)),
+            Some(AssemblyToken::Identifier("JUMP")) => Ok(Some(self.parse_jump()?)),
+            Some(AssemblyToken::Identifier("JUMPIF")) => Ok(Some(self.parse_jump()?)),
+            Some(AssemblyToken::Identifier("JUMPIFNOT")) => Ok(Some(self.parse_jump()?)),
 
-            Some(AssemblyToken::Instruction("PUSH")) => Ok(Some(self.parse_push()?)),
-            Some(AssemblyToken::Instruction("POP")) => Ok(Some(self.parse_pop()?)),
+            Some(AssemblyToken::Identifier("PUSH")) => Ok(Some(self.parse_push()?)),
+            Some(AssemblyToken::Identifier("POP")) => Ok(Some(self.parse_pop()?)),
 
-            Some(AssemblyToken::Instruction("MOV")) => Ok(Some(self.parse_mov()?)),
-            Some(AssemblyToken::Instruction("MOV8")) => Ok(Some(self.parse_mov8()?)),
+            Some(AssemblyToken::Identifier("MOV")) => Ok(Some(self.parse_mov()?)),
+            Some(AssemblyToken::Identifier("MOV8")) => Ok(Some(self.parse_mov8()?)),
 
-            Some(AssemblyToken::Instruction("ADD")) => Ok(Some(self.parse_mbin()?)),
-            Some(AssemblyToken::Instruction("SUB")) => Ok(Some(self.parse_mbin()?)),
+            Some(AssemblyToken::Identifier("ADD")) => Ok(Some(self.parse_mbin()?)),
+            Some(AssemblyToken::Identifier("SUB")) => Ok(Some(self.parse_mbin()?)),
 
-            Some(AssemblyToken::Instruction("MUL")) => Ok(Some(self.parse_bin()?)),
-            Some(AssemblyToken::Instruction("SHL")) => Ok(Some(self.parse_bin()?)),
-            Some(AssemblyToken::Instruction("SHR")) => Ok(Some(self.parse_bin()?)),
+            Some(AssemblyToken::Identifier("MUL")) => Ok(Some(self.parse_bin()?)),
+            Some(AssemblyToken::Identifier("SHL")) => Ok(Some(self.parse_bin()?)),
+            Some(AssemblyToken::Identifier("SHR")) => Ok(Some(self.parse_bin()?)),
 
-            Some(AssemblyToken::Instruction("DIV")) => Ok(Some(self.parse_div()?)),
+            Some(AssemblyToken::Identifier("DIV")) => Ok(Some(self.parse_div()?)),
 
-            Some(AssemblyToken::Instruction("EQ")) => Ok(Some(self.parse_comparison()?)),
-            Some(AssemblyToken::Instruction("NE")) => Ok(Some(self.parse_comparison()?)),
-            Some(AssemblyToken::Instruction("GT")) => Ok(Some(self.parse_comparison()?)),
-            Some(AssemblyToken::Instruction("GTE")) => Ok(Some(self.parse_comparison()?)),
-            Some(AssemblyToken::Instruction("LT")) => Ok(Some(self.parse_comparison()?)),
-            Some(AssemblyToken::Instruction("LTE")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Identifier("EQ")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Identifier("NE")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Identifier("GT")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Identifier("GTE")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Identifier("LT")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Identifier("LTE")) => Ok(Some(self.parse_comparison()?)),
 
-            Some(AssemblyToken::Instruction("SETTAG")) => Ok(Some(self.parse_settag()?)),
-            Some(AssemblyToken::Instruction("GETTAG")) => Ok(Some(self.parse_gettag()?)),
-            Some(AssemblyToken::Instruction("SETPAYLOAD")) => Ok(Some(self.parse_setpayload()?)),
-            Some(AssemblyToken::Instruction("GETPAYLOAD")) => Ok(Some(self.parse_getpayload()?)),
+            Some(AssemblyToken::Identifier("SETTAG")) => Ok(Some(self.parse_settag()?)),
+            Some(AssemblyToken::Identifier("GETTAG")) => Ok(Some(self.parse_gettag()?)),
+            Some(AssemblyToken::Identifier("SETPAYLOAD")) => Ok(Some(self.parse_setpayload()?)),
+            Some(AssemblyToken::Identifier("GETPAYLOAD")) => Ok(Some(self.parse_getpayload()?)),
 
-            Some(AssemblyToken::Instruction("CONS")) => Ok(Some(self.parse_cons()?)),
-            Some(AssemblyToken::Instruction("UNCONS")) => Ok(Some(self.parse_uncons()?)),
+            Some(AssemblyToken::Identifier("CONS")) => Ok(Some(self.parse_cons()?)),
+            Some(AssemblyToken::Identifier("UNCONS")) => Ok(Some(self.parse_uncons()?)),
 
-            Some(AssemblyToken::Instruction("CAR")) => Ok(Some(self.parse_car()?)),
-            Some(AssemblyToken::Instruction("CDR")) => Ok(Some(self.parse_cdr()?)),
-            Some(AssemblyToken::Instruction("SETCAR")) => Ok(Some(self.parse_setcar()?)),
-            Some(AssemblyToken::Instruction("SETCDR")) => Ok(Some(self.parse_setcdr()?)),
+            Some(AssemblyToken::Identifier("CAR")) => Ok(Some(self.parse_car()?)),
+            Some(AssemblyToken::Identifier("CDR")) => Ok(Some(self.parse_cdr()?)),
+            Some(AssemblyToken::Identifier("SETCAR")) => Ok(Some(self.parse_setcar()?)),
+            Some(AssemblyToken::Identifier("SETCDR")) => Ok(Some(self.parse_setcdr()?)),
 
-            Some(AssemblyToken::Instruction("MAKECLOSURE")) => Ok(Some(self.parse_makeclosure()?)),
-            Some(AssemblyToken::Instruction("TYPEP")) => Ok(Some(self.parse_typep()?)),
-            Some(AssemblyToken::Instruction("MEMCPY")) => Ok(Some(self.parse_memcpy()?)),
-            Some(AssemblyToken::Instruction("COMPARISON")) => Ok(Some(self.parse_comparison()?)),
+            Some(AssemblyToken::Identifier("MAKECLOSURE")) => Ok(Some(self.parse_makeclosure()?)),
+            Some(AssemblyToken::Identifier("TYPEP")) => Ok(Some(self.parse_typep()?)),
+            Some(AssemblyToken::Identifier("MEMCPY")) => Ok(Some(self.parse_memcpy()?)),
+            Some(AssemblyToken::Identifier("COMPARISON")) => Ok(Some(self.parse_comparison()?)),
 
-            Some(AssemblyToken::Instruction(instruction)) => {
+            Some(AssemblyToken::Identifier(instruction)) => {
                 Err(ParserError::UnknownInstruction { instruction })
             }
             _ => Ok(None),

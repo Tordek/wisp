@@ -1,10 +1,10 @@
 use nom::{
     IResult, Parser,
     branch::alt,
-    bytes::complete::tag,
+    bytes::complete::{tag, take_until},
     character::{
         anychar,
-        complete::{alpha1, alphanumeric1, digit1, hex_digit1, none_of, space0},
+        complete::{alpha1, alphanumeric1, digit1, hex_digit1, multispace0, none_of, space0},
     },
     combinator::{recognize, value},
     multi::{many0, many0_count},
@@ -15,8 +15,8 @@ use crate::cpu;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum AssemblyToken<'a> {
-    Label(&'a str),
-    Directive(&'a str),
+    Colon,
+    Dot,
     Number(i64),
     Register(cpu::Register),
     MachineRegister(cpu::MachineRegister),
@@ -25,11 +25,12 @@ pub enum AssemblyToken<'a> {
     Plus,
     Minus,
     Comment(&'a str),
-    Instruction(&'a str),
-    Reference(&'a str),
+    Identifier(&'a str),
+    Cash,
+    Quote,
     String(&'a str),
     Character(u8),
-    LispLiteral,
+    Hash,
     Newline,
     Comma,
     Bang,
@@ -60,9 +61,7 @@ fn hex(input: &str) -> IResult<&str, i64> {
 
 // Tokens
 fn directive(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    preceded(tag("."), ident)
-        .map(AssemblyToken::Directive)
-        .parse(input)
+    value(AssemblyToken::Dot, tag(".")).parse(input)
 }
 
 fn number(input: &str) -> IResult<&str, AssemblyToken<'_>> {
@@ -97,7 +96,7 @@ fn minus(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::Minus, tag("-")).parse(input)
 }
 fn comment(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    recognize(preceded(tag(";"), many0(none_of("\n"))))
+    recognize(preceded(tag(";"), take_until("\n")))
         .map(AssemblyToken::Comment)
         .parse(input)
 }
@@ -109,34 +108,40 @@ fn newline(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     .parse(input)
 }
 fn instruction(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    ident.map(AssemblyToken::Instruction).parse(input)
+    ident.map(AssemblyToken::Identifier).parse(input)
 }
 fn label(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    terminated(ident, tag(":"))
-        .map(AssemblyToken::Label)
-        .parse(input)
+    value(AssemblyToken::Colon, tag(":")).parse(input)
 }
 fn reference(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    preceded(tag("'"), ident)
-        .map(AssemblyToken::Reference)
-        .parse(input)
+    value(AssemblyToken::Quote, tag("'")).parse(input)
 }
 fn raw_string(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    delimited(tag("\""), recognize(many0(none_of("\""))), tag("\""))
+    delimited(tag("\""), recognize(take_until("\"")), tag("\""))
         .map(AssemblyToken::String)
         .parse(input)
 }
 
+fn cash(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    value(AssemblyToken::Cash, tag("$")).parse(input)
+}
 fn comma(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::Comma, tag(",")).parse(input)
 }
 fn raw_char(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    preceded(tag("\\"), alt((value('\n', tag("Newline")), anychar)))
-        .map(|c| AssemblyToken::Character(c as u8))
-        .parse(input)
+    preceded(
+        tag("\\"),
+        alt((
+            value(' ', tag("Space")),
+            value('\n', tag("Newline")),
+            anychar,
+        )),
+    )
+    .map(|c| AssemblyToken::Character(c as u8))
+    .parse(input)
 }
 fn literal(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    value(AssemblyToken::LispLiteral, tag("#")).parse(input)
+    value(AssemblyToken::Hash, tag("#")).parse(input)
 }
 fn bang(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::Bang, tag("!")).parse(input)
@@ -162,6 +167,7 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
             minus,
             comment,
             instruction,
+            cash,
             comma,
             newline,
         )),
@@ -175,13 +181,13 @@ pub enum TokenizeError<'a> {
 }
 
 pub fn tokenize<'a>(input: &'a str) -> Result<Vec<AssemblyToken<'a>>, TokenizeError<'a>> {
-    let (_rest, tokens) = many0(token)
+    let (rest, tokens) = terminated(many0(token), multispace0)
         .parse(input)
         .map_err(|_| TokenizeError::UnexpectedInput { remaining: input })?;
 
-    // if !rest.is_empty() {
-    //     return Err(TokenizeError::UnexpectedInput { remaining: rest });
-    // }
+    if !rest.is_empty() {
+        return Err(TokenizeError::UnexpectedInput { remaining: rest });
+    }
     Ok(tokens)
 }
 

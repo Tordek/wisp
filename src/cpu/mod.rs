@@ -23,22 +23,22 @@ impl MemoryLayout {
 pub enum InterruptTableOffset {}
 impl InterruptTableOffset {
     pub const TRAP_VECTOR: Offset = Offset(0x00);
-    pub const ALLOC_VECTOR: Offset = Offset(0x10);
-    pub const ALLOC_CONS_VECTOR: Offset = Offset(0x018);
+    // pub const ALLOC_VECTOR: Offset = Offset(0x10);
+    // pub const ALLOC_CONS_VECTOR: Offset = Offset(0x018);
     pub const END_RESERVED_INTERRUPTS: Offset = Offset(0xf0);
 }
 
-pub enum SymbolLayout {}
-impl SymbolLayout {
-    pub const NAME_OFFSET: Offset = Offset(0);
-    pub const PLIST_OFFSET: Offset = Offset(8);
-}
+// pub enum SymbolLayout {}
+// impl SymbolLayout {
+//     pub const NAME_OFFSET: Offset = Offset(0);
+//     pub const PLIST_OFFSET: Offset = Offset(8);
+// }
 
-pub enum StringLayout {}
-impl StringLayout {
-    pub const LENGTH_OFFSET: Offset = Offset(0);
-    pub const DATA_OFFSET: Offset = Offset(8);
-}
+// pub enum StringLayout {}
+// impl StringLayout {
+//     pub const LENGTH_OFFSET: Offset = Offset(0);
+//     pub const DATA_OFFSET: Offset = Offset(8);
+// }
 
 pub enum ConsLayout {}
 impl ConsLayout {
@@ -49,16 +49,16 @@ impl ConsLayout {
 #[repr(u8)]
 #[derive(PartialEq, Eq, Clone, Copy, IntEnum, Debug)]
 pub enum WordType {
-    Undefined,
-    Fixnum,
-    Symbol,
-    Cons,
-    Function,
-    Closure,
-    Character,
-    String,
-    Vector,
-    Float,
+    Undefined = 0,
+    Fixnum = 1,
+    Symbol = 2,
+    Cons = 3,
+    Function = 4,
+    Closure = 5,
+    Character = 6,
+    String = 7,
+    Vector = 8,
+    Float = 9,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -96,6 +96,10 @@ impl LispWord {
 
     pub const fn char(address: WordSize) -> Self {
         Self::new(WordType::Character, address & 0xff)
+    }
+
+    pub const fn string(address: WordSize) -> Self {
+        Self::new(WordType::String, address)
     }
 
     fn ensure(self, word_type: WordType) -> Result<Self, Trap> {
@@ -150,7 +154,7 @@ pub struct Cpu {
 impl Cpu {
     pub const SP: MachineRegister = MachineRegister(4);
     pub const PC: MachineRegister = MachineRegister(5);
-    pub const ENV: MachineRegister = MachineRegister(6);
+    // pub const ENV: MachineRegister = MachineRegister(6);
     pub const VBR: MachineRegister = MachineRegister(7);
     pub const T: Register = Register(23);
     pub const NIL: Register = Register(22);
@@ -381,11 +385,11 @@ pub enum Instruction {
         count: Count,
     },
     /// while (count--) *dst++ = src
-    MemSet {
-        dst: MachineRegister,
-        src: MachineRegister,
-        count: Count,
-    },
+    // MemSet {
+    //     dst: MachineRegister,
+    //     src: MachineRegister,
+    //     count: Count,
+    // },
 
     /// PUSHes PC on the stack and jumps
     Call {
@@ -882,18 +886,18 @@ impl Cpu {
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
-            Instruction::MemSet { dst, src, count } => {
-                let srcadd = self.machine_reg[src.0 as usize];
-                let dstadd = self.machine_reg[dst.0 as usize];
-                for i in 0..count.0 {
-                    memory.write_byte(
-                        Address::from(dstadd) + Offset(i as i64),
-                        memory.read_byte(Address::from(srcadd)),
-                    )
-                }
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
-            }
+            // Instruction::MemSet { dst, src, count } => {
+            //     let srcadd = self.machine_reg[src.0 as usize];
+            //     let dstadd = self.machine_reg[dst.0 as usize];
+            //     for i in 0..count.0 {
+            //         memory.write_byte(
+            //             Address::from(dstadd) + Offset(i as i64),
+            //             memory.read_byte(Address::from(srcadd)),
+            //         )
+            //     }
+            //     Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
+            //         + Offset(Cpu::INSTRUCTION_SIZE as i64))
+            // }
             Instruction::Typep { dst, src, compare } => {
                 let src_obj = self.registers[src.0 as usize];
                 self.registers[dst.0 as usize] =
@@ -980,7 +984,7 @@ mod tests {
     fn test_setup<'a>() -> Bus<'a> {
         let memory = Memory::new(0x10000);
         let mut bus = Bus::new();
-        bus.install(0x0..0x10000, Box::new(memory));
+        bus.install(0x0..0x10000, Box::new(memory)).unwrap();
         bus
     }
 
@@ -1037,7 +1041,7 @@ mod tests {
                 Instruction::Halt,
             ],
         );
-        while (!cpu.halted) {
+        while !cpu.halted {
             cpu.full_step(&mut test_bus);
         }
         assert_eq!(cpu.machine_reg[Cpu::PC.0 as usize], Native(0x10a0));
