@@ -454,21 +454,23 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         }
     }
 
-    fn parse_nop(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("NOP")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Nop))
-    }
-    fn parse_halt(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("HALT")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Halt))
-    }
-    fn parse_return_op(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("RETURN")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Return))
-    }
-    fn parse_ireturn_op(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("IRETURN")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::IReturn))
+    fn parse_nullary_op(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        let identifier = self.try_identifier();
+        let identifier = self.expect(identifier, "An identifier")?;
+        Ok(AssemblyLine::ResolvedInstruction(match identifier {
+            "NOP" => cpu::Instruction::Nop,
+            "RETURN" => cpu::Instruction::Return,
+            "IRETURN" => cpu::Instruction::IReturn,
+            "HALT" => cpu::Instruction::Halt,
+            "EI" => cpu::Instruction::EnableInterrupts,
+            "DI" => cpu::Instruction::DisableInterrupts,
+            _ => {
+                return Err(ParserError::Expected {
+                    expected: "A nullary op",
+                    rest: self.tokens[self.position..].to_vec(),
+                });
+            }
+        }))
     }
     fn parse_interrupt(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("INT")?;
@@ -1015,10 +1017,12 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let instruction = self.peek();
 
         match instruction {
-            Some(AssemblyToken::Identifier("NOP")) => Ok(Some(self.parse_nop()?)),
-            Some(AssemblyToken::Identifier("HALT")) => Ok(Some(self.parse_halt()?)),
-            Some(AssemblyToken::Identifier("RETURN")) => Ok(Some(self.parse_return_op()?)),
-            Some(AssemblyToken::Identifier("IRETURN")) => Ok(Some(self.parse_ireturn_op()?)),
+            Some(AssemblyToken::Identifier("NOP")) => Ok(Some(self.parse_nullary_op()?)),
+            Some(AssemblyToken::Identifier("HALT")) => Ok(Some(self.parse_nullary_op()?)),
+            Some(AssemblyToken::Identifier("RETURN")) => Ok(Some(self.parse_nullary_op()?)),
+            Some(AssemblyToken::Identifier("IRETURN")) => Ok(Some(self.parse_nullary_op()?)),
+            Some(AssemblyToken::Identifier("DI")) => Ok(Some(self.parse_nullary_op()?)),
+            Some(AssemblyToken::Identifier("EI")) => Ok(Some(self.parse_nullary_op()?)),
 
             Some(AssemblyToken::Identifier("INT")) => Ok(Some(self.parse_interrupt()?)),
             Some(AssemblyToken::Identifier("CALL")) => Ok(Some(self.parse_call()?)),

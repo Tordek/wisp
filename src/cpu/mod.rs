@@ -350,6 +350,8 @@ pub enum Instruction {
         dst: MachineRegister,
         src: Register,
     },
+    EnableInterrupts,
+    DisableInterrupts,
 
     // Higher level
     // Cons { -- CONS does not exist - it is only an alias for INT 0x03
@@ -425,7 +427,7 @@ impl Cpu {
         self.machine_reg[Cpu::PC.0 as usize] = bus.read_word(MemoryLayout::RESET_VECTOR);
         self.registers[Cpu::T.0 as usize] = LispWord(bus.read_word(MemoryLayout::T_ROOT).0);
         self.registers[Cpu::NIL.0 as usize] = LispWord(bus.read_word(MemoryLayout::NIL_ROOT).0);
-        // self.interrupts_disabled = true;
+        self.interrupts_disabled = true;
         self.halted = false;
         self.pending_interrupt = None;
     }
@@ -534,12 +536,14 @@ impl Cpu {
                 self.push(memory, self.registers[1_usize].into());
                 // CONS takes its params as R0 and R1
                 self.registers[0_usize] = LispWord::new(WordType::Fixnum.into(), 16); // Size: 2
-                self.registers[1_usize] = LispWord::new(WordType::Fixnum.into(), 2);
+                self.registers[1_usize] =
+                    LispWord::new(WordType::Fixnum.into(), WordType::Cons as u8 as u64);
                 // Type: Int
             }
             _ => (),
         }
 
+        self.push(memory, Native(self.interrupts_disabled as u64));
         self.push(memory, Native(interruption));
         self.push(memory, Native(next_pc.0));
         let location = Address::from(memory.read_word(
@@ -589,11 +593,8 @@ impl Cpu {
             // Control flow
             Instruction::Halt => {
                 self.halted = true;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
-            Instruction::Nop => Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                + Offset(Cpu::INSTRUCTION_SIZE as i64)),
+            Instruction::Nop => {}
 
             Instruction::Jump { condition, target } => {
                 let nil = self.registers[Cpu::NIL.0 as usize];
@@ -605,10 +606,7 @@ impl Cpu {
                 };
 
                 if should_jump {
-                    Ok(self.get_jump_addr(memory, target))
-                } else {
-                    Ok(Address::from(self.machine_reg[Cpu::PC.0 as usize])
-                        + Offset(Cpu::INSTRUCTION_SIZE as i64))
+                    return Ok(self.get_jump_addr(memory, target));
                 }
             }
 
@@ -618,12 +616,12 @@ impl Cpu {
                 let address = self.get_jump_addr(memory, target);
 
                 self.push(memory, Native::from(next_pc));
-                Ok(address)
+                return Ok(address);
             }
 
             Instruction::Return => {
                 let return_address = self.pop(memory);
-                Ok(Address::from(return_address))
+                return Ok(Address::from(return_address));
             }
 
             Instruction::MakeClosure { dst: _, code: _ } => todo!(),
@@ -646,8 +644,6 @@ impl Cpu {
                     Comparison::Lte => op1_obj <= op2_obj,
                 });
                 self.registers[dst.0 as usize] = result;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
 
             Instruction::MComparison {
@@ -667,8 +663,6 @@ impl Cpu {
                     Comparison::Lte => op1_obj.as_fixnum()? <= op2_obj.as_fixnum()?,
                 });
                 self.registers[dst.0 as usize] = result;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
 
             Instruction::Binary {
@@ -688,23 +682,22 @@ impl Cpu {
                 });
 
                 self.registers[dst.0 as usize] = result;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
 
             // Cons
             Instruction::Int(interruption) => {
                 let next_pc = Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64);
-                self.run_interrupt(memory, interruption, next_pc)
+                return self.run_interrupt(memory, interruption, next_pc);
             }
 
             Instruction::IReturn => {
                 let return_address = self.pop(memory);
 
                 let interrupt = self.pop(memory);
+                let interrupt_disabled = self.pop(memory);
                 match interrupt.0 {
-                    3 => {
+                    0x03 => {
                         let cdr = self.pop(memory);
                         let car = self.pop(memory);
                         memory.write_word(
@@ -719,8 +712,8 @@ impl Cpu {
                     }
                     _ => {}
                 }
-                self.interrupts_disabled = false;
-                Ok(Address::from(return_address))
+                self.interrupts_disabled = interrupt_disabled.0 != 0;
+                return Ok(Address::from(return_address));
             }
 
             Instruction::Car(TwoRegs { dst, src }) => {
@@ -728,16 +721,12 @@ impl Cpu {
 
                 self.registers[dst.0 as usize] =
                     Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET)?;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::Cdr(TwoRegs { dst, src }) => {
                 let src_obj = self.registers[src.0 as usize].ensure(WordType::Cons)?;
 
                 self.registers[dst.0 as usize] =
                     Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET)?;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::SetCar(TwoRegs { dst, src }) => {
                 let dst_obj = self.registers[dst.0 as usize].ensure(WordType::Cons)?;
@@ -747,8 +736,6 @@ impl Cpu {
                     Address(dst_obj.payload()) + ConsLayout::CAR_OFFSET,
                     val_obj.into(),
                 );
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::SetCdr(TwoRegs { dst, src }) => {
                 let dst_obj = self.registers[dst.0 as usize].ensure(WordType::Cons)?;
@@ -758,8 +745,6 @@ impl Cpu {
                     Address(dst_obj.payload()) + ConsLayout::CDR_OFFSET,
                     val_obj.into(),
                 );
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::Uncons { car, cdr, src } => {
                 let src_obj = self.registers[src.0 as usize].ensure(WordType::Cons)?;
@@ -768,8 +753,6 @@ impl Cpu {
                     Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET)?;
                 self.registers[cdr.0 as usize] =
                     Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET)?;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
 
             Instruction::IDiv {
@@ -782,31 +765,21 @@ impl Cpu {
                 // TODO: When fetching numbers, extend the sign bit.
                 self.registers[div.0 as usize] = LispWord::fixnum(op1_obj / op2_obj);
                 self.registers[rem.0 as usize] = LispWord::fixnum(op1_obj % op2_obj);
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
 
             Instruction::PopR { dst } => {
                 let result = self.pop_word(memory)?;
                 self.registers[dst.0 as usize] = result;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::PushR { src } => {
                 self.push(memory, self.registers[src.0 as usize].into());
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::PopA { dst } => {
                 let result = self.pop(memory);
                 self.machine_reg[dst.0 as usize] = result;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::PushA { src } => {
                 self.push(memory, self.machine_reg[src.0 as usize]);
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
 
             Instruction::MBinary {
@@ -821,35 +794,25 @@ impl Cpu {
                     MBinaryOp::Sub => val1 - val2,
                 };
                 self.machine_reg[dst.0 as usize] = result;
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::GetPayload { dst, src } => {
                 self.machine_reg[dst.0 as usize] = Native(self.registers[src.0 as usize].payload());
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::GetTag { src, dst } => {
                 self.machine_reg[dst.0 as usize] =
                     Native(self.registers[src.0 as usize].tag() as u64);
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::SetPayload { dst, src } => {
                 self.registers[dst.0 as usize] = LispWord::new(
                     self.registers[dst.0 as usize].tag(),
                     self.machine_reg[src.0 as usize].0,
                 );
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::SetTag { src, dst } => {
                 self.registers[dst.0 as usize] = LispWord::new(
                     self.machine_reg[src.0 as usize].0 as u8,
                     self.registers[dst.0 as usize].payload(),
                 );
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::Mov8 { dst, src } => {
                 let value = self.read_location(memory, src).0 as u8;
@@ -869,8 +832,6 @@ impl Cpu {
                         return Err(Trap::InvalidInstruction);
                     }
                 }
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::Mov { dst, src } => {
                 let value = self.read_location(memory, src);
@@ -889,8 +850,6 @@ impl Cpu {
                         memory.write_word(Address(self.registers[r as usize].payload()), value)
                     }
                 }
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             Instruction::MemCpy { dst, src, count } => {
                 let srcadd = self.machine_reg[src.0 as usize];
@@ -901,8 +860,6 @@ impl Cpu {
                         memory.read_byte(Address::from(srcadd) + Offset(i as i64)),
                     )
                 }
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
             // Instruction::MemSet { dst, src, count } => {
             //     let srcadd = self.machine_reg[src.0 as usize];
@@ -920,10 +877,16 @@ impl Cpu {
                 let src_obj = self.registers[src.0 as usize];
                 self.registers[dst.0 as usize] =
                     self.to_machine_bool(src_obj.tag() as u64 == compare.0);
-                Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
-        }
+            Instruction::DisableInterrupts => {
+                self.interrupts_disabled = true;
+            }
+            Instruction::EnableInterrupts => {
+                self.interrupts_disabled = true;
+            }
+        };
+
+        Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0) + Offset(Cpu::INSTRUCTION_SIZE as i64))
     }
 
     pub fn step(&mut self, memory: &mut Bus) -> Result<(), Trap> {

@@ -270,6 +270,8 @@ enum Opcode {
     Return,
     Typep,
     MemCpy,
+    DisableInterrupts,
+    EnableInterrupts,
 }
 
 // TODO: Find a real encoding/decoding.
@@ -433,6 +435,8 @@ impl Instruction {
                 src: MachineRegister::decode(r1)?,
                 count: Count(hi),
             }),
+            Opcode::DisableInterrupts => Ok(Instruction::DisableInterrupts),
+            Opcode::EnableInterrupts => Ok(Instruction::EnableInterrupts),
         }
     }
 
@@ -750,6 +754,14 @@ impl Instruction {
                     0,
                 ]),
                 compare.0,
+            ),
+            Instruction::DisableInterrupts => (
+                u64::from_le_bytes([Opcode::DisableInterrupts.into(), 0, 0, 0, 0, 0, 0, 0]),
+                0,
+            ),
+            Instruction::EnableInterrupts => (
+                u64::from_le_bytes([Opcode::EnableInterrupts.into(), 0, 0, 0, 0, 0, 0, 0]),
+                0,
             ),
         })
     }

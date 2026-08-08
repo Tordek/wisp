@@ -18,22 +18,26 @@
     symbol_str: .str "symbol"
     cons_str: .str "cons"
     fixnum_str: .str "fixnum"
+    quote_str: .str "quote"
     nil_symbol:
         .w #$'nil_str
-        .w 'nil
+        .w #!'nil_symbol
     t_symbol:
         .w #$'t_str
-        .w 'nil
+        .w #!'nil_symbol
+    quote_symbol:
+        .w #$'quote_str
+        .w #!'nil_symbol
     trap_str: .str "You broke the computer!"
 ;     symbol_symbol:
 ;         .w 'symbol_str
-;         .w 'nil
+;         .w #!'nil_symbol
 ;     cons_symbol:
 ;         .w 'cons_str
-;         .w 'nil
+;         .w #!'nil_symbol
 ;     fixnum_symbol:
 ;         .w 'fixnum_str
-;         .w 'nil 
+;         .w #!'nil_symbol
 barecons:
     .w #!'t_symbol
     .w #!'t_symbol
@@ -54,7 +58,7 @@ t_entry:
     .w #!'nil_symbol
 
 numberstr:
-    .str "1234"
+    .str "'1234"
 
 .org 0x00fffffffff19000
 bootstrap:
@@ -84,6 +88,7 @@ bootstrap:
     MOV [VBR + 1920], A1
     MOV A1, 'keyboard_interrupt
     MOV [VBR + 1928], A1
+    EI
 
     ; Hello world!
     MOV R0, #\H
@@ -271,8 +276,8 @@ alloc:
     PUSH A3
     PUSH R1
     MOV A0, ['freeptr]
-    GETPAYLOAD A2, R1    ; *freeptr  += len
-    ADD A3, A0, A2
+    GETPAYLOAD A2, R0    ; *freeptr  += len
+    ADD A3, A0, A2 ; todo: Align
     MOV ['freeptr], A3
     POP R1
     POP A3
@@ -534,6 +539,8 @@ read_string:
     GETPAYLOAD A3, R1 ; skip first n
     ADD A0, A0, A3
 
+; Expects stringbuf in A0, start in R1, len in R2
+  read_stringslice: 
     ; peek
     MOV8 A1, [A0]
 
@@ -634,6 +641,13 @@ read_number:
     RETURN
 
 read_quote:
+    CALL 'read_string_next_char ; Skip '
+    CALL 'read_stringslice
+    MOV R1, ['nil]
+    CONS
+    MOV R1, R0
+    MOV R0, #!'quote_symbol
+    CONS
     RETURN
 
 read_list:
