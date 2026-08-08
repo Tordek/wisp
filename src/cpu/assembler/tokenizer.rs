@@ -154,8 +154,8 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
             label,
             bang,
             literal,
-            raw_string,
             raw_char,
+            raw_string,
             reference,
             directive,
             number,
@@ -175,6 +175,7 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     .parse(input)
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum TokenizeError<'a> {
     UnexpectedInput { remaining: &'a str },

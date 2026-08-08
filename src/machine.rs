@@ -8,6 +8,7 @@ use crate::{
 
 const BIOS_ASM: &str = include_str!("bios.asm");
 
+#[allow(dead_code)]
 #[derive(Debug)]
 enum FirmwareError<'a> {
     AssemblerError(assembler::AssemblerError<'a>),
@@ -82,8 +83,10 @@ pub struct WispMachine<'a> {
     pub bus: Bus<'a>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug)]
 pub enum WispMachineError {
-    SetupError,
+    SetupError(String),
 }
 
 impl<'a> WispMachine<'a> {
@@ -99,7 +102,8 @@ impl<'a> WispMachine<'a> {
         let mut bus = Bus::new();
         let cpu = cpu::Cpu::default();
         let ram = Memory::new(2 << 20);
-        let firmware = Firmware::make_firmware().map_err(|_| WispMachineError::SetupError)?;
+        let firmware = Firmware::make_firmware()
+            .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;
 
         bus.install(0x00000000..0xffffffff, Box::new(ram))
             .expect("install");

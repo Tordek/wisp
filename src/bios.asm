@@ -34,24 +34,24 @@
 ;     fixnum_symbol:
 ;         .w 'fixnum_str
 ;         .w 'nil 
-; symbol_table:
-;     .w 'nil
-;     .w #['fixnum_entry
+barecons:
+    .w #!'t_symbol
+    .w #!'t_symbol
+list:
+    .w #!'nil_symbol
+    .w #['fixnum_entry
 
-; fixnum_entry:
-;     .w 'fixnum
-;     .w #['symbol_entry
+fixnum_entry:
+    .w #$'fixnum_str
+    .w #['symbol_entry
 
-; symbol_entry:
-;     .w 'symbol
-;     .w #['cons_entry
+symbol_entry:
+    .w #$'symbol_str
+    .w #['t_entry
 
-; cons_entry:
-;     .w 'cons
-;     .w #['t_entry
-; t_entry:
-;     .w 't
-;     .w 'nil
+t_entry:
+    .w #!'t_symbol
+    .w #!'nil_symbol
 
 numberstr:
     .str "1234"
@@ -143,15 +143,23 @@ bootstrap:
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
-    MOV R0, #0
+    MOV R0, #0 ;number zero
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
-    MOV R0, #123
+    MOV R0, #123 ; number 123
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
-    MOV R0, #$'fixnum_str
+    MOV R0, #$'fixnum_str ; string fixnum
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+    MOV R0, #['barecons ; a simple cons
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+    MOV R0, #['list ; list
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
@@ -235,7 +243,6 @@ savecursor:
     ADD R2, R4, R3
     MOV ['cursorpos], R2
 
-
     POP R5
     POP R4
     POP R3
@@ -247,6 +254,7 @@ savecursor:
     POP A0
     IRETURN
 
+; On keypress, adds the key to the circular buffer.
 keyboard_interrupt:
     PUSH A0
     PUSH R0
@@ -279,7 +287,6 @@ print:
 print_notsym:
     TYPEP R1, R0, 'fixnumtag ; Tag == fixnum?
     JUMPIFNOT R1, 'print_notfixnum
-    GETPAYLOAD A0, R0
     CALL 'print_number
     JUMP 'print_end
 print_notfixnum:
@@ -287,8 +294,12 @@ print_notfixnum:
     JUMPIFNOT R1, 'print_notstring
     CALL 'print_string
     JUMP 'print_end
-
 print_notstring:
+    TYPEP R1, R0, 'constag ; Tag == cons?
+    JUMPIFNOT R1, 'print_notcons
+    CALL 'print_cons
+    JUMP 'print_end
+print_notcons:
     CALL 'print_arbitrary
 print_end:
     RETURN
@@ -296,35 +307,53 @@ print_end:
 print_symbol:
     GETPAYLOAD A0, R0 ; Read payload (pointer to symbol table)
     MOV R0, [A0] ; Read first element of symbol (pointer to name)
-    TYPEP R1, R0, 'stringtag ; Tag == string?
-    JUMPIFNOT R1, 'print_arbitrary
-    CALL 'print_string
+    GETPAYLOAD A0, R0
+    MOV R0, [A0] ; Take string length
+    ADD A0, A0, 8
+    CALL 'print_stringslice
     RETURN
 
-print_string: ; Prints the string at A0
+print_string: ; Prints the string at R0
+    PUSH R0
+    MOV R0, #\"
+    MOV R1, 0x07
+    INT 0xf0
+    POP R0
     GETPAYLOAD A0, R0
     MOV R0, [A0] ; Get length
     ADD A0, A0, 8 ; Skip header
     CALL 'print_stringslice
+    MOV R0, #\"
+    INT 0xf0
     RETURN
 
-; TODO
 ; Takes a fixnum in r0.
 print_number:
+    ; A0: points to characters
+    ; R0: points to length
+    MOV A0, SP ; Pointer to string
+    SUB SP, SP, 24
+    MOV R4, #0 ; String slice length
+  print_number_loop:
+    SUB A0, A0, 1
+    ADD R4, R4, #1
+    DIV R0, R3, R0, #10 ; Take R0 /= 10, R3 = R0 % 10
+    GETPAYLOAD A3, R3
+    ADD A3, A3, \0      ; char + '0'
+    MOV8 [A0], A3       ; Put char
     EQ R1, R0, #0 ; zerop
+    JUMPIFNOT R1, 'print_number_loop
+  print_number_loop_end:
+    MOV R0, R4
+    EQ R1, R0, #0 ; len = 0?
     JUMPIFNOT R1, 'print_number_nonzero
     MOV R1, 0x07
     MOV R0, #\0
     INT 0xf0
     RETURN
   print_number_nonzero:
-    ; ...build number string
-    ; A0: points to head of string
-    ; R0: points to length
-    ; CALL 'print_string
-    MOV R1, 0x07
-    MOV R0, #\0
-    INT 0xf0
+    CALL 'print_stringslice
+    ADD SP, SP, 24
     RETURN
 
 ; takes an unknown word in r0
@@ -339,7 +368,9 @@ print_arbitrary:
     MOV R0, #0
     GETTAG A0, R4
     SETPAYLOAD R0, A0
+    PUSH R4
     CALL 'print
+    POP R4
     MOV R1, #0x07
     MOV R0, #\:
     INT 0xf0
@@ -352,20 +383,58 @@ print_arbitrary:
     INT 0xf0
     RETURN
 
+print_cons:
+    PUSH R0
+    MOV R0, #\(
+    MOV R1, 0x07
+    INT 0xf0
+    POP R0
+  print_cons_next:
+    PUSH R0
+    CAR R0, R0
+    CALL 'print
+    POP R0
+    CDR R0, R0
+    EQ R1, R0, #!'nil_symbol
+    JUMPIF R1, 'print_cons_end
+
+    PUSH R0
+    MOV R0, #\Space
+    MOV R1, 0x07
+    INT 0xf0
+    POP R0
+
+    TYPEP R1, R0, 'constag ; if cons?
+    JUMPIF R1, 'print_cons_next
+    ; 
+
+    PUSH R0
+    MOV R0, #\.
+    MOV R1, 0x07
+    INT 0xf0
+    MOV R0, #\Space
+    MOV R1, 0x07
+    INT 0xf0
+    POP R0
+    CALL 'print
+  print_cons_end:
+    MOV R0, #\)
+    MOV R1, 0x07
+    INT 0xf0
+    RETURN
+
 ; Expects Length in R0, Data in [A0]
 print_stringslice:
-    MOV R1, #0x07
   print_stringslice_loop:
     LTE R4, R0, #0
     JUMPIFNOT R4, 'print_stringslice_loop_continue
     RETURN
   print_stringslice_loop_continue:
-    MOV A3, 6
     PUSH R0
-    SETTAG R0, A3 ; Make char
     MOV8 A1, [A0]
-    ADD A0, A0, 1
+    MOV R0, #\0
     SETPAYLOAD R0, A1
+    ADD A0, A0, 1
     MOV R1, 0x07
     INT 0xf0
     POP R0

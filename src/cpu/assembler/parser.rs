@@ -123,6 +123,7 @@ pub enum AssemblyLine<'input> {
     Label(&'input str),
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ParserError<'input> {
     Expected {
@@ -286,12 +287,6 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     fn try_string(&mut self) -> Option<&'input str> {
         self.consume_if(|reference| match reference {
             AssemblyToken::String(s) => Some(*s),
-            _ => None,
-        })
-    }
-    fn try_bang(&mut self) -> Option<()> {
-        self.consume_if(|reference| match reference {
-            AssemblyToken::Bang => Some(()),
             _ => None,
         })
     }

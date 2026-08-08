@@ -10,7 +10,8 @@ use std::time::Instant;
 use sdl2;
 
 fn main() -> Result<(), String> {
-    let mut machine = machine::WispMachine::new().map_err(|_| "Error making machine")?;
+    let mut machine =
+        machine::WispMachine::new().map_err(|e| format!("Error making machine: {:?}", e))?;
 
     let sdl_context = sdl2::init()?;
 

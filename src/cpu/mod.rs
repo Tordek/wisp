@@ -65,45 +65,45 @@ pub enum WordType {
 pub struct LispWord(u64);
 
 impl LispWord {
-    pub fn undefined() -> LispWord {
-        LispWord::new(WordType::Undefined, 0)
+    pub const fn undefined() -> LispWord {
+        LispWord::new(WordType::Undefined as u8, 0)
     }
 
-    pub fn tag(&self) -> WordType {
-        WordType::try_from((self.0 >> 56) as u8).unwrap()
+    pub fn tag(&self) -> u8 {
+        (self.0 >> 56) as u8
     }
 
     pub const fn payload(&self) -> u64 {
         self.0 & 0x00ff_ffff_ffff_ffff
     }
 
-    pub const fn new(tag: WordType, payload: WordSize) -> Self {
-        Self(((tag as u8) as u64) << 56 | (payload & 0x00ff_ffff_ffff_ffff))
+    pub const fn new(tag: u8, payload: WordSize) -> Self {
+        Self((tag as u64) << 56 | (payload & 0x00ff_ffff_ffff_ffff))
     }
 
     // Convenience methods
     pub const fn symbol(value: WordSize) -> Self {
-        Self::new(WordType::Symbol, value)
+        Self::new(WordType::Symbol as u8, value)
     }
 
     pub const fn fixnum(value: WordSize) -> Self {
-        Self::new(WordType::Fixnum, value)
+        Self::new(WordType::Fixnum as u8, value)
     }
 
     pub const fn cons(address: WordSize) -> Self {
-        Self::new(WordType::Cons, address)
+        Self::new(WordType::Cons as u8, address)
     }
 
     pub const fn char(address: WordSize) -> Self {
-        Self::new(WordType::Character, address & 0xff)
+        Self::new(WordType::Character as u8, address & 0xff)
     }
 
     pub const fn string(address: WordSize) -> Self {
-        Self::new(WordType::String, address)
+        Self::new(WordType::String as u8, address)
     }
 
     fn ensure(self, word_type: WordType) -> Result<Self, Trap> {
-        if self.tag() == word_type {
+        if self.tag() == word_type as u8 {
             Ok(self)
         } else {
             Err(Trap::TypeError)
@@ -422,7 +422,6 @@ pub enum Instruction {
 
 impl Cpu {
     pub fn reset(&mut self, bus: &Bus) {
-        dbg!(MemoryLayout::RESET_VECTOR);
         self.machine_reg[Cpu::PC.0 as usize] = bus.read_word(MemoryLayout::RESET_VECTOR);
         self.registers[Cpu::T.0 as usize] = LispWord(bus.read_word(MemoryLayout::T_ROOT).0);
         self.registers[Cpu::NIL.0 as usize] = LispWord(bus.read_word(MemoryLayout::NIL_ROOT).0);
@@ -483,7 +482,7 @@ impl Cpu {
         off: Option<LispWord>,
     ) -> LispWord {
         let mut add = 0;
-        let mut tag = WordType::Fixnum;
+        let mut tag = 0;
         if let Some(reg) = base {
             let op = self.registers[reg.0 as usize];
             add += op.payload();
@@ -534,8 +533,8 @@ impl Cpu {
                 self.push(memory, self.registers[0_usize].into());
                 self.push(memory, self.registers[1_usize].into());
                 // CONS takes its params as R0 and R1
-                self.registers[0_usize] = LispWord::new(WordType::Fixnum, 16); // Size: 2
-                self.registers[1_usize] = LispWord::new(WordType::Fixnum, 2);
+                self.registers[0_usize] = LispWord::new(WordType::Fixnum.into(), 16); // Size: 2
+                self.registers[1_usize] = LispWord::new(WordType::Fixnum.into(), 2);
                 // Type: Int
             }
             _ => (),
@@ -846,8 +845,7 @@ impl Cpu {
             }
             Instruction::SetTag { src, dst } => {
                 self.registers[dst.0 as usize] = LispWord::new(
-                    WordType::try_from(self.machine_reg[src.0 as usize].0 as u8)
-                        .map_err(|_| Trap::TypeError)?,
+                    self.machine_reg[src.0 as usize].0 as u8,
                     self.registers[dst.0 as usize].payload(),
                 );
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
@@ -921,7 +919,7 @@ impl Cpu {
             Instruction::Typep { dst, src, compare } => {
                 let src_obj = self.registers[src.0 as usize];
                 self.registers[dst.0 as usize] =
-                    self.to_machine_bool(src_obj.tag() as u8 as u64 == compare.0);
+                    self.to_machine_bool(src_obj.tag() as u64 == compare.0);
                 Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0)
                     + Offset(Cpu::INSTRUCTION_SIZE as i64))
             }
@@ -963,7 +961,7 @@ impl Cpu {
             Ok(()) => {}
             Err(trap) => {
                 self.machine_reg[0_usize] = self.machine_reg[Cpu::PC.0 as usize];
-                self.registers[0_usize] = LispWord::new(WordType::Fixnum, trap as WordSize);
+                self.registers[0_usize] = LispWord::new(WordType::Fixnum.into(), trap as WordSize);
                 self.machine_reg[Cpu::PC.0 as usize] = memory.read_word(
                     Address::from(self.machine_reg[Cpu::VBR.0 as usize])
                         + InterruptTableOffset::TRAP_VECTOR,

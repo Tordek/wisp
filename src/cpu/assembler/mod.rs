@@ -14,6 +14,7 @@ use crate::{
     },
 };
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum AssemblerError<'a> {
     InvalidInstruction,
