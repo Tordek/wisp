@@ -167,9 +167,10 @@ bootstrap:
     ; MOV R0, #0
     ; ADD R0, R0, #!0
 ; --- String-reader
-    ; MOV R0, #$'numberstr
-    ; CALL 'read_string
-    ; CALL 'print
+    MOV R0, #$'numberstr
+    MOV R1, #0
+    CALL 'read_string
+    CALL 'print
 
 loop:
     CALL 'repl
@@ -279,34 +280,31 @@ alloc:
     POP A1
     IRETURN
 
+;;;
+;;; Print
+;;;
 print:
     TYPEP R1, R0, 'symboltag ; Tag == symbol?
     JUMPIFNOT R1, 'print_notsym
-    CALL 'print_symbol
-    JUMP 'print_end
+    JUMP 'print_symbol
 print_notsym:
     TYPEP R1, R0, 'fixnumtag ; Tag == fixnum?
     JUMPIFNOT R1, 'print_notfixnum
-    CALL 'print_number
-    JUMP 'print_end
+    JUMP 'print_number
 print_notfixnum:
     TYPEP R1, R0, 'stringtag ; Tag == string?
     JUMPIFNOT R1, 'print_notstring
-    CALL 'print_string
-    JUMP 'print_end
+    JUMP 'print_string
 print_notstring:
     TYPEP R1, R0, 'constag ; Tag == cons?
     JUMPIFNOT R1, 'print_notcons
-    CALL 'print_cons
-    JUMP 'print_end
+    JUMP 'print_cons
 print_notcons:
-    CALL 'print_arbitrary
-print_end:
-    RETURN
+    JUMP 'print_arbitrary
 
 print_symbol:
-    GETPAYLOAD A0, R0 ; Read payload (pointer to symbol table)
-    MOV R0, [A0] ; Read first element of symbol (pointer to name)
+    GETPAYLOAD A0, R0 ; Read pointer to symbol table
+    MOV R0, [A0] ; Read pointer to name
     GETPAYLOAD A0, R0
     MOV R0, [A0] ; Take string length
     ADD A0, A0, 8
@@ -343,15 +341,7 @@ print_number:
     MOV8 [A0], A3       ; Put char
     EQ R1, R0, #0 ; zerop
     JUMPIFNOT R1, 'print_number_loop
-  print_number_loop_end:
     MOV R0, R4
-    EQ R1, R0, #0 ; len = 0?
-    JUMPIFNOT R1, 'print_number_nonzero
-    MOV R1, 0x07
-    MOV R0, #\0
-    INT 0xf0
-    RETURN
-  print_number_nonzero:
     CALL 'print_stringslice
     ADD SP, SP, 24
     RETURN
@@ -365,19 +355,23 @@ print_arbitrary:
     MOV R1, #0x07
     MOV R0, #\<
     INT 0xf0
+
     MOV R0, #0
     GETTAG A0, R4
     SETPAYLOAD R0, A0
     PUSH R4
     CALL 'print
     POP R4
+
     MOV R1, #0x07
     MOV R0, #\:
     INT 0xf0
+
     MOV R0, #0
     GETPAYLOAD A0, R4
     SETPAYLOAD R0, A0
     CALL 'print
+
     MOV R1, #0x07
     MOV R0, #\>
     INT 0xf0
@@ -442,12 +436,12 @@ print_stringslice:
     JUMP 'print_stringslice_loop
   
 trap:
-    MOV R1, 0x70
+    ; MOV R1, 0x70
     ; MOV R0, #$'trap_str
-    CALL 'print
+    ; CALL 'print
   trap_loop:
     HALT
-    ; JUMP 'trap_loop
+    JUMP 'trap_loop
 
 ; Puts A0 into the keyboard circular buffer.
 ; Traps if full.
@@ -521,10 +515,10 @@ repl:
 
 ; (read-string "string" 0)
 ; Receives a String in R0, returns some lisp object in R0.
-; Returns offset to start from in R1, end of read symbol in R1
+; Takes offset to start from in R1, end of read symbol in R1
 ; As helpers: R2 contains remaining characters, A0 the char being read
 read_string:
-    TYPEP R2, R0, 2       ; is string?
+    TYPEP R2, R0, 'stringtag       ; is string?
     JUMPIF R2, 'read_is_string
     MOV R7, #0            ; if not, return nothing
     RETURN
@@ -537,32 +531,30 @@ read_string:
 
 
     ADD A0, A0, 8 ; Skip header
-    GETPAYLOAD A4, R1 ; skip first n
-    ADD A0, A0, A4
+    GETPAYLOAD A3, R1 ; skip first n
+    ADD A0, A0, A3
 
     ; peek
-    MOV8 A2, [A0]
+    MOV8 A1, [A0]
 
-    EQ R3, A2, \' ; Quote?
+    EQ R3, A1, \' ; Quote?
     JUMPIFNOT R3, 'read_notquote
-    CALL 'read_quote
-    RETURN
+    JUMP 'read_quote
 
   read_notquote:
-    EQ R2, A2, \( ; List?
-    CALL 'read_list
-    RETURN
+    EQ R3, A1, \( ; List?
+    JUMPIFNOT R3, 'read_notlist
+    JUMP 'read_list
 
   read_notlist:
-    LT R3, A2, \0
+    LT R3, A1, \0
     JUMPIF R3, 'read_notnumber
-    GT R3, A2, \9
+    GT R3, A1, \9
     JUMPIF R3, 'read_notnumber ; Number?
-    CALL 'read_number
-    RETURN
+    JUMP 'read_number
 
   read_notnumber:
-    CALL 'read_symbol ; Symbol?
+;     CALL 'read_symbol ; Symbol?
     RETURN
 
 
@@ -582,12 +574,12 @@ read_string_next_char:
     ADD A0, A0, 1
     ADD R1, R1, #1
     SUB R2, R2, #1
-    LTE R3, R2, 0
-    JUMPIFNOT R3, 'more
-    MOV A1, 0xffff
-    RETURN
-more:
+    LTE R3, R2, #0
+    JUMPIF R3, 'read_string_next_char_eof
     MOV8 A1, [A0]
+    RETURN
+read_string_next_char_eof:
+    MOV A1, 0xffff
     RETURN
 
 ; Expects:
@@ -626,14 +618,17 @@ done:
 read_number:
     MOV R0, #0
   read_number_loop:
-    LT R3, A2, \0
+    LT R3, A1, \0
     JUMPIF R3, 'rnnotnumber
-    GT R3, A2, \9
+    GT R3, A1, \9
     JUMPIF R3, 'rnnotnumber ; Number?
 
+    MUL R0, R0, #10
     MOV R4, #0
     SETPAYLOAD R4, A1
-    SUB R4, R4, #0
+    SUB R4, R4, #0x30
+    ADD R0, R0, R4
+    CALL 'read_string_next_char
     JUMP 'read_number_loop
   rnnotnumber:
     RETURN
