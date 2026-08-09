@@ -644,10 +644,9 @@ read_quote:
     CALL 'read_string_next_char ; Skip '
     CALL 'read_stringslice
     MOV R1, ['nil]
-    CONS
-    MOV R1, R0
+    CONS R1, R0, R1
     MOV R0, #!'quote_symbol
-    CONS
+    CONS R0, R0, R1
     RETURN
 
 read_list:

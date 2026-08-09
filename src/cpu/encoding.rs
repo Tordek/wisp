@@ -246,6 +246,7 @@ enum Opcode {
     GetTag,
     SetPayload,
     GetPayload,
+    Cons,
     Uncons,
     Car,
     Cdr,
@@ -362,6 +363,11 @@ impl Instruction {
             Opcode::Cdr => Ok(Self::Cdr(TwoRegs::decode(r0, r1))),
             Opcode::SetCar => Ok(Self::SetCar(TwoRegs::decode(r0, r1))),
             Opcode::SetCdr => Ok(Self::SetCdr(TwoRegs::decode(r0, r1))),
+            Opcode::Cons => Ok(Self::Cons {
+                dst: Register::decode(r0)?,
+                car: Register::decode(r1)?,
+                cdr: Register::decode(r2)?,
+            }),
             Opcode::Uncons => Ok(Self::Uncons {
                 car: Register::decode(r0)?,
                 cdr: Register::decode(r1)?,
@@ -606,6 +612,19 @@ impl Instruction {
             Instruction::Cdr(regs) => Self::encode_two_regs(Opcode::Cdr, regs),
             Instruction::SetCar(regs) => Self::encode_two_regs(Opcode::SetCar, regs),
             Instruction::SetCdr(regs) => Self::encode_two_regs(Opcode::SetCdr, regs),
+            Instruction::Cons { dst, car, cdr } => (
+                u64::from_le_bytes([
+                    Opcode::Cons.into(),
+                    dst.encode(),
+                    car.encode(),
+                    cdr.encode(),
+                    0,
+                    0,
+                    0,
+                    0,
+                ]),
+                0,
+            ),
             Instruction::Uncons { car, cdr, src } => (
                 u64::from_le_bytes([
                     Opcode::Uncons.into(),

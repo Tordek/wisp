@@ -4,7 +4,7 @@ use nom::{
     bytes::complete::{tag, take_until},
     character::{
         anychar,
-        complete::{alpha1, alphanumeric1, digit1, hex_digit1, multispace0, space0},
+        complete::{alpha1, alphanumeric1, digit1, hex_digit1, multispace0, satisfy, space0},
     },
     combinator::{recognize, value},
     multi::{many0, many0_count},
@@ -117,9 +117,16 @@ fn reference(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::Quote, tag("'")).parse(input)
 }
 fn raw_string(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    delimited(tag("\""), recognize(take_until("\"")), tag("\""))
-        .map(AssemblyToken::String)
-        .parse(input)
+    delimited(
+        tag("\""),
+        recognize(many0(alt((
+            satisfy(|c| c != '\\' && c != '"'),
+            preceded(satisfy(|c| c == '\\'), anychar),
+        )))),
+        tag("\""),
+    )
+    .map(AssemblyToken::String)
+    .parse(input)
 }
 
 fn cash(input: &str) -> IResult<&str, AssemblyToken<'_>> {

@@ -66,7 +66,7 @@ pub struct LispWord(u64);
 
 impl LispWord {
     pub const fn undefined() -> LispWord {
-        LispWord::new(WordType::Undefined as u8, 0)
+        Self::new(WordType::Undefined as u8, 0)
     }
 
     pub fn tag(&self) -> u8 {
@@ -149,6 +149,7 @@ pub struct Cpu {
 
     pub halted: bool,
     interrupts_disabled: bool,
+    handling_cons: bool,
 }
 
 impl Cpu {
@@ -162,9 +163,8 @@ impl Cpu {
     pub const INSTRUCTION_SIZE: u64 = 2 * Self::WORD_SIZE;
 
     pub fn interrupt(&mut self, int: u64) {
-        if !self.interrupts_disabled {
+        if !self.pending_interrupt.is_none() {
             self.pending_interrupt = Some(int);
-            self.interrupts_disabled = true;
         }
     }
 }
@@ -177,6 +177,7 @@ impl Default for Cpu {
             halted: false,
             pending_interrupt: None,
             interrupts_disabled: false,
+            handling_cons: false,
         }
     }
 }
@@ -354,10 +355,11 @@ pub enum Instruction {
     DisableInterrupts,
 
     // Higher level
-    // Cons { -- CONS does not exist - it is only an alias for INT 0x03
-    //     car: Register,
-    //     cdr: Register,
-    // },
+    Cons {
+        dst: Register,
+        car: Register,
+        cdr: Register,
+    },
     /// Optimization for destructuring both parts of a cons.
     Uncons {
         car: Register,
@@ -530,22 +532,13 @@ impl Cpu {
         next_pc: Address,
     ) -> Result<Address, Trap> {
         self.pending_interrupt = None;
-        match interruption {
-            0x03 => {
-                self.push(memory, self.registers[0_usize].into());
-                self.push(memory, self.registers[1_usize].into());
-                // CONS takes its params as R0 and R1
-                self.registers[0_usize] = LispWord::new(WordType::Fixnum.into(), 16); // Size: 2
-                self.registers[1_usize] =
-                    LispWord::new(WordType::Fixnum.into(), WordType::Cons as u8 as u64);
-                // Type: Int
-            }
-            _ => (),
-        }
-
+        // TODO: This should be one Status register
         self.push(memory, Native(self.interrupts_disabled as u64));
+        self.push(memory, Native(self.handling_cons as u64));
         self.push(memory, Native(interruption));
         self.push(memory, Native(next_pc.0));
+        self.interrupts_disabled = true;
+        self.handling_cons = false;
         let location = Address::from(memory.read_word(
             Address::from(self.machine_reg[Cpu::VBR.0 as usize])
                 + Offset(interruption as i64 * Self::WORD_SIZE as i64),
@@ -589,6 +582,8 @@ impl Cpu {
     }
 
     fn execute(&mut self, instruction: Instruction, memory: &mut Bus) -> Result<Address, Trap> {
+        let next_pc =
+            Address(self.machine_reg[Cpu::PC.0 as usize].0) + Offset(Cpu::INSTRUCTION_SIZE as i64);
         match instruction {
             // Control flow
             Instruction::Halt => {
@@ -686,33 +681,14 @@ impl Cpu {
 
             // Cons
             Instruction::Int(interruption) => {
-                let next_pc = Address(self.machine_reg[Cpu::PC.0 as usize].0)
-                    + Offset(Cpu::INSTRUCTION_SIZE as i64);
                 return self.run_interrupt(memory, interruption, next_pc);
             }
 
             Instruction::IReturn => {
                 let return_address = self.pop(memory);
-
-                let interrupt = self.pop(memory);
-                let interrupt_disabled = self.pop(memory);
-                match interrupt.0 {
-                    0x03 => {
-                        let cdr = self.pop(memory);
-                        let car = self.pop(memory);
-                        memory.write_word(
-                            Address::from(self.machine_reg[0_usize]) + ConsLayout::CAR_OFFSET,
-                            car,
-                        );
-                        memory.write_word(
-                            Address::from(self.machine_reg[0_usize]) + ConsLayout::CDR_OFFSET,
-                            cdr,
-                        );
-                        self.registers[0] = LispWord::cons(self.machine_reg[0_usize].0 as WordSize);
-                    }
-                    _ => {}
-                }
-                self.interrupts_disabled = interrupt_disabled.0 != 0;
+                let _interrupt = self.pop(memory);
+                self.handling_cons = self.pop(memory).0 != 0;
+                self.interrupts_disabled = self.pop(memory).0 != 0;
                 return Ok(Address::from(return_address));
             }
 
@@ -746,6 +722,33 @@ impl Cpu {
                     val_obj.into(),
                 );
             }
+            Instruction::Cons { dst, car, cdr } => {
+                if self.handling_cons {
+                    self.handling_cons = false;
+                    let cdr = self.pop(memory);
+                    let car = self.pop(memory);
+                    let dst = self.pop(memory);
+                    let cons_addr = Address::from(self.machine_reg[0_usize]);
+                    memory.write_word(cons_addr + ConsLayout::CAR_OFFSET, car);
+                    memory.write_word(cons_addr + ConsLayout::CDR_OFFSET, cdr);
+                    self.registers[dst.0 as usize] = LispWord::cons(cons_addr.0);
+                } else {
+                    self.handling_cons = true;
+                    self.push(memory, Native(dst.0 as u64));
+                    self.push(memory, self.registers[car.0 as usize].into());
+                    self.push(memory, self.registers[cdr.0 as usize].into());
+                    // ALLOC takes its params as R0 and R1
+                    self.registers[0_usize] = LispWord::fixnum(16); // Size: 2
+                    self.registers[1_usize] = LispWord::fixnum(WordType::Cons as u8 as u64);
+                    // Type: Int
+                    return self.run_interrupt(
+                        memory,
+                        0x03,
+                        Address::from(self.machine_reg[Self::PC.0 as usize]),
+                    ); // Come back.
+                }
+            }
+
             Instruction::Uncons { car, cdr, src } => {
                 let src_obj = self.registers[src.0 as usize].ensure(WordType::Cons)?;
 
@@ -886,7 +889,7 @@ impl Cpu {
             }
         };
 
-        Ok(Address(self.machine_reg[Cpu::PC.0 as usize].0) + Offset(Cpu::INSTRUCTION_SIZE as i64))
+        Ok(next_pc)
     }
 
     pub fn step(&mut self, memory: &mut Bus) -> Result<(), Trap> {
@@ -924,7 +927,7 @@ impl Cpu {
             Ok(()) => {}
             Err(trap) => {
                 self.machine_reg[0_usize] = self.machine_reg[Cpu::PC.0 as usize];
-                self.registers[0_usize] = LispWord::new(WordType::Fixnum.into(), trap as WordSize);
+                self.registers[0_usize] = LispWord::fixnum(trap as WordSize);
                 self.machine_reg[Cpu::PC.0 as usize] = memory.read_word(
                     Address::from(self.machine_reg[Cpu::VBR.0 as usize])
                         + InterruptTableOffset::TRAP_VECTOR,

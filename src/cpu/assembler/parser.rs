@@ -126,6 +126,10 @@ pub enum AssemblyLine<'input> {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum ParserError<'input> {
+    InvalidEscape {
+        c: char,
+        raw: &'input str,
+    },
     Expected {
         expected: &'static str,
         rest: Vec<AssemblyToken<'input>>,
@@ -145,6 +149,36 @@ pub enum ParserError<'input> {
         instruction: &'input str,
     },
     InvalidInstruction,
+}
+
+fn unescape<'input>(input: &'input str) -> Result<String, ParserError<'input>> {
+    let mut result = String::new();
+    let mut chars = input.chars();
+
+    while let Some(c) = chars.next() {
+        result.push(if c == '\\' {
+            match chars.next() {
+                Some('n') => '\n',
+                Some('r') => '\r',
+                Some('t') => '\t',
+                Some('\\') => '\\',
+                Some('"') => '"',
+                Some(c) => {
+                    return Err(ParserError::InvalidEscape { c, raw: input });
+                }
+                None => {
+                    return Err(ParserError::InvalidEscape {
+                        c: '\\',
+                        raw: input,
+                    });
+                }
+            }
+        } else {
+            c
+        })
+    }
+
+    Ok(result)
 }
 
 struct NParser<'tokens, 'input> {
@@ -413,10 +447,12 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         self.expect_directive("str")?;
         let str = self.try_string();
         let str = self.expect(str, "A string")?;
-        let lenblock = cpu::LispWord::fixnum(str.len() as u64);
+
+        let unescaped = unescape(str)?;
+        let lenblock = cpu::LispWord::fixnum(unescaped.len() as u64);
 
         let mut encoded = lenblock.0.to_le_bytes().to_vec();
-        encoded.extend(str.as_bytes().to_vec());
+        encoded.extend(unescaped.as_bytes().to_vec());
         Ok(AssemblyLine::ResolvedData(encoded))
     }
     fn parse_w(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
@@ -834,9 +870,19 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
     fn parse_cons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("CONS")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Int(
-            0x03,
-        )))
+        let dst = self.try_register();
+        let dst = self.expect(dst, "A register")?;
+        self.expect_comma()?;
+        let car = self.try_register();
+        let car = self.expect(car, "A register")?;
+        self.expect_comma()?;
+        let cdr = self.try_register();
+        let cdr = self.expect(cdr, "A register")?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Cons {
+            dst,
+            car,
+            cdr,
+        }))
     }
     fn parse_uncons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("UNCONS")?;
