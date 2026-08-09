@@ -4,6 +4,12 @@ use crate::cpu::{
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub struct RegAndOffset<'input> {
+    pub op1: Option<cpu::Register>,
+    pub op2: Option<Native<'input>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RegSource<'input> {
     pub op1: cpu::Register,
     pub op2: Option<cpu::Register>,
@@ -77,11 +83,11 @@ pub enum UnresolvedInstruction<'input> {
         dst: cpu::Register,
         operands: EitherSource<'input>,
     },
-    // MemCpy {
-    //     dst: cpu::MachineRegister,
-    //     src: cpu::MachineRegister,
-    //     count: Reference,
-    // },
+    MemCpy {
+        dst: cpu::MachineRegister,
+        src: cpu::MachineRegister,
+        count: RegAndOffset<'input>,
+    },
     // MemSet {
     //     dst: cpu::MachineRegister,
     //     src: cpu::MachineRegister,
@@ -1021,13 +1027,12 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let src = self.try_machine_register();
         let src = self.expect(src, "Register for src")?;
         self.expect_comma()?;
-        let count = self.try_number();
-        let count = self.expect(count, "Count")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::MemCpy {
+        let (op1, op2) = self.expect_r_andor_offset()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::MemCpy {
                 dst,
                 src,
-                count: cpu::Count(count as u64),
+                count: RegAndOffset { op1, op2 },
             },
         ))
     }

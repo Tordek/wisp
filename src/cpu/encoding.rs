@@ -3,8 +3,8 @@ use int_enum::IntEnum;
 use crate::{
     bus::{Address, Offset},
     cpu::{
-        self, Count, EitherSource, Instruction, LispWord, Location, MachSource, MachineRegister,
-        Native, RegSource, Register, TwoRegs,
+        self, EitherSource, Instruction, LispWord, Location, MachSource, MachineRegister, Native,
+        RegAndOff, RegSource, Register, TwoRegs,
     },
 };
 
@@ -45,7 +45,41 @@ impl MachineRegister {
     }
 }
 
+impl RegAndOff {
+    fn encode(&self) -> Result<(u8, u64), EncoderError> {
+        match (self.op1, self.off) {
+            (Some(o1), Some(off)) => Ok((o1.encode(), off.0)),
+            (Some(o1), None) => Ok((o1.encode() + 24, 0)),
+            (None, Some(off)) => Ok((Register::NONE, off.0)),
+            (None, None) => Err(EncoderError::BadInstruction),
+        }
+    }
+
+    fn decode(r1: u8, off: u64) -> Result<Self, DecoderError> {
+        if r1 == Register::NONE {
+            Ok(RegAndOff {
+                op1: None,
+                off: Some(LispWord(off)),
+            })
+        } else if r1 >= 24 {
+            Ok(RegAndOff {
+                op1: Some(Register::decode(r1 - 24)?),
+                off: None,
+            })
+        } else {
+            Ok(RegAndOff {
+                op1: Some(Register::decode(r1)?),
+                off: Some(LispWord(off)),
+            })
+        }
+    }
+}
+
 impl TwoRegs {
+    fn encode(&self) -> (u8, u8) {
+        (self.dst.encode(), self.src.encode())
+    }
+
     fn decode(r1: u8, r2: u8) -> TwoRegs {
         TwoRegs {
             dst: Register(r1),
@@ -439,7 +473,7 @@ impl Instruction {
             Opcode::MemCpy => Ok(Instruction::MemCpy {
                 dst: MachineRegister::decode(r0)?,
                 src: MachineRegister::decode(r1)?,
-                count: Count(hi),
+                count: RegAndOff::decode(r2, hi)?,
             }),
             Opcode::DisableInterrupts => Ok(Instruction::DisableInterrupts),
             Opcode::EnableInterrupts => Ok(Instruction::EnableInterrupts),
@@ -499,21 +533,11 @@ impl Instruction {
     }
 
     fn encode_two_regs(opcode: Opcode, target: &TwoRegs) -> (u64, u64) {
-        match target {
-            &TwoRegs { dst, src } => (
-                u64::from_le_bytes([
-                    opcode.into(),
-                    dst.encode(),
-                    src.encode(),
-                    Register::NONE,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-        }
+        let (r1, r2) = target.encode();
+        (
+            u64::from_le_bytes([opcode.into(), r1, r2, 0, 0, 0, 0, 0]),
+            0,
+        )
     }
 
     pub fn encode(&self) -> Result<(u64, u64), EncoderError> {
@@ -736,19 +760,22 @@ impl Instruction {
                 ]),
                 0,
             ),
-            Instruction::MemCpy { dst, src, count } => (
-                u64::from_le_bytes([
-                    Opcode::MemCpy.into(),
-                    dst.encode(),
-                    src.encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                count.0,
-            ),
+            Instruction::MemCpy { dst, src, count } => {
+                let (count, off) = count.encode()?;
+                (
+                    u64::from_le_bytes([
+                        Opcode::MemCpy.into(),
+                        dst.encode(),
+                        src.encode(),
+                        count,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ]),
+                    off,
+                )
+            }
             // Instruction::MemSet { dst: _, src: _, count: _ } => todo!(),
             Instruction::Mov8 { dst, src } => {
                 let (edst, doff) = dst.encode();

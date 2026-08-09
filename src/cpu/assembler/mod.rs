@@ -432,6 +432,20 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                             .map(|c| cpu::Native(c as u64))?,
                     })
                 }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::MemCpy {
+                    dst,
+                    src,
+                    count: RegAndOffset { op1, op2 },
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::MemCpy {
+                        dst: *dst,
+                        src: *src,
+                        count: cpu::RegAndOff {
+                            op1: *op1,
+                            off: resolve_opt_data(op2.clone(), symbols)?.map(cpu::LispWord),
+                        },
+                    })
+                }
 
                 AssemblyLine::ResolvedInstruction(_) => {}
                 AssemblyLine::ResolvedData(_) => {}

@@ -58,7 +58,9 @@ t_entry:
     .w #!'nil_symbol
 
 numberstr:
-    .str "'1234"
+    ; .str "1234"
+    ; .str "'1234"
+    .str "\"A string\" "
 
 .org 0x00fffffffff19000
 bootstrap:
@@ -270,19 +272,20 @@ keyboard_interrupt:
     POP A0
     IRETURN
 
+; Expects
+; R0: Prototype (Object with the expected tag set, but its payload is ignored)
+; R1: Size of allocation
+; Results: R0 is modified.
 alloc:
+    PUSH A0
     PUSH A1
-    PUSH A2
-    PUSH A3
-    PUSH R1
     MOV A0, ['freeptr]
-    GETPAYLOAD A2, R0    ; *freeptr  += len
-    ADD A3, A0, A2 ; todo: Align
-    MOV ['freeptr], A3
-    POP R1
-    POP A3
-    POP A2
+    SETPAYLOAD R0, A0
+    GETPAYLOAD A1, R1    ; *freeptr  += len
+    ADD A0, A0, A1 ; todo: Align
+    MOV ['freeptr], A0
     POP A1
+    POP A0
     IRETURN
 
 ;;;
@@ -547,21 +550,26 @@ read_string:
     EQ R3, A1, \' ; Quote?
     JUMPIFNOT R3, 'read_notquote
     JUMP 'read_quote
-
   read_notquote:
+
+    EQ R3, A1, \" ; String?
+    JUMPIFNOT R3, 'read_notstring
+    JUMP 'read_string_string
+  read_notstring:
+
     EQ R3, A1, \( ; List?
     JUMPIFNOT R3, 'read_notlist
     JUMP 'read_list
-
   read_notlist:
+
     LT R3, A1, \0
     JUMPIF R3, 'read_notnumber
     GT R3, A1, \9
     JUMPIF R3, 'read_notnumber ; Number?
     JUMP 'read_number
-
   read_notnumber:
-;     CALL 'read_symbol ; Symbol?
+
+    CALL 'read_symbol ; Symbol?
     RETURN
 
 
@@ -655,6 +663,39 @@ read_list:
 read_symbol:
     RETURN
 
+read_string_string:
+    SUB SP, SP, 256 ; Scratch buffer
+    MOV A3, SP
+    MOV [SP], SP
+    SUB SP, SP, 8 ; string header
+    MOV R4, #0 ; Strlen
+    CALL 'read_string_next_char ; Skip "
+  read_string_loop:
+    EQ R3, A1, \" ; End of string
+    JUMPIF R3, 'read_string_endstring
+    EQ R3, A1, \\ ; Backslash: Ignore specialness.
+    JUMPIFNOT R3, 'read_string_addchar
+    CALL 'read_string_next_char ; Skip \
+  read_string_addchar:
+    MOV8 [A3], A1
+    ADD A3, A3, 1 ; Advance buffer
+    ADD R4, R4, #1 ; Increase len
+    ; TODO: Die if >256
+    CALL 'read_string_next_char
+    JUMP 'read_string_loop
+  read_string_endstring:
+    CALL 'read_string_next_char ; Skip "
+    MOV A3, SP
+    PUSH R1
+    MOV [A3], R4
+    MOV R0, #$0 ; Request a string.
+    ADD R1, R4, #8 ; Of <header+count>
+    INT 0x02 ; Alloc
+    GETPAYLOAD A1, R0
+    MEMCPY A1, A3, R4 + #8
+    POP R1
+    ADD SP, SP, 264
+    RETURN
 
 .org 0xffffffffffffffe0
     .w 'bootstrap

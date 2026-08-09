@@ -8,9 +8,6 @@ use int_enum::IntEnum;
 
 type WordSize = u64;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Count(u64);
-
 pub enum MemoryLayout {}
 impl MemoryLayout {
     // Standard addresses.
@@ -117,7 +114,12 @@ impl LispWord {
 
 impl Debug for LispWord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Word::{:?}({})", self.tag(), self.payload())
+        write!(f, "Word::")?;
+        match WordType::try_from(self.tag()) {
+            Ok(tag) => write!(f, "{:?}", tag)?,
+            Err(_) => write!(f, "[{}]", self.tag())?,
+        };
+        write!(f, "({})", self.payload())
     }
 }
 
@@ -196,6 +198,12 @@ impl Debug for MachineRegister {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "A{}", self.0)
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct RegAndOff {
+    op1: Option<Register>,
+    off: Option<LispWord>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -406,7 +414,7 @@ pub enum Instruction {
     MemCpy {
         dst: MachineRegister,
         src: MachineRegister,
-        count: Count,
+        count: RegAndOff,
     },
     /// while (count--) *dst++ = src
     // MemSet {
@@ -724,22 +732,26 @@ impl Cpu {
             }
             Instruction::Cons { dst, car, cdr } => {
                 if self.handling_cons {
-                    self.handling_cons = false;
+                    let r0 = self.pop(memory);
                     let cdr = self.pop(memory);
                     let car = self.pop(memory);
                     let dst = self.pop(memory);
-                    let cons_addr = Address::from(self.machine_reg[0_usize]);
+                    let cons = self.registers[0];
+                    let cons_addr = Address(cons.payload());
+                    self.handling_cons = false;
                     memory.write_word(cons_addr + ConsLayout::CAR_OFFSET, car);
                     memory.write_word(cons_addr + ConsLayout::CDR_OFFSET, cdr);
-                    self.registers[dst.0 as usize] = LispWord::cons(cons_addr.0);
+                    self.registers[0] = LispWord(r0.0); // Restore r0 before storing the CONS; if the caller stores CONS in r0 it will get overwritten.
+                    self.registers[dst.0 as usize] = cons; // R0 contains the result after alloc.
                 } else {
                     self.handling_cons = true;
                     self.push(memory, Native(dst.0 as u64));
                     self.push(memory, self.registers[car.0 as usize].into());
                     self.push(memory, self.registers[cdr.0 as usize].into());
+                    self.push(memory, self.registers[0].into()); // Save R0, it will be overwritten by Alloc.
                     // ALLOC takes its params as R0 and R1
-                    self.registers[0_usize] = LispWord::fixnum(16); // Size: 2
-                    self.registers[1_usize] = LispWord::fixnum(WordType::Cons as u8 as u64);
+                    self.registers[0_usize] = LispWord::cons(0); // Prototype
+                    self.registers[1_usize] = LispWord::fixnum(16); // Size: 2
                     // Type: Int
                     return self.run_interrupt(
                         memory,
@@ -855,13 +867,12 @@ impl Cpu {
                 }
             }
             Instruction::MemCpy { dst, src, count } => {
-                let srcadd = self.machine_reg[src.0 as usize];
-                let dstadd = self.machine_reg[dst.0 as usize];
-                for i in 0..count.0 {
-                    memory.write_byte(
-                        Address::from(dstadd) + Offset(i as i64),
-                        memory.read_byte(Address::from(srcadd) + Offset(i as i64)),
-                    )
+                let srcadd = Address::from(self.machine_reg[src.0 as usize]);
+                let dstadd = Address::from(self.machine_reg[dst.0 as usize]);
+                let count = self.get_offset_reg_val(count.op1, count.off)?;
+                for i in 0..count {
+                    let value = memory.read_byte(srcadd + Offset(i as i64));
+                    memory.write_byte(dstadd + Offset(i as i64), value)
                 }
             }
             // Instruction::MemSet { dst, src, count } => {
@@ -885,7 +896,7 @@ impl Cpu {
                 self.interrupts_disabled = true;
             }
             Instruction::EnableInterrupts => {
-                self.interrupts_disabled = true;
+                self.interrupts_disabled = false;
             }
         };
 
