@@ -378,7 +378,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(AssemblyToken::Number(n)) => {
                 let v = *n;
                 self.next();
-                Ok(Native::Fixnum(Reference::Resolved(v as i64)))
+                Ok(Native::Fixnum(Reference::Resolved(v)))
             }
             Some(AssemblyToken::Quote) => {
                 let refr = self.try_identifier();
@@ -486,7 +486,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(AssemblyToken::Identifier(directive)) => {
                 Err(ParserError::UnknownDirective { directive })
             }
-            _ => return Ok(None),
+            _ => Ok(None),
         }
     }
 
@@ -725,7 +725,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             return Ok(Location::Absolute(literal));
         }
         let literal = self.expect_any_value()?;
-        return Ok(Location::Literal(literal));
+        Ok(Location::Literal(literal))
     }
 
     fn parse_mov(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {

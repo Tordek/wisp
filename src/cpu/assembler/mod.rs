@@ -118,7 +118,7 @@ fn layout<'a>(lines: Vec<AssemblyLine<'a>>) -> Result<Layout<'a>, AssemblerError
                     let section = LayoutSection {
                         lines: s,
                         base: current_section_base,
-                        size: size,
+                        size,
                     };
                     sections.push(section)
                 }
@@ -159,7 +159,7 @@ pub fn resolve_opt_reference<'a>(
 ) -> Result<Option<usize>, AssemblerError<'a>> {
     reference
         .as_ref()
-        .map(|r| resolve_reference(&r, labels))
+        .map(|r| resolve_reference(r, labels))
         .transpose()
 }
 
@@ -171,8 +171,7 @@ pub fn resolve_reference<'a>(
         Reference::Resolved(r) => Ok(*r as usize),
         Reference::Unresolved(r) => Ok(*labels
             .get(r)
-            .ok_or(AssemblerError::UnresolvedReference(r))?
-            as usize),
+            .ok_or(AssemblerError::UnresolvedReference(r))?),
     }
 }
 
@@ -180,7 +179,7 @@ pub fn resolve_opt_data<'a>(
     data: Option<Native<'a>>,
     labels: &HashMap<&'a str, usize>,
 ) -> Result<Option<u64>, AssemblerError<'a>> {
-    data.as_ref().map(|d| resolve_data(&d, labels)).transpose()
+    data.as_ref().map(|d| resolve_data(d, labels)).transpose()
 }
 pub fn resolve_data<'a>(
     data: &Native<'a>,
@@ -237,8 +236,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                         operands: cpu::RegSource {
                             op1: *op1,
                             op2: *op2,
-                            op3: resolve_opt_data(op3.clone(), symbols)?
-                                .map(|w| cpu::LispWord(w as u64)),
+                            op3: resolve_opt_data(op3.clone(), symbols)?.map(cpu::LispWord),
                         },
                     })
                 }
@@ -289,8 +287,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                         operands: cpu::RegSource {
                             op1: *op1,
                             op2: *op2,
-                            op3: resolve_opt_data(op3.clone(), symbols)?
-                                .map(|v| cpu::LispWord(v as u64)),
+                            op3: resolve_opt_data(op3.clone(), symbols)?.map(cpu::LispWord),
                         },
                     })
                 }
@@ -373,8 +370,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                         operands: cpu::EitherSource::Reg(cpu::RegSource {
                             op1: *op1,
                             op2: *op2,
-                            op3: resolve_opt_data(op3.clone(), symbols)?
-                                .map(|v| cpu::LispWord(v as u64)),
+                            op3: resolve_opt_data(op3.clone(), symbols)?.map(cpu::LispWord),
                         }),
                     })
                 }
@@ -449,9 +445,8 @@ fn emit<'a>(layout: &Layout<'a>) -> Result<Vec<Section>, AssemblerError<'a>> {
     let mut result_sections = vec![];
     for section in &layout.sections {
         let mut position: usize = 0;
-        let mut result: Vec<u8> = Vec::new();
+        let mut result: Vec<u8> = vec![0; section.size.next_multiple_of(8) + 8];
         // Padding to an extra word.
-        result.resize(section.size.next_multiple_of(8) + 8, 0);
 
         for line in &section.lines {
             match line {

@@ -7,8 +7,6 @@ mod ram;
 
 use std::time::Instant;
 
-use sdl2;
-
 fn main() -> Result<(), String> {
     let mut machine =
         machine::WispMachine::new().map_err(|e| format!("Error making machine: {:?}", e))?;
@@ -71,7 +69,7 @@ fn main() -> Result<(), String> {
 
         let elapsed_millis = start.elapsed().as_millis();
         unsafe {
-            gpu.render(&mut machine.bus, elapsed_millis as u32);
+            gpu.render(&machine.bus, elapsed_millis as u32);
         }
         window.gl_swap_window();
     }

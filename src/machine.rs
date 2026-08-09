@@ -61,7 +61,7 @@ impl Device for Firmware {
     fn read_word(&self, address: crate::bus::Address) -> crate::bus::Native {
         let address = address.0 as usize + self.base;
         for section in &self.rom {
-            if section.base <= address as usize && ((address - section.data.len()) < section.base) {
+            if section.base <= address && ((address - section.data.len()) < section.base) {
                 return Native(u64::from_le_bytes(
                     section.data[address - section.base..][..8]
                         .try_into()
