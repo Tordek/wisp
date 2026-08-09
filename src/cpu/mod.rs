@@ -163,7 +163,7 @@ impl Cpu {
     pub const INSTRUCTION_SIZE: u64 = 2 * Self::WORD_SIZE;
 
     pub fn interrupt(&mut self, int: u64) {
-        if !self.pending_interrupt.is_none() {
+        if self.pending_interrupt.is_none() {
             self.pending_interrupt = Some(int);
         }
     }
