@@ -12,7 +12,7 @@ pub enum MemoryLayout {}
 impl MemoryLayout {
     // Standard addresses.
     pub const CPU_END: Address = Address(0xffffffffffffffff);
-    pub const NIL_ROOT: Address = Address(Self::CPU_END.0 - 0x08 + 1);
+    pub const NIL_ROOT: Address = Address(Self::CPU_END.0 - 0x18 + 1);
     pub const T_ROOT: Address = Address(Self::CPU_END.0 - 0x10 + 1);
     pub const RESET_VECTOR: Address = Address(Self::CPU_END.0 - 0x20 + 1);
 }
@@ -638,15 +638,16 @@ impl Cpu {
                 let op1_obj = self.machine_reg[op1.0 as usize];
                 let op2_obj = self.get_offset_addr_val(op2, op3);
 
-                let result = self.to_machine_bool(match op {
+                let result = match op {
                     Comparison::Eq => op1_obj == op2_obj,
                     Comparison::Ne => op1_obj != op2_obj,
                     Comparison::Gt => op1_obj > op2_obj,
                     Comparison::Gte => op1_obj >= op2_obj,
                     Comparison::Lt => op1_obj < op2_obj,
                     Comparison::Lte => op1_obj <= op2_obj,
-                });
-                self.registers[dst.0 as usize] = result;
+                };
+
+                self.registers[dst.0 as usize] = self.to_machine_bool(result);
             }
 
             Instruction::MComparison {
@@ -657,15 +658,16 @@ impl Cpu {
                 let op1_obj = self.registers[op1.0 as usize];
                 let op2_obj = self.get_offset_reg_val_unchecked(op2, op3);
 
-                let result = self.to_machine_bool(match op {
+                let result = match op {
                     Comparison::Eq => op1_obj == op2_obj,
                     Comparison::Ne => op1_obj != op2_obj,
                     Comparison::Gt => op1_obj.as_fixnum()? > op2_obj.as_fixnum()?,
                     Comparison::Gte => op1_obj.as_fixnum()? >= op2_obj.as_fixnum()?,
                     Comparison::Lt => op1_obj.as_fixnum()? < op2_obj.as_fixnum()?,
                     Comparison::Lte => op1_obj.as_fixnum()? <= op2_obj.as_fixnum()?,
-                });
-                self.registers[dst.0 as usize] = result;
+                };
+
+                self.registers[dst.0 as usize] = self.to_machine_bool(result);
             }
 
             Instruction::Binary {

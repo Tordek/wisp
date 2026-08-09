@@ -6,6 +6,7 @@
 .equ kblen: 0x28028
 .equ kbbufferstart: 0x28030
 .equ kbbufferend: 0x28080
+.equ symboltable: 0x28090
 .equ fixnumtag: 1
 .equ symboltag: 2
 .equ constag: 3
@@ -29,28 +30,29 @@
         .w #$'quote_str
         .w #!'nil_symbol
     trap_str: .str "You broke the computer!"
-;     symbol_symbol:
-;         .w 'symbol_str
-;         .w #!'nil_symbol
-;     cons_symbol:
-;         .w 'cons_str
-;         .w #!'nil_symbol
-;     fixnum_symbol:
-;         .w 'fixnum_str
-;         .w #!'nil_symbol
+    symbol_symbol:
+        .w 'symbol_str
+        .w #!'nil_symbol
+    cons_symbol:
+        .w 'cons_str
+        .w #!'nil_symbol
+    fixnum_symbol:
+        .w 'fixnum_str
+        .w #!'nil_symbol
+
 barecons:
     .w #!'t_symbol
     .w #!'t_symbol
-list:
+nil_entry:
     .w #!'nil_symbol
     .w #['fixnum_entry
 
 fixnum_entry:
-    .w #$'fixnum_str
+    .w #!'fixnum_symbol
     .w #['symbol_entry
 
 symbol_entry:
-    .w #$'symbol_str
+    .w #!'symbol_symbol
     .w #['t_entry
 
 t_entry:
@@ -60,7 +62,10 @@ t_entry:
 numberstr:
     ; .str "1234"
     ; .str "'1234"
-    .str "\"A string\" "
+    ; .str "\"A string\" "
+    .str "t"
+otherstring:
+    .str "t"
 
 .org 0x00fffffffff19000
 bootstrap:
@@ -76,6 +81,9 @@ bootstrap:
     MOV ['kblen], A1
     MOV A0, #0
     MOV ['cursorpos], A0
+    MOV A0, #['nil_entry
+    MOV ['symboltable], A0
+
     ; Set stack position
     MOV SP, ['freeptr]
 
@@ -162,11 +170,21 @@ bootstrap:
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
+
     MOV R0, #['barecons ; a simple cons
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
-    MOV R0, #['list ; list
+
+    MOV R0, ['t]
+    MOV R1, #['barecons
+    CONS R0, R0, R1
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
+    MOV A0, ['symboltable]
+    MOV R0, A0 ; list
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
@@ -174,10 +192,53 @@ bootstrap:
     ; MOV R0, #0
     ; ADD R0, R0, #!0
 ; --- String-reader
-    MOV R0, #$'numberstr
+    MOV R0, #$'otherstring
     MOV R1, #0
     CALL 'read_string
     CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
+    MOV R0, ['symboltable]
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
+    MOV R0, #$'otherstring
+    MOV R1, #0
+    CALL 'read_string
+    MOV R1, ['t]
+    EQ R0, R0, R1 ; (READ "T") == T ?
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
+    MOV R0, #$'otherstring
+    MOV R1, #0
+    CALL 'read_string
+    PUSH R0
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
+    MOV R0, #$'otherstring
+    MOV R1, #0
+    CALL 'read_string
+    PUSH R0
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
+    MOV R0, ['symboltable]
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
+    POP R0
+    POP R1
+    EQ R0, R0, R1
+    CALL 'print
+
 
 loop:
     CALL 'repl
@@ -444,9 +505,9 @@ print_stringslice:
     JUMP 'print_stringslice_loop
   
 trap:
-    ; MOV R1, 0x70
-    ; MOV R0, #$'trap_str
-    ; CALL 'print
+    MOV R1, 0x70
+    MOV R0, #$'trap_str
+    CALL 'print
   trap_loop:
     HALT
     JUMP 'trap_loop
@@ -535,9 +596,10 @@ read_string:
     MOV R2, [A0]
     SUB R2, R2, R1
     LTE R3, R2, #0 ; finished? (len <= 0)
-    JUMPIF R3, 'read_end
+    JUMPIFNOT R3, 'read_string_available
+    RETURN
 
-
+  read_string_available:
     ADD A0, A0, 8 ; Skip header
     GETPAYLOAD A3, R1 ; skip first n
     ADD A0, A0, A3
@@ -569,12 +631,8 @@ read_string:
     JUMP 'read_number
   read_notnumber:
 
-    CALL 'read_symbol ; Symbol?
-    RETURN
+    JUMP 'read_symbol ; Symbol?
 
-
-read_end:
-    RETURN
 
 ; Expects:
 ; A0: Pointer to string
@@ -661,6 +719,103 @@ read_list:
     RETURN
 
 read_symbol:
+    SUB SP, SP, 256 ; Scratch buffer
+    MOV A3, SP
+    MOV R4, #0 ; Strlen
+  read_symbol_loop:
+    EQ R3, A1, \Space ; End of symbol
+    JUMPIF R3, 'read_symbol_endstring
+    EQ R3, R2, #0 ; End of string
+    JUMPIF R3, 'read_symbol_endstring
+    MOV8 [A3], A1
+    ADD A3, A3, 1 ; Advance buffer
+    ADD R4, R4, #1 ; Increase len
+    ; TODO: Die if >256
+    CALL 'read_string_next_char
+    JUMP 'read_symbol_loop
+  read_symbol_endstring:
+    MOV A3, SP ; R4 + A3 is the stringslice
+
+    PUSH R1 ; Keep next position
+    PUSH R4 ; Keep the new string length
+
+    ; Find symbol
+    ; Traverse symbol table
+    MOV R2, ['symboltable]
+
+  find_symbol_loop: 
+    MOV R5, ['nil]
+    EQ R3, R2, R5 ; End of table
+    JUMPIF R3, 'symbol_not_found
+
+    PUSH R4 ; Remember length
+
+    UNCONS R1, R2, R2 ; R1 = symbol, R2 = next.
+    
+    GETPAYLOAD A0, R1 ; Get pointer to str
+    MOV R6, [A0] ; Fetch string
+    GETPAYLOAD A0, R6 ; Find string2 length (R4 has our string length already)
+    MOV R5, [A0]
+    EQ R3, R4, R5
+    JUMPIFNOT R3, 'try_next_symbol ; If lengths differ, end.
+
+    ADD A0, A0, 8 ; skip header
+    ; compare loop:
+  find_symbol_strcmp_loop:
+    MOV8 A1, [A0] ; Read char from existing symbol
+    MOV8 A2, [A3] ; Read char from new symbol
+    EQ R3, A1, A2
+    JUMPIFNOT R3, 'try_next_symbol
+    SUB R4, R4, #1 ; length--
+    EQ R3, R4, #0 ; length = 0?
+    JUMPIF R3, 'symbol_found ; R1 is the symbol we're looking for!
+    ADD A0, A0, 1
+    ADD A3, A3, 1
+    JUMP 'find_symbol_strcmp_loop
+
+  try_next_symbol:
+    POP R4
+    JUMP 'find_symbol_loop
+
+  symbol_found:
+    POP R4
+    MOV R0, R1
+    JUMP 'read_symbol_end
+
+  symbol_not_found:
+    POP R4 ; String length
+    POP R1 ; Next
+
+    SUB SP, SP, 8 ; string header
+    MOV A0, SP
+    MOV [A0], R4 
+
+    PUSH R1
+
+    ; Interning
+    MOV R0, #$0 ; Request a string.
+    ADD R1, R4, #8 ; Of <header+count>
+    INT 0x02 ; Alloc
+    GETPAYLOAD A1, R0             ; R0 points to stringobj
+    MEMCPY A1, A0, R4 + #8        ; Put strdata into A1
+    PUSH R0                       ; push str
+
+    MOV R0, #!0 ; Request symbol
+    MOV R1, #16 ; sizeof symbol
+    INT 0x02
+    GETPAYLOAD A1, R0 ; Address the symbol
+    POP R1            ; Grab the symbol str
+    MOV [A1], R1      ; name = str
+    MOV R1, ['nil]    ;
+    MOV [A3 + 8], R1      ; plist = nil
+
+    MOV R1, ['symboltable]
+    CONS R1, R0, R1
+    MOV ['symboltable], R1 ; symbol table = cons(newsym, symbol table)
+
+  read_symbol_end:  
+    POP R1 ; End of symbol
+    ADD SP, SP, 264
     RETURN
 
 read_string_string:
