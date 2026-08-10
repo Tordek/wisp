@@ -337,32 +337,32 @@ impl Instruction {
                 code: MachineRegister::decode(r1)?,
             }),
 
-            Opcode::Eq => Ok(Self::MComparison {
+            Opcode::Eq => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Eq,
                 dst: Register::decode(r0)?,
                 operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Ne => Ok(Self::MComparison {
+            Opcode::Ne => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Ne,
                 dst: Register::decode(r0)?,
                 operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Gt => Ok(Self::MComparison {
+            Opcode::Gt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gt,
                 dst: Register::decode(r0)?,
                 operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Gte => Ok(Self::MComparison {
+            Opcode::Gte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gte,
                 dst: Register::decode(r0)?,
                 operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Lt => Ok(Self::MComparison {
+            Opcode::Lt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lt,
                 dst: Register::decode(r0)?,
                 operands: cpu::EitherSource::decode(r1, r2, hi)?,
             }),
-            Opcode::Lte => Ok(Self::MComparison {
+            Opcode::Lte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lte,
                 dst: Register::decode(r0)?,
                 operands: cpu::EitherSource::decode(r1, r2, hi)?,
@@ -609,7 +609,7 @@ impl Instruction {
             ),
 
             // Comparison
-            Instruction::MComparison { op, dst, operands } => {
+            Instruction::Comparison { op, dst, operands } => {
                 let opcode = match op {
                     cpu::Comparison::Eq => Opcode::Eq,
                     cpu::Comparison::Gt => Opcode::Gt,

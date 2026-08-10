@@ -338,7 +338,7 @@ pub enum Instruction {
         dst: MachineRegister,
         operands: MachSource,
     },
-    MComparison {
+    Comparison {
         op: Comparison,
         dst: Register,
         operands: EitherSource,
@@ -630,7 +630,7 @@ impl Cpu {
             Instruction::MakeClosure { dst: _, code: _ } => todo!(),
 
             // Comparison
-            Instruction::MComparison {
+            Instruction::Comparison {
                 op,
                 dst,
                 operands: EitherSource::Mach(MachSource { op1, op2, op3 }),
@@ -650,7 +650,7 @@ impl Cpu {
                 self.registers[dst.0 as usize] = self.to_machine_bool(result);
             }
 
-            Instruction::MComparison {
+            Instruction::Comparison {
                 op,
                 dst,
                 operands: EitherSource::Reg(RegSource { op1, op2, op3 }),
@@ -666,7 +666,6 @@ impl Cpu {
                     Comparison::Lt => op1_obj.as_fixnum()? < op2_obj.as_fixnum()?,
                     Comparison::Lte => op1_obj.as_fixnum()? <= op2_obj.as_fixnum()?,
                 };
-
                 self.registers[dst.0 as usize] = self.to_machine_bool(result);
             }
 
@@ -689,7 +688,6 @@ impl Cpu {
                 self.registers[dst.0 as usize] = result;
             }
 
-            // Cons
             Instruction::Int(interruption) => {
                 return self.run_interrupt(memory, interruption, next_pc);
             }
@@ -735,6 +733,7 @@ impl Cpu {
             Instruction::Cons { dst, car, cdr } => {
                 if self.handling_cons {
                     let r0 = self.pop(memory);
+                    let r1 = self.pop(memory);
                     let cdr = self.pop(memory);
                     let car = self.pop(memory);
                     let dst = self.pop(memory);
@@ -744,12 +743,14 @@ impl Cpu {
                     memory.write_word(cons_addr + ConsLayout::CAR_OFFSET, car);
                     memory.write_word(cons_addr + ConsLayout::CDR_OFFSET, cdr);
                     self.registers[0] = LispWord(r0.0); // Restore r0 before storing the CONS; if the caller stores CONS in r0 it will get overwritten.
-                    self.registers[dst.0 as usize] = cons; // R0 contains the result after alloc.
+                    self.registers[1] = LispWord(r1.0); // Restore r1 before storing the CONS; if the caller stores CONS in r0 it will get overwritten.
+                    self.registers[dst.0 as usize] = cons; // Rx contains the result after alloc.
                 } else {
                     self.handling_cons = true;
                     self.push(memory, Native(dst.0 as u64));
                     self.push(memory, self.registers[car.0 as usize].into());
                     self.push(memory, self.registers[cdr.0 as usize].into());
+                    self.push(memory, self.registers[1].into()); // Save R1, it will be overwritten by Alloc.
                     self.push(memory, self.registers[0].into()); // Save R0, it will be overwritten by Alloc.
                     // ALLOC takes its params as R0 and R1
                     self.registers[0_usize] = LispWord::cons(0); // Prototype

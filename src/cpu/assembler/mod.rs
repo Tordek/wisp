@@ -364,7 +364,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                     dst,
                     operands: EitherSource::Reg(RegSource { op1, op2, op3 }),
                 }) => {
-                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Comparison {
                         op: *op,
                         dst: *dst,
                         operands: cpu::EitherSource::Reg(cpu::RegSource {
@@ -379,7 +379,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                     dst,
                     operands: EitherSource::Mach(MachSource { op1, op2, op3 }),
                 }) => {
-                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::MComparison {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Comparison {
                         op: *op,
                         dst: *dst,
                         operands: cpu::EitherSource::Mach(cpu::MachSource {

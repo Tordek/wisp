@@ -65,7 +65,7 @@ numberstr:
     ; .str "\"A string\" "
     .str "t"
 otherstring:
-    .str "t"
+    .str " (a list is (made up) of 12 . symbols)"
 
 .org 0x00fffffffff19000
 bootstrap:
@@ -192,6 +192,13 @@ bootstrap:
     ; MOV R0, #0
     ; ADD R0, R0, #!0
 ; --- String-reader
+    MOV R0, #$'otherstring
+    MOV R1, #0
+    CALL 'read_string
+    CALL 'print
+    MOV R0, #\Newline
+    INT 0xf0
+
     MOV R0, #$'otherstring
     MOV R1, #0
     CALL 'read_string
@@ -603,11 +610,12 @@ read_string:
     ADD A0, A0, 8 ; Skip header
     GETPAYLOAD A3, R1 ; skip first n
     ADD A0, A0, A3
-
-; Expects stringbuf in A0, start in R1, len in R2
-  read_stringslice: 
     ; peek
     MOV8 A1, [A0]
+
+; Expects stringbuf in A0, Char in A1, start in R1, len in R2
+  read_stringslice: 
+    CALL 'skip_whitespace ;
 
     EQ R3, A1, \' ; Quote?
     JUMPIFNOT R3, 'read_notquote
@@ -643,6 +651,7 @@ read_string:
 ; A1: char at string[n]
 ; R1: Start + 1
 ; R2: Length - 1
+; OK
 read_string_next_char:
     ADD A0, A0, 1
     ADD R1, R1, #1
@@ -666,6 +675,7 @@ read_string_next_char_eof:
 ; R1: Start + n
 ; R2: Length - n
 ; where n depends on the number of whitespace characters
+; OK
 skip_whitespace:
     EQ R3, A1, \Space
     JUMPIFNOT R3, 'done
@@ -688,6 +698,7 @@ done:
 ; A1: char at string[n]
 ; R1: Start + n
 ; R2: Length - n
+; OK
 read_number:
     MOV R0, #0
   read_number_loop:
@@ -706,26 +717,75 @@ read_number:
   rnnotnumber:
     RETURN
 
+; OK
 read_quote:
     CALL 'read_string_next_char ; Skip '
     CALL 'read_stringslice
-    MOV R1, ['nil]
-    CONS R1, R0, R1
+    MOV R3, ['nil]
+    CONS R3, R0, R3
     MOV R0, #!'quote_symbol
-    CONS R0, R0, R1
+    CONS R0, R0, R3
     RETURN
 
 read_list:
+    CALL 'read_string_next_char ; Skip (
+    CALL 'skip_whitespace ;
+    EQ R3, A1, \)
+    JUMPIFNOT R3, 'read_list_nonempty
+    CALL 'read_string_next_char ; Skip )
+    MOV R0, ['nil]
     RETURN
 
+  read_list_nonempty:
+    CALL 'read_stringslice ; Puts the new element in R0 and advances pointers.
+    MOV R4, ['nil]
+    CONS R4, R0, R4 ; (h)
+    PUSH R4
+
+  read_list_loop:
+    CALL 'skip_whitespace ;
+    EQ R3, A1, \)
+    JUMPIFNOT R3, 'read_list_more_items
+    CALL 'read_string_next_char ; Skip )
+    POP R0
+    RETURN ; Done: R0 has the list, R1 has start of next
+
+  read_list_more_items:
+    EQ R3, A1, \. ; Cons pair
+    JUMPIFNOT R3, 'read_list_more_list
+    PUSH R4
+    CALL 'read_string_next_char ; Skip .
+    CALL 'read_stringslice ; Puts the new element in R0 and advances pointers.
+    CALL 'skip_whitespace ;
+    CALL 'read_string_next_char ; Skip ) TODO: Die if not )
+    POP R4
+    SETCDR R4, R0
+    POP R0
+    RETURN
+
+  read_list_more_list:
+    PUSH R4
+    CALL 'read_stringslice ; Puts the new element in R0 and advances pointers.
+    MOV R5, ['nil]
+    CONS R0, R0, R5 ; (h)
+    POP R4
+    SETCDR R4, R0
+    MOV R4, R0
+    JUMP 'read_list_loop
+
+    
+
 read_symbol:
+    MOV A3, ['nil]
     SUB SP, SP, 256 ; Scratch buffer
     MOV A3, SP
     MOV R4, #0 ; Strlen
   read_symbol_loop:
     EQ R3, A1, \Space ; End of symbol
     JUMPIF R3, 'read_symbol_endstring
-    EQ R3, R2, #0 ; End of string
+    EQ R3, A1, \) ; End of symbol
+    JUMPIF R3, 'read_symbol_endstring
+    EQ R3, A1, 0xFFFF ; End of string
     JUMPIF R3, 'read_symbol_endstring
     MOV8 [A3], A1
     ADD A3, A3, 1 ; Advance buffer
@@ -736,60 +796,65 @@ read_symbol:
   read_symbol_endstring:
     MOV A3, SP ; R4 + A3 is the stringslice
 
+    PUSH A1
+    PUSH A0 ; Keep strptr
+    PUSH R2 ; Keep curlen
     PUSH R1 ; Keep next position
-    PUSH R4 ; Keep the new string length
 
     ; Find symbol
     ; Traverse symbol table
     MOV R2, ['symboltable]
 
+    PUSH R4 ; Keep the new string length
+    PUSH A3
   find_symbol_loop: 
     MOV R5, ['nil]
     EQ R3, R2, R5 ; End of table
     JUMPIF R3, 'symbol_not_found
 
-    PUSH R4 ; Remember length
-
-    UNCONS R1, R2, R2 ; R1 = symbol, R2 = next.
+    UNCONS R0, R2, R2 ; R1 = symbol, R2 = next.
     
-    GETPAYLOAD A0, R1 ; Get pointer to str
+    GETPAYLOAD A0, R0 ; Get pointer to str
     MOV R6, [A0] ; Fetch string
     GETPAYLOAD A0, R6 ; Find string2 length (R4 has our string length already)
     MOV R5, [A0]
     EQ R3, R4, R5
-    JUMPIFNOT R3, 'try_next_symbol ; If lengths differ, end.
+    JUMPIFNOT R3, 'find_symbol_loop ; If lengths differ, end.
 
+    MOV A3, [SP] ; Reset stringslice
     ADD A0, A0, 8 ; skip header
     ; compare loop:
   find_symbol_strcmp_loop:
     MOV8 A1, [A0] ; Read char from existing symbol
     MOV8 A2, [A3] ; Read char from new symbol
     EQ R3, A1, A2
-    JUMPIFNOT R3, 'try_next_symbol
-    SUB R4, R4, #1 ; length--
-    EQ R3, R4, #0 ; length = 0?
-    JUMPIF R3, 'symbol_found ; R1 is the symbol we're looking for!
+    JUMPIFNOT R3, 'find_symbol_loop
+    SUB R5, R5, #1 ; length--
     ADD A0, A0, 1
     ADD A3, A3, 1
-    JUMP 'find_symbol_strcmp_loop
+    EQ R3, R5, #0 ; length = 0?
+    JUMPIFNOT R3, 'find_symbol_strcmp_loop ; If there's still data, keep comparing.
 
-  try_next_symbol:
+    ; No more data left, strings are the same.
+    POP A3
     POP R4
-    JUMP 'find_symbol_loop
-
-  symbol_found:
-    POP R4
-    MOV R0, R1
     JUMP 'read_symbol_end
 
   symbol_not_found:
-    POP R4 ; String length
+    POP A3 
+    POP R4 
+
+  ; intern: Make room for header
     POP R1 ; Next
+    POP R2
+    POP A0
+    POP A1
+    PUSH R4
+    MOV A3, SP
 
-    SUB SP, SP, 8 ; string header
-    MOV A0, SP
-    MOV [A0], R4 
-
+    PUSH A1
+    PUSH A0
+    PUSH R2
     PUSH R1
 
     ; Interning
@@ -797,7 +862,7 @@ read_symbol:
     ADD R1, R4, #8 ; Of <header+count>
     INT 0x02 ; Alloc
     GETPAYLOAD A1, R0             ; R0 points to stringobj
-    MEMCPY A1, A0, R4 + #8        ; Put strdata into A1
+    MEMCPY A1, A3, R1             ; Put strdata into A1
     PUSH R0                       ; push str
 
     MOV R0, #!0 ; Request symbol
@@ -807,15 +872,27 @@ read_symbol:
     POP R1            ; Grab the symbol str
     MOV [A1], R1      ; name = str
     MOV R1, ['nil]    ;
-    MOV [A3 + 8], R1      ; plist = nil
+    MOV [A1 + 8], R1      ; plist = nil
 
     MOV R1, ['symboltable]
     CONS R1, R0, R1
     MOV ['symboltable], R1 ; symbol table = cons(newsym, symbol table)
+    POP R1 ; Next
+    POP R2
+    POP A0
+    POP A1
+    POP R4
+    PUSH A1
+    PUSH A0
+    PUSH R2
+    PUSH R1
 
-  read_symbol_end:  
+  read_symbol_end:  ; Ensure: A0, A1, R1, R2
     POP R1 ; End of symbol
-    ADD SP, SP, 264
+    POP R2 ;
+    POP A0
+    POP A1
+    ADD SP, SP, 256
     RETURN
 
 read_string_string:
