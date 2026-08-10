@@ -796,6 +796,7 @@ read_symbol:
   read_symbol_endstring:
     MOV A3, SP ; R4 + A3 is the stringslice
 
+    PUSH R4
     PUSH A1
     PUSH A0 ; Keep strptr
     PUSH R2 ; Keep curlen
@@ -845,17 +846,7 @@ read_symbol:
     POP R4 
 
   ; intern: Make room for header
-    POP R1 ; Next
-    POP R2
-    POP A0
-    POP A1
-    PUSH R4
-    MOV A3, SP
-
-    PUSH A1
-    PUSH A0
-    PUSH R2
-    PUSH R1
+    ADD A3, SP, 32
 
     ; Interning
     MOV R0, #$0 ; Request a string.
@@ -877,21 +868,13 @@ read_symbol:
     MOV R1, ['symboltable]
     CONS R1, R0, R1
     MOV ['symboltable], R1 ; symbol table = cons(newsym, symbol table)
-    POP R1 ; Next
-    POP R2
-    POP A0
-    POP A1
-    POP R4
-    PUSH A1
-    PUSH A0
-    PUSH R2
-    PUSH R1
 
   read_symbol_end:  ; Ensure: A0, A1, R1, R2
     POP R1 ; End of symbol
     POP R2 ;
     POP A0
     POP A1
+    POP R4
     ADD SP, SP, 256
     RETURN
 
