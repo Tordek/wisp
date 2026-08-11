@@ -39,6 +39,10 @@
     fixnum_symbol:
         .w 'fixnum_str
         .w #!'nil_symbol
+    boot_str:
+        .str "Booting...\n"
+    boot_program:
+        .str " a"
 
 barecons:
     .w #!'t_symbol
@@ -100,151 +104,19 @@ bootstrap:
     MOV [VBR + 1928], A1
     EI
 
-    ; Hello world!
-    MOV R0, #\H
-    MOV R1, #0x07
-    INT 0xf0
-    MOV R0, #\e
-    INT 0xf0
-    MOV R0, #\l
-    INT 0xf0
-    MOV R0, #\l
-    INT 0xf0
-    MOV R0, #\o
-    INT 0xf0
-    MOV R0, #\,
-    INT 0xf0
-    MOV R0, #\Space
-    INT 0xf0
-    MOV R0, #\n
-    INT 0xf0
-    MOV R0, #\o
-    INT 0xf0
-    MOV R0, #\w
-    INT 0xf0
-    MOV R0, #\Space
-    INT 0xf0
-    MOV R0, #\w
-    INT 0xf0
-    MOV R0, #\i
-    INT 0xf0
-    MOV R0, #\t
-    INT 0xf0
-    MOV R0, #\h
-    INT 0xf0
-    MOV R0, #\Newline
-    INT 0xf0
-    MOV R1, #0x27
-    MOV R0, #\V
-    INT 0xf0
-    MOV R1, #0x43
-    MOV R0, #\G
-    INT 0xf0
-    MOV R1, #0x10
-    MOV R0, #\A
-    INT 0xf0
-    MOV R1, #0x85
-    MOV R0, #\!
-    INT 0xf0
-    MOV R0, #\Newline
-    INT 0xf0
+    MOV R0, #$'boot_str
+    CALL 'format
 
-    ; Print objects
-    MOV R0, ['nil]
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-    MOV R0, ['t]
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-    MOV R0, #0 ;number zero
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-    MOV R0, #123 ; number 123
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-    MOV R0, #$'fixnum_str ; string fixnum
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV R0, #['barecons ; a simple cons
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV R0, ['t]
-    MOV R1, #['barecons
-    CONS R0, R0, R1
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV A0, ['symboltable]
-    MOV R0, A0 ; list
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-; --- Error
-    ; MOV R0, #0
-    ; ADD R0, R0, #!0
-; --- String-reader
-    MOV R0, #$'otherstring
+  dumbloop:
+    MOV R0, #$'boot_program
     MOV R1, #0
     CALL 'read_string
+    CALL 'eval
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
-
-    MOV R0, #$'otherstring
-    MOV R1, #0
-    CALL 'read_string
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV R0, ['symboltable]
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV R0, #$'otherstring
-    MOV R1, #0
-    CALL 'read_string
-    MOV R1, ['t]
-    EQ R0, R0, R1 ; (READ "T") == T ?
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV R0, #$'otherstring
-    MOV R1, #0
-    CALL 'read_string
-    PUSH R0
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV R0, #$'otherstring
-    MOV R1, #0
-    CALL 'read_string
-    PUSH R0
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    MOV R0, ['symboltable]
-    CALL 'print
-    MOV R0, #\Newline
-    INT 0xf0
-
-    POP R0
-    POP R1
-    EQ R0, R0, R1
-    CALL 'print
+    HALT
+    JUMP 'dumbloop
 
 
 loop:
@@ -252,15 +124,15 @@ loop:
     JUMP 'loop
 
 video_interrupt:
-    PUSH A0
-    PUSH A1
-    PUSH A2
-    PUSH R0
+    PUSH A0  ;
+    PUSH A1  ;
+    PUSH A2  ;
+    PUSH R0  ;
     PUSH R1
-    PUSH R2
-    PUSH R3
-    PUSH R4
-    PUSH R5
+    PUSH R2  ;
+    PUSH R3  ;
+    PUSH R4  ;
+    PUSH R5  ;
     ; Read cursor position.
     MOV R2, ['cursorpos]
 
@@ -302,12 +174,12 @@ video_interrupt:
     MOV A1, 0xb80a0
     MEMCPY A0, A1, 3840 ; Slide everything up one.
     MOV A0, 0xb8f00
-    clearline_loop:
     MOV A1, 0x07
+    MOV A2, #\Space
+  clearline_loop:
     MOV8 [A0], A1
     ADD A0, A0, 1
-    MOV A1, #\Space
-    MOV8 [A0], A1
+    MOV8 [A0], A2
     ADD A0, A0, 1
     EQ R0, A0, 0xb8fa0
     JUMPIFNOT R0, 'clearline_loop
@@ -518,6 +390,13 @@ trap:
   trap_loop:
     HALT
     JUMP 'trap_loop
+
+format:
+    GETPAYLOAD A0, R0
+    MOV R0, [A0]
+    ADD A0, A0, 8
+    CALL 'print_stringslice
+    RETURN
 
 ; Puts A0 into the keyboard circular buffer.
 ; Traps if full.
@@ -910,6 +789,9 @@ read_string_string:
     MEMCPY A1, A3, R4 + #8
     POP R1
     ADD SP, SP, 264
+    RETURN
+
+eval:
     RETURN
 
 .org 0xffffffffffffffe0
