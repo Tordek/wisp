@@ -91,7 +91,7 @@ pub enum WispMachineError {
 
 impl<'a> WispMachine<'a> {
     pub fn reset(&mut self) {
-        self.cpu.reset(&self.bus);
+        self.cpu.reset();
     }
 
     pub fn step(&mut self) {

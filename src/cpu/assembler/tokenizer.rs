@@ -1,12 +1,14 @@
 use nom::{
-    IResult, Parser,
+    AsChar, IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_until},
     character::{
         anychar,
-        complete::{alpha1, alphanumeric1, digit1, hex_digit1, multispace0, satisfy, space0},
+        complete::{
+            alpha1, alphanumeric1, digit1, hex_digit1, multispace0, multispace1, satisfy, space0,
+        },
     },
-    combinator::{recognize, value},
+    combinator::{peek, recognize, value},
     multi::{many0, many0_count},
     sequence::{delimited, pair, preceded, terminated},
 };
@@ -69,18 +71,43 @@ fn number(input: &str) -> IResult<&str, AssemblyToken<'_>> {
 }
 
 fn register(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    preceded(tag("R"), decimal)
-        .map(|c| AssemblyToken::Register(cpu::Register(c as u8)))
-        .parse(input)
+    terminated(
+        alt((
+            preceded(tag("R"), decimal).map(|c| AssemblyToken::Register(cpu::Register(c as u8))),
+            value(AssemblyToken::Register(cpu::Cpu::NIL), tag("NIL")),
+            value(AssemblyToken::Register(cpu::Cpu::T), tag("T")),
+        )),
+        peek(satisfy(|c| !c.is_alphanum())),
+    )
+    .parse(input)
 }
 fn machineregister(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    alt((
-        preceded(tag("A"), decimal)
-            .map(|c| AssemblyToken::MachineRegister(cpu::MachineRegister(c as u8))),
-        value(AssemblyToken::MachineRegister(cpu::Cpu::PC), tag("PC")),
-        value(AssemblyToken::MachineRegister(cpu::Cpu::SP), tag("SP")),
-        value(AssemblyToken::MachineRegister(cpu::Cpu::VBR), tag("VBR")),
-    ))
+    terminated(
+        alt((
+            preceded(tag("A"), decimal)
+                .map(|c| AssemblyToken::MachineRegister(cpu::MachineRegister(c as u8))),
+            value(
+                AssemblyToken::MachineRegister(cpu::Cpu::CONS_END),
+                tag("CONS_END"),
+            ),
+            value(
+                AssemblyToken::MachineRegister(cpu::Cpu::CONS_FREE),
+                tag("CONS_FREE"),
+            ),
+            value(
+                AssemblyToken::MachineRegister(cpu::Cpu::GEN_END),
+                tag("GEN_END"),
+            ),
+            value(
+                AssemblyToken::MachineRegister(cpu::Cpu::GEN_FREE),
+                tag("GEN_FREE"),
+            ),
+            value(AssemblyToken::MachineRegister(cpu::Cpu::PC), tag("PC")),
+            value(AssemblyToken::MachineRegister(cpu::Cpu::SP), tag("SP")),
+            value(AssemblyToken::MachineRegister(cpu::Cpu::VBR), tag("VBR")),
+        )),
+        peek(satisfy(|c| !c.is_alphanum())),
+    )
     .parse(input)
 }
 fn openbracket(input: &str) -> IResult<&str, AssemblyToken<'_>> {
@@ -107,13 +134,13 @@ fn newline(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     )
     .parse(input)
 }
-fn instruction(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+fn identifier(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     ident.map(AssemblyToken::Identifier).parse(input)
 }
-fn label(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+fn colon(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::Colon, tag(":")).parse(input)
 }
-fn reference(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+fn quote(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::Quote, tag("'")).parse(input)
 }
 fn raw_string(input: &str) -> IResult<&str, AssemblyToken<'_>> {
@@ -158,12 +185,12 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     preceded(
         space0,
         alt((
-            label,
+            colon,
             bang,
             literal,
             raw_char,
             raw_string,
-            reference,
+            quote,
             directive,
             number,
             register,
@@ -173,7 +200,7 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
             plus,
             minus,
             comment,
-            instruction,
+            identifier,
             cash,
             comma,
             newline,

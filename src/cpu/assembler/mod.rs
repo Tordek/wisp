@@ -1,5 +1,5 @@
-mod parser;
-mod tokenizer;
+pub mod parser;
+pub mod tokenizer;
 
 use std::collections::HashMap;
 
@@ -39,7 +39,7 @@ impl<'a> From<ParserError<'a>> for AssemblerError<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Section {
     pub data: Vec<u8>,
     pub base: usize,
@@ -47,22 +47,22 @@ pub struct Section {
 
 pub fn assemble<'a>(input: &'a str) -> Result<Vec<Section>, AssemblerError<'a>> {
     let tokens = tokenize(input)?;
-    let ast = parser_new(&tokens)?;
+    let ast = parse(&tokens)?;
     let mut sections = layout(ast)?;
     resolve(&mut sections)?;
     let source = emit(&sections)?;
     Ok(source)
 }
 
-struct LayoutSection<'a> {
-    base: usize,
-    size: usize,
-    lines: Vec<AssemblyLine<'a>>,
+pub struct LayoutSection<'a> {
+    pub base: usize,
+    pub size: usize,
+    pub lines: Vec<AssemblyLine<'a>>,
 }
 
-struct Layout<'a> {
-    symbols: HashMap<&'a str, usize>,
-    sections: Vec<LayoutSection<'a>>,
+pub struct Layout<'a> {
+    pub symbols: HashMap<&'a str, usize>,
+    pub sections: Vec<LayoutSection<'a>>,
 }
 
 fn layout<'a>(lines: Vec<AssemblyLine<'a>>) -> Result<Layout<'a>, AssemblerError<'a>> {
@@ -271,11 +271,19 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                     })
                 }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Call {
-                    target: JumpTarget::Register(_),
-                }) => return Err(AssemblerError::InvalidState),
+                    target: JumpTarget::Register(r),
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Call {
+                        target: cpu::JumpTarget::Register(*r),
+                    })
+                }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Call {
-                    target: JumpTarget::IndirectRegister(_),
-                }) => return Err(AssemblerError::InvalidState),
+                    target: JumpTarget::IndirectRegister(r),
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Call {
+                        target: cpu::JumpTarget::IndirectRegister(*r),
+                    })
+                }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::IDiv {
                     div,
                     rem,
@@ -336,13 +344,23 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                     })
                 }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Jump {
-                    condition: _,
-                    target: JumpTarget::Register(_),
-                }) => return Err(AssemblerError::InvalidState),
+                    condition: c,
+                    target: JumpTarget::Register(r),
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
+                        condition: *c,
+                        target: cpu::JumpTarget::Register(*r),
+                    })
+                }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Jump {
-                    condition: _,
-                    target: JumpTarget::IndirectRegister(_),
-                }) => return Err(AssemblerError::InvalidState),
+                    condition: c,
+                    target: JumpTarget::IndirectRegister(i),
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Jump {
+                        condition: *c,
+                        target: cpu::JumpTarget::IndirectRegister(*i),
+                    })
+                }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::MBinary {
                     op,
                     dst,
@@ -501,8 +519,16 @@ fn emit<'a>(layout: &Layout<'a>) -> Result<Vec<Section>, AssemblerError<'a>> {
 
 #[cfg(test)]
 pub mod test {
-    use crate::cpu::{assembler::tokenizer, *};
+    use crate::cpu::{
+        self,
+        assembler::{
+            parser::{self},
+            tokenizer,
+        },
+        *,
+    };
     pub const SOURCE: &str = r#"
+        .org 128
             HALT
             NOP
         ; A comment
@@ -576,7 +602,7 @@ pub mod test {
             SETPAYLOAD R4, A3
             GETPAYLOAD A5, R4
         ; Lisp Destructuring Primitives
-            CONS
+            CONS R1, R2, R3
             UNCONS R1, R2, R3
             CAR R4, R5
             CDR R6, R7
@@ -617,10 +643,15 @@ pub mod test {
             MAKECLOSURE R5, A6
             MEMCPY A1, A2, 1
             TYPEP R1, R1, 0x03
+            GTE R0, A1, A2
         "#;
 
     pub fn expected_tokens<'a>() -> Vec<tokenizer::AssemblyToken<'a>> {
         vec![
+            tokenizer::AssemblyToken::Newline,
+            tokenizer::AssemblyToken::Dot,
+            tokenizer::AssemblyToken::Identifier("org"),
+            tokenizer::AssemblyToken::Number(128),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("HALT"),
             tokenizer::AssemblyToken::Newline,
@@ -997,6 +1028,11 @@ pub mod test {
             tokenizer::AssemblyToken::Comment("; Lisp Destructuring Primitives"),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("CONS"),
+            tokenizer::AssemblyToken::Register(Register(1)),
+            tokenizer::AssemblyToken::Comma,
+            tokenizer::AssemblyToken::Register(Register(2)),
+            tokenizer::AssemblyToken::Comma,
+            tokenizer::AssemblyToken::Register(Register(3)),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("UNCONS"),
             tokenizer::AssemblyToken::Register(Register(1)),
@@ -1306,6 +1342,818 @@ pub mod test {
             tokenizer::AssemblyToken::Comma,
             tokenizer::AssemblyToken::Number(3),
             tokenizer::AssemblyToken::Newline,
+            tokenizer::AssemblyToken::Identifier("GTE"),
+            tokenizer::AssemblyToken::Register(Register(0)),
+            tokenizer::AssemblyToken::Comma,
+            tokenizer::AssemblyToken::MachineRegister(MachineRegister(1)),
+            tokenizer::AssemblyToken::Comma,
+            tokenizer::AssemblyToken::MachineRegister(MachineRegister(2)),
+            tokenizer::AssemblyToken::Newline,
         ]
+    }
+
+    pub fn expected_lines<'a>() -> Vec<parser::AssemblyLine<'a>> {
+        vec![
+            parser::AssemblyLine::Org(128),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Halt),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Nop),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Return),
+            parser::AssemblyLine::Label("loop"),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Int(
+                assembler::Reference::Resolved(42),
+            )),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Int(
+                assembler::Reference::Unresolved("loop"),
+            )),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::IReturn),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::Always,
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Resolved(16)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::Always,
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(0),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::Always,
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(16),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::Always,
+                target: assembler::JumpTarget::Register(cpu::Register(1)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::Always,
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Unresolved("loop")),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Resolved(16)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(0),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(16),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: assembler::JumpTarget::Register(cpu::Register(1)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::True(cpu::Register(5)),
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Unresolved("loop")),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Resolved(16)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(0),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(16),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: assembler::JumpTarget::Register(cpu::Register(1)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+                condition: cpu::Condition::False(cpu::Register(5)),
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Unresolved("loop")),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Resolved(16)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(0),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+                target: assembler::JumpTarget::Machine(
+                    cpu::MachineRegister(1),
+                    assembler::Reference::Resolved(16),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+                target: assembler::JumpTarget::Register(cpu::Register(1)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+                target: assembler::JumpTarget::Absolute(assembler::Reference::Unresolved("loop")),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::PushA {
+                src: cpu::MachineRegister(1),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::PopA {
+                dst: cpu::MachineRegister(2),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::PushR {
+                src: cpu::Register(3),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::PopR {
+                dst: cpu::Register(4),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Register(cpu::Register(1)),
+                src: assembler::Location::Literal(assembler::Native::Fixnum(
+                    assembler::Reference::Resolved(1234),
+                )),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Machine(cpu::MachineRegister(3)),
+                src: assembler::Location::Literal(assembler::Native::Raw(
+                    assembler::Reference::Resolved(2147483647),
+                )),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Register(cpu::Register(5)),
+                src: assembler::Location::Register(cpu::Register(6)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Register(cpu::Register(5)),
+                src: assembler::Location::IndirectRegister(cpu::Register(6)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::IndirectRegister(cpu::Register(6)),
+                src: assembler::Location::Register(cpu::Register(7)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Machine(cpu::MachineRegister(4)),
+                src: assembler::Location::Machine(cpu::MachineRegister(5)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Machine(cpu::MachineRegister(1)),
+                src: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(2),
+                    assembler::Reference::Resolved(0),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Machine(cpu::MachineRegister(1)),
+                src: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(2),
+                    assembler::Reference::Resolved(16),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Machine(cpu::MachineRegister(1)),
+                src: assembler::Location::Absolute(assembler::Reference::Resolved(64)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(2),
+                    assembler::Reference::Resolved(0),
+                ),
+                src: assembler::Location::Machine(cpu::MachineRegister(3)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(2),
+                    assembler::Reference::Resolved(8),
+                ),
+                src: assembler::Location::Machine(cpu::MachineRegister(3)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Absolute(assembler::Reference::Resolved(24)),
+                src: assembler::Location::Machine(cpu::MachineRegister(4)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Machine(cpu::MachineRegister(5)),
+                src: assembler::Location::Register(cpu::Register(8)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Register(cpu::Register(9)),
+                src: assembler::Location::Machine(cpu::MachineRegister(6)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(5),
+                    assembler::Reference::Resolved(0),
+                ),
+                src: assembler::Location::Register(cpu::Register(8)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(5),
+                    assembler::Reference::Resolved(8),
+                ),
+                src: assembler::Location::Register(cpu::Register(6)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Register(cpu::Register(5)),
+                src: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(6),
+                    assembler::Reference::Resolved(0),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: assembler::Location::Register(cpu::Register(5)),
+                src: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(6),
+                    assembler::Reference::Resolved(8),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+                dst: assembler::Location::Machine(cpu::MachineRegister(3)),
+                src: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(4),
+                    assembler::Reference::Resolved(0),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+                dst: assembler::Location::Machine(cpu::MachineRegister(3)),
+                src: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(4),
+                    assembler::Reference::Resolved(5),
+                ),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+                dst: assembler::Location::Machine(cpu::MachineRegister(3)),
+                src: assembler::Location::Absolute(assembler::Reference::Resolved(5)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+                dst: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(4),
+                    assembler::Reference::Resolved(0),
+                ),
+                src: assembler::Location::Machine(cpu::MachineRegister(6)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+                dst: assembler::Location::IndirectMachine(
+                    cpu::MachineRegister(4),
+                    assembler::Reference::Resolved(5),
+                ),
+                src: assembler::Location::Machine(cpu::MachineRegister(6)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+                dst: assembler::Location::Absolute(assembler::Reference::Resolved(5)),
+                src: assembler::Location::Machine(cpu::MachineRegister(6)),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MBinary {
+                op: cpu::MBinaryOp::Add,
+                dst: cpu::MachineRegister(1),
+                operands: parser::MachSource {
+                    op1: cpu::MachineRegister(2),
+                    op2: Some(cpu::MachineRegister(3)),
+                    op3: None,
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MBinary {
+                op: cpu::MBinaryOp::Add,
+                dst: cpu::MachineRegister(1),
+                operands: parser::MachSource {
+                    op1: cpu::MachineRegister(2),
+                    op2: Some(cpu::MachineRegister(3)),
+                    op3: Some(assembler::Reference::Resolved(4)),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MBinary {
+                op: cpu::MBinaryOp::Add,
+                dst: cpu::MachineRegister(1),
+                operands: parser::MachSource {
+                    op1: cpu::MachineRegister(2),
+                    op2: None,
+                    op3: Some(assembler::Reference::Resolved(8)),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MBinary {
+                op: cpu::MBinaryOp::Sub,
+                dst: cpu::MachineRegister(4),
+                operands: parser::MachSource {
+                    op1: cpu::MachineRegister(5),
+                    op2: Some(cpu::MachineRegister(6)),
+                    op3: None,
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MBinary {
+                op: cpu::MBinaryOp::Sub,
+                dst: cpu::MachineRegister(4),
+                operands: parser::MachSource {
+                    op1: cpu::MachineRegister(5),
+                    op2: Some(cpu::MachineRegister(6)),
+                    op3: Some(assembler::Reference::Resolved(2)),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MBinary {
+                op: cpu::MBinaryOp::Sub,
+                dst: cpu::MachineRegister(4),
+                operands: parser::MachSource {
+                    op1: cpu::MachineRegister(5),
+                    op2: None,
+                    op3: Some(assembler::Reference::Resolved(12)),
+                },
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetTag {
+                dst: cpu::Register(2),
+                src: cpu::MachineRegister(1),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetTag {
+                dst: cpu::MachineRegister(3),
+                src: cpu::Register(2),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetPayload {
+                dst: cpu::Register(4),
+                src: cpu::MachineRegister(3),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetPayload {
+                dst: cpu::MachineRegister(5),
+                src: cpu::Register(4),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Cons {
+                dst: cpu::Register(1),
+                car: cpu::Register(2),
+                cdr: cpu::Register(3),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Uncons {
+                car: cpu::Register(1),
+                cdr: cpu::Register(2),
+                src: cpu::Register(3),
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Car(cpu::TwoRegs {
+                dst: cpu::Register(4),
+                src: cpu::Register(5),
+            })),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr(cpu::TwoRegs {
+                dst: cpu::Register(6),
+                src: cpu::Register(7),
+            })),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCar(cpu::TwoRegs {
+                dst: cpu::Register(8),
+                src: cpu::Register(9),
+            })),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCdr(cpu::TwoRegs {
+                dst: cpu::Register(10),
+                src: cpu::Register(11),
+            })),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Add,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Add,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Add,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                        10,
+                    ))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Sub,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Sub,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Sub,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                        10,
+                    ))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Mul,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: None,
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Mul,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: Some(cpu::Register(3)),
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+                op: cpu::BinaryOp::Mul,
+                dst: cpu::Register(1),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(2),
+                    op2: None,
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                        10,
+                    ))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Eq,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: None,
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Eq,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Eq,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: None,
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                            10,
+                        ))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Ne,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: None,
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Ne,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Ne,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: None,
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                            10,
+                        ))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Lt,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: None,
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Lt,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Lt,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: None,
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                            10,
+                        ))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Lte,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: None,
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Lte,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Lte,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: None,
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                            10,
+                        ))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Gt,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: None,
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Gt,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Gt,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: None,
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                            10,
+                        ))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Gte,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: None,
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Gte,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: Some(cpu::Register(3)),
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    op: cpu::Comparison::Gte,
+                    dst: cpu::Register(1),
+                    operands: assembler::EitherSource::Reg(assembler::RegSource {
+                        op1: cpu::Register(2),
+                        op2: None,
+                        op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(
+                            10,
+                        ))),
+                    }),
+                },
+            ),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
+                div: cpu::Register(9),
+                rem: cpu::Register(2),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(3),
+                    op2: Some(cpu::Register(4)),
+                    op3: None,
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
+                div: cpu::Register(9),
+                rem: cpu::Register(2),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(3),
+                    op2: Some(cpu::Register(4)),
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
+                div: cpu::Register(9),
+                rem: cpu::Register(2),
+                operands: assembler::RegSource {
+                    op1: cpu::Register(3),
+                    op2: None,
+                    op3: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                },
+            }),
+            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::MakeClosure {
+                dst: cpu::Register(5),
+                code: cpu::MachineRegister(6),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MemCpy {
+                dst: cpu::MachineRegister(1),
+                src: cpu::MachineRegister(2),
+                count: assembler::RegAndOffset {
+                    op1: None,
+                    op2: Some(assembler::Native::Raw(assembler::Reference::Resolved(1))),
+                },
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Typep {
+                dst: cpu::Register(1),
+                src: cpu::Register(1),
+                compare: assembler::Reference::Resolved(3),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(
+                parser::UnresolvedInstruction::MComparison {
+                    dst: cpu::Register(0),
+                    op: cpu::Comparison::Gte,
+                    operands: parser::EitherSource::Mach(parser::MachSource {
+                        op1: cpu::MachineRegister(1),
+                        op2: Some(cpu::MachineRegister(2)),
+                        op3: None,
+                    }),
+                },
+            ),
+        ]
+    }
+
+    pub fn expected_resolved<'a>() -> assembler::Layout<'a> {
+        let tokens = assembler::tokenize(SOURCE).unwrap();
+        let ast = assembler::parse(&tokens).unwrap();
+        let mut layout = assembler::layout(ast).unwrap();
+        assembler::resolve(&mut layout).unwrap();
+        layout
+    }
+
+    #[test]
+    pub fn instructions() {
+        let tokens = assembler::tokenize(SOURCE).unwrap();
+        let ast = assembler::parse(&tokens).unwrap();
+        let mut layout = assembler::layout(ast).unwrap();
+        assembler::resolve(&mut layout).unwrap();
+        let r = assembler::emit(&layout).unwrap();
+
+        assert_eq!(
+            r,
+            vec![assembler::Section {
+                data: vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 39, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0,
+                    0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 176, 0, 0, 0, 0,
+                    0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 64, 0, 0, 0, 0, 0,
+                    0, 16, 0, 0, 0, 0, 0, 0, 0, 2, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+                    17, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 2, 64, 0, 0, 0, 0, 0, 0, 176, 0, 0, 0, 0, 0, 0, 0, 3, 5, 64, 0,
+                    0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 3, 5, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 3, 5, 17, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 3, 5, 1, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 3, 5, 64, 0, 0, 0, 0, 0, 176, 0, 0, 0, 0, 0, 0, 0, 4,
+                    5, 64, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 4, 5, 17, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 4, 5, 17, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 4, 5, 1, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 5, 64, 0, 0, 0, 0, 0, 176, 0, 0, 0, 0,
+                    0, 0, 0, 38, 64, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 38, 17, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 17, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0,
+                    0, 38, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 64, 0, 0, 0, 0, 0, 0,
+                    176, 0, 0, 0, 0, 0, 0, 0, 7, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8,
+                    18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 36, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 65, 0, 0,
+                    0, 0, 0, 210, 4, 0, 0, 0, 0, 0, 1, 9, 19, 65, 0, 0, 0, 0, 0, 255, 255, 255,
+                    127, 0, 0, 0, 0, 9, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 5, 38, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 38, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 9, 20, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 17, 50, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 17, 50, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0,
+                    9, 17, 64, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 9, 50, 19, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 9, 50, 19, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 9, 64,
+                    20, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 9, 21, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 9, 9, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 53, 8, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 53, 6, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0,
+                    0, 9, 5, 54, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 5, 54, 0, 0, 0, 0, 0, 8,
+                    0, 0, 0, 0, 0, 0, 0, 10, 19, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 19,
+                    52, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 10, 19, 64, 0, 0, 0, 0, 0, 5, 0, 0,
+                    0, 0, 0, 0, 0, 10, 52, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 52, 22,
+                    0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 10, 64, 22, 0, 0, 0, 0, 0, 5, 0, 0, 0,
+                    0, 0, 0, 0, 11, 17, 18, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 17, 18, 51,
+                    0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 11, 17, 18, 64, 0, 0, 0, 0, 8, 0, 0, 0, 0,
+                    0, 0, 0, 12, 20, 21, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 20, 21, 54, 0,
+                    0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 12, 20, 21, 64, 0, 0, 0, 0, 12, 0, 0, 0, 0, 0,
+                    0, 0, 13, 2, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 19, 2, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 4, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    16, 21, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 1, 2, 3, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 18, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 4, 5,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 21, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 10, 11, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    23, 1, 2, 35, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 23, 1, 2, 64, 0, 0, 0, 0, 10,
+                    0, 0, 0, 0, 0, 0, 1, 28, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 28, 1, 2,
+                    35, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 28, 1, 2, 64, 0, 0, 0, 0, 10, 0, 0, 0,
+                    0, 0, 0, 1, 24, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 24, 1, 2, 35, 0,
+                    0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 24, 1, 2, 64, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0,
+                    0, 1, 29, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29, 1, 2, 35, 0, 0, 0,
+                    0, 5, 0, 0, 0, 0, 0, 0, 1, 29, 1, 2, 64, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 1,
+                    30, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 1, 2, 35, 0, 0, 0, 0, 5,
+                    0, 0, 0, 0, 0, 0, 1, 30, 1, 2, 64, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 1, 33, 1,
+                    2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 1, 2, 35, 0, 0, 0, 0, 5, 0, 0, 0,
+                    0, 0, 0, 1, 33, 1, 2, 64, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 1, 34, 1, 2, 3, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 34, 1, 2, 35, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0,
+                    1, 34, 1, 2, 64, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 1, 31, 1, 2, 3, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 31, 1, 2, 35, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 31,
+                    1, 2, 64, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 1, 32, 1, 2, 3, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 32, 1, 2, 35, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 32, 1, 2,
+                    64, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 1, 27, 9, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 27, 9, 2, 3, 36, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 27, 9, 2, 3, 64,
+                    0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 37, 5, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 41, 17, 18, 64, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 40, 1, 1, 0, 0, 0, 0, 0,
+                    3, 0, 0, 0, 0, 0, 0, 0, 32, 0, 17, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0
+                ],
+                base: 128
+            }]
+        );
     }
 }

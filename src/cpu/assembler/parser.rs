@@ -1,5 +1,5 @@
 use crate::cpu::{
-    self, TwoRegs,
+    self,
     assembler::tokenizer::AssemblyToken::{self},
 };
 
@@ -874,6 +874,18 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             cpu::Instruction::GetPayload { dst, src },
         ))
     }
+    fn parse_req(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        self.expect_identifier("REQ")?;
+        let dst = self.try_register();
+        let dst = self.expect(dst, "A register")?;
+        self.expect_comma()?;
+        let size = self.try_register();
+        let size = self.expect(size, "A register")?;
+        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Req {
+            dst,
+            size,
+        }))
+    }
     fn parse_cons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("CONS")?;
         let dst = self.try_register();
@@ -910,7 +922,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         self.expect_comma()?;
         let src = self.try_register();
         let src = self.expect(src, "A register")?;
-        Ok(TwoRegs { dst, src })
+        Ok(cpu::TwoRegs { dst, src })
     }
     fn parse_car(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("CAR")?;
@@ -1108,6 +1120,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(AssemblyToken::Identifier("SETPAYLOAD")) => Ok(Some(self.parse_setpayload()?)),
             Some(AssemblyToken::Identifier("GETPAYLOAD")) => Ok(Some(self.parse_getpayload()?)),
 
+            Some(AssemblyToken::Identifier("REQ")) => Ok(Some(self.parse_req()?)),
             Some(AssemblyToken::Identifier("CONS")) => Ok(Some(self.parse_cons()?)),
             Some(AssemblyToken::Identifier("UNCONS")) => Ok(Some(self.parse_uncons()?)),
 
@@ -1159,7 +1172,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
 }
 
-pub fn parser_new<'input>(
+pub fn parse<'input>(
     tokens: &[AssemblyToken<'input>],
 ) -> Result<Vec<AssemblyLine<'input>>, ParserError<'input>> {
     let mut p = NParser {
@@ -1173,11 +1186,16 @@ pub fn parser_new<'input>(
 
 #[cfg(test)]
 mod test {
-    use crate::cpu::assembler::{parser, test::expected_tokens};
+    use crate::cpu::assembler::{
+        parser,
+        test::{expected_lines, expected_tokens},
+    };
 
     #[test]
     fn test_parse() {
         let tokens = expected_tokens();
-        parser::parser_new(&tokens).unwrap();
+        let ast = parser::parse(&tokens).unwrap();
+        let expected = expected_lines();
+        assert_eq!(ast, expected);
     }
 }

@@ -7,77 +7,42 @@
 .equ kbbufferstart: 0x28030
 .equ kbbufferend: 0x28080
 .equ symboltable: 0x28090
+.equ ramsize: 0x00ffffff00000000 ; The very first MMAPPED word must be RAM size.
+
 .equ fixnumtag: 1
 .equ symboltag: 2
 .equ constag: 3
 .equ chartag: 6
 .equ stringtag: 7
 
+.equ stackptr: 0x80000 ; TODO: Ask ram how much?
+.equ cons_free_start: 0x30000
+.equ cons_free_end: 0x40000
+.equ gen_free_start: 0x40000
+.equ gen_free_end: 0x50000
+
 .org 0x00ffffff00020000
-    nil_str: .str "nil"
-    t_str: .str "t"
-    symbol_str: .str "symbol"
-    cons_str: .str "cons"
-    fixnum_str: .str "fixnum"
-    quote_str: .str "quote"
-    nil_symbol:
-        .w #$'nil_str
-        .w #!'nil_symbol
-    t_symbol:
-        .w #$'t_str
-        .w #!'nil_symbol
-    quote_symbol:
-        .w #$'quote_str
-        .w #!'nil_symbol
-    trap_str: .str "You broke the computer!"
-    symbol_symbol:
-        .w 'symbol_str
-        .w #!'nil_symbol
-    cons_symbol:
-        .w 'cons_str
-        .w #!'nil_symbol
-    fixnum_symbol:
-        .w 'fixnum_str
-        .w #!'nil_symbol
     boot_str:
         .str "Booting...\n"
     boot_program:
-        .str " a"
-
-barecons:
-    .w #!'t_symbol
-    .w #!'t_symbol
-nil_entry:
-    .w #!'nil_symbol
-    .w #['fixnum_entry
-
-fixnum_entry:
-    .w #!'fixnum_symbol
-    .w #['symbol_entry
-
-symbol_entry:
-    .w #!'symbol_symbol
-    .w #['t_entry
-
-t_entry:
-    .w #!'t_symbol
-    .w #!'nil_symbol
-
-numberstr:
-    ; .str "1234"
-    ; .str "'1234"
-    ; .str "\"A string\" "
-    .str "t"
-otherstring:
-    .str " (a list is (made up) of 12 . symbols)"
+        .str "( this is a (program))"
+    trap_str:
+        .str "You broke the computer!\n"
+    oom:
+        .str "Out of memory!"
+    quote:
+        .w #!0
 
 .org 0x00fffffffff19000
 bootstrap:
     ; Initial setup
-    ; Set starting values
+
+    ; Set stack position
+    MOV SP, 'stackptr
+
+    ; Set up base BIOS interrupts
+    MOV A1, 0x00
     MOV ['pressedkeyid], A1
-    MOV A1, 0x40000
-    MOV ['freeptr], A1
     MOV A1, 'kbbufferstart
     MOV ['kbstart], A1
     MOV ['kbend], A1
@@ -85,11 +50,6 @@ bootstrap:
     MOV ['kblen], A1
     MOV A0, #0
     MOV ['cursorpos], A0
-    MOV A0, #['nil_entry
-    MOV ['symboltable], A0
-
-    ; Set stack position
-    MOV SP, ['freeptr]
 
     ; Set interrupt handlers
     MOV VBR, 0x7f00
@@ -107,6 +67,69 @@ bootstrap:
     MOV R0, #$'boot_str
     CALL 'format
 
+; TODO: Attempt to load LISP image
+
+; Fall back to defining a LISP
+; Need to start setting up symbols and stuff.
+  fallback:
+    MOV A1, 'cons_free_start
+    MOV CONS_FREE, A1
+    MOV A1, 'cons_free_end
+    MOV CONS_END, A1
+    MOV A1, 'gen_free_start
+    MOV GEN_FREE, A1
+    MOV A1, 'gen_free_end
+    MOV GEN_END, A1
+
+    MOV R0, #3
+    MOV R1, 0x6C696E ; 'nil'
+    MOV R5, #$0
+    MOV R6, #2
+    REQ R5, R6 ; Allocate a string containting "nil"
+    MOV R0, R5
+    MOV R1, #!0 ; Temporary undefined symbol
+    MOV R5, #!0 ; Allocate a symbol ["nil", nil]
+    MOV R6, #2
+    REQ R5, R6
+    GETPAYLOAD A0, R5
+    MOV [A0 + 8], R5 ; Actually write NIL into the plist
+    MOV NIL, R5 ; Define the real NIL
+
+    MOV ['symboltable], NIL ; Special! Start an empty list
+    CONS R4, NIL, NIL
+    MOV ['symboltable], R4
+
+
+    MOV R0, #1
+    MOV R1, 0x74 ; 't'
+    MOV R5, #$0
+    MOV R6, #2
+    REQ R5, R6 ; Allocate a string containting "t"
+    MOV R0, R5
+    MOV R1, NIL 
+    MOV R5, #!0 ; Allocate a symbol ["t", nil]
+    MOV R6, #2
+    REQ R5, R6
+    MOV T, R5
+    MOV R6, ['symboltable] ; prepend
+    CONS R4, R5, R6
+    MOV ['symboltable], R4
+
+    MOV R0, #5
+    MOV R1, 0x7474747474 ; 'quote'
+    MOV R5, #$0
+    MOV R6, #2
+    REQ R5, R6 ; Allocate a string containting "quote"
+    MOV R0, R5
+    MOV R1, NIL 
+    MOV R5, #!0 ; Allocate a symbol ["quote", nil]
+    MOV R6, #2
+    REQ R5, R6
+    MOV ['quote], R5
+    MOV R6, ['symboltable] ; prepend
+    CONS R4, R5, R6
+    MOV ['symboltable], R4
+
   dumbloop:
     MOV R0, #$'boot_program
     MOV R1, #0
@@ -118,8 +141,7 @@ bootstrap:
     HALT
     JUMP 'dumbloop
 
-
-loop:
+  loop:
     CALL 'repl
     JUMP 'loop
 
@@ -217,16 +239,20 @@ keyboard_interrupt:
 ; R1: Size of allocation
 ; Results: R0 is modified.
 alloc:
-    PUSH A0
-    PUSH A1
-    MOV A0, ['freeptr]
-    SETPAYLOAD R0, A0
-    GETPAYLOAD A1, R1    ; *freeptr  += len
-    ADD A0, A0, A1 ; todo: Align
-    MOV ['freeptr], A0
-    POP A1
-    POP A0
-    IRETURN
+    ; PUSH A0
+    ; PUSH A1
+    ; MOV A0, ['freeptr]
+    ; SETPAYLOAD R0, A0
+    ; GETPAYLOAD A1, R1    ; *freeptr  += len
+    ; ADD A0, A0, A1 ; todo: Align
+    ; MOV ['freeptr], A0
+    ; POP A1
+    ; POP A0
+    ; IRETURN
+    MOV R0, #$'oom
+    CALL 'format
+    HALT
+    JUMP 'alloc
 
 ;;;
 ;;; Print
@@ -337,7 +363,7 @@ print_cons:
     CALL 'print
     POP R0
     CDR R0, R0
-    EQ R1, R0, #!'nil_symbol
+    EQ R1, R0, NIL
     JUMPIF R1, 'print_cons_end
 
     PUSH R0
@@ -386,7 +412,7 @@ print_stringslice:
 trap:
     MOV R1, 0x70
     MOV R0, #$'trap_str
-    CALL 'print
+    CALL 'format
   trap_loop:
     HALT
     JUMP 'trap_loop
@@ -600,9 +626,9 @@ read_number:
 read_quote:
     CALL 'read_string_next_char ; Skip '
     CALL 'read_stringslice
-    MOV R3, ['nil]
+    MOV R3, NIL
     CONS R3, R0, R3
-    MOV R0, #!'quote_symbol
+    MOV R0, ['quote]
     CONS R0, R0, R3
     RETURN
 
@@ -612,12 +638,12 @@ read_list:
     EQ R3, A1, \)
     JUMPIFNOT R3, 'read_list_nonempty
     CALL 'read_string_next_char ; Skip )
-    MOV R0, ['nil]
+    MOV R0, NIL
     RETURN
 
   read_list_nonempty:
     CALL 'read_stringslice ; Puts the new element in R0 and advances pointers.
-    MOV R4, ['nil]
+    MOV R4, NIL
     CONS R4, R0, R4 ; (h)
     PUSH R4
 
@@ -645,7 +671,7 @@ read_list:
   read_list_more_list:
     PUSH R4
     CALL 'read_stringslice ; Puts the new element in R0 and advances pointers.
-    MOV R5, ['nil]
+    MOV R5, NIL
     CONS R0, R0, R5 ; (h)
     POP R4
     SETCDR R4, R0
@@ -655,7 +681,7 @@ read_list:
     
 
 read_symbol:
-    MOV A3, ['nil]
+    MOV A3, NIL
     SUB SP, SP, 256 ; Scratch buffer
     MOV A3, SP
     MOV R4, #0 ; Strlen
@@ -688,8 +714,7 @@ read_symbol:
     PUSH R4 ; Keep the new string length
     PUSH A3
   find_symbol_loop: 
-    MOV R5, ['nil]
-    EQ R3, R2, R5 ; End of table
+    EQ R3, R2, NIL ; End of table
     JUMPIF R3, 'symbol_not_found
 
     UNCONS R0, R2, R2 ; R1 = symbol, R2 = next.
@@ -728,25 +753,23 @@ read_symbol:
     ADD A3, SP, 32
 
     ; Interning
-    MOV R0, #$0 ; Request a string.
-    ADD R1, R4, #8 ; Of <header+count>
-    INT 0x02 ; Alloc
-    GETPAYLOAD A1, R0             ; R0 points to stringobj
-    MEMCPY A1, A3, R1             ; Put strdata into A1
-    PUSH R0                       ; push str
+    MOV R8, #$0 ; Request a string.
+    ADD R6, R4, #15 ; Round size
+    DIV R6, R7, R6, #8
+    REQ R8, R6
+    GETPAYLOAD A1, R8             ; R8 points to stringobj
+    MEMCPY A1, A3, R4 + #8        ; Put strdata into A1
 
-    MOV R0, #!0 ; Request symbol
-    MOV R1, #16 ; sizeof symbol
-    INT 0x02
-    GETPAYLOAD A1, R0 ; Address the symbol
-    POP R1            ; Grab the symbol str
-    MOV [A1], R1      ; name = str
-    MOV R1, ['nil]    ;
-    MOV [A1 + 8], R1      ; plist = nil
+    MOV R5, #!0 ; Request symbol
+    MOV R6, #2
+    MOV R0, R8 ; pointing to string
+    MOV R1, NIL ; empty plist
+    REQ R5, R6
 
     MOV R1, ['symboltable]
-    CONS R1, R0, R1
+    CONS R1, R5, R1
     MOV ['symboltable], R1 ; symbol table = cons(newsym, symbol table)
+    MOV R0, R5
 
   read_symbol_end:  ; Ensure: A0, A1, R1, R2
     POP R1 ; End of symbol
@@ -782,10 +805,13 @@ read_string_string:
     MOV A3, SP
     PUSH R1
     MOV [A3], R4
-    MOV R0, #$0 ; Request a string.
-    ADD R1, R4, #8 ; Of <header+count>
-    INT 0x02 ; Alloc
-    GETPAYLOAD A1, R0
+    MOV R5, #$0 ; Request a string.
+    MOV R0, R4  ; Of length R4
+    ADD R6, R4, #7 ; Round to next word
+    DIV R6, R7, R6, #8
+    ADD R6, R6, #1
+    REQ R5, R6
+    GETPAYLOAD A1, R5 ; Put data into string
     MEMCPY A1, A3, R4 + #8
     POP R1
     ADD SP, SP, 264
@@ -795,6 +821,4 @@ eval:
     RETURN
 
 .org 0xffffffffffffffe0
-    .w 'bootstrap
-    nil: .w #!'nil_symbol
-    t: .w #!'t_symbol
+    JUMP 'bootstrap
