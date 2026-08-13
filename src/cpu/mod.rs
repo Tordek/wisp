@@ -1007,8 +1007,7 @@ pub enum Trap {
 
 #[cfg(test)]
 mod tests {
-
-    use crate::ram::Memory;
+    use crate::ram::RAM;
 
     use super::*;
 
@@ -1028,9 +1027,10 @@ mod tests {
     }
 
     fn test_setup<'a>() -> Bus<'a> {
-        let memory = Memory::new(0x10000);
+        let memory = RAM::new(0x10000);
         let mut bus = Bus::new();
-        bus.install(0x0..0x10000, Box::new(memory)).unwrap();
+        bus.install(0x0..0x10000, Box::new(memory.ram_device))
+            .unwrap();
         bus
     }
 

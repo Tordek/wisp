@@ -3,7 +3,7 @@ use std::error::Error;
 use crate::{
     bus::{Bus, Device, Native},
     cpu::{self, assembler},
-    ram::Memory,
+    ram::RAM,
 };
 
 const BIOS_ASM: &str = include_str!("bios.asm");
@@ -36,7 +36,8 @@ pub struct Firmware {
 impl Firmware {
     pub const KEYBOARD_INTERRUPT: usize =
         (cpu::InterruptTableOffset::END_RESERVED_INTERRUPTS.0 + 0x01) as usize;
-    pub const PRESSED_KEY_ID: usize = 0x28008;
+    pub const VRAM_LOCATION: std::ops::Range<u64> = 0x00ffffff000b8000..0x00ffffff000c0000;
+    pub const KEYBOARD_LOCATION: std::ops::Range<u64> = 0x00ffffff000c0000..0x00ffffff000d0000;
 
     fn make_firmware<'a>() -> Result<Firmware, FirmwareError<'a>> {
         let rom = assembler::assemble(BIOS_ASM)?;
@@ -101,19 +102,34 @@ impl<'a> WispMachine<'a> {
     pub fn new() -> Result<Self, WispMachineError> {
         let mut bus = Bus::new();
         let cpu = cpu::Cpu::default();
-        let ram = Memory::new(2 << 20);
+        let ram = RAM::new(2 << 20);
+        let vram = RAM::new(2 << 14);
+        let kbram = RAM::new(2 << 10);
+
         let firmware = Firmware::make_firmware()
             .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;
 
-        bus.install(0x00000000..0xffffffff, Box::new(ram))
+        bus.install(0x00000000..0xffffffff, Box::new(ram.ram_device))
             .expect("install");
         bus.install(
-            0x00ffffff00000000..0x00ffffffffffffff,
+            0x00ffffff00000000..0x00ffffff00001000,
+            Box::new(ram.configuration_device),
+        )
+        .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;
+
+        bus.install(Firmware::VRAM_LOCATION, Box::new(vram.ram_device))
+            .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;
+
+        bus.install(Firmware::KEYBOARD_LOCATION, Box::new(kbram.ram_device))
+            .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;
+
+        bus.install(
+            0x00fffffffff00000..0x00ffffffffffff00,
             Box::new(firmware.clone()),
         )
-        .expect("install");
+        .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;
         bus.install(0xffffffffffffff00..0xffffffffffffffff, Box::new(firmware))
-            .expect("install");
+            .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;
 
         Ok(Self { cpu, bus })
     }

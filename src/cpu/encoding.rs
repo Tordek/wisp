@@ -912,7 +912,6 @@ mod test {
                 match i {
                     parser::AssemblyLine::ResolvedInstruction(r) => {
                         let (lo, hi) = r.encode().map_err(|_| format!("Error encoding {:?}", r))?;
-                        dbg!(lo.to_le_bytes(), hi);
                         let decoded = cpu::Instruction::decode(lo, hi)
                             .map_err(|_| format!("Error decoding {:?}", r))?;
                         let (lo, hi) = decoded

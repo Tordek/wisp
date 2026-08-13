@@ -1,44 +1,50 @@
-.equ cursorpos: 0x28000 ; TODO: Map to VGA (00fffffff000b8000)
-.equ pressedkeyid: 0x28008 ; TODO: Map to KB DMA (00fffffff000c0000)
-.equ freeptr: 0x28010
-.equ kbstart: 0x28018
-.equ kbend: 0x28020
-.equ kblen: 0x28028
-.equ kbbufferstart: 0x28030
-.equ kbbufferend: 0x28080
-.equ symboltable: 0x28090
-.equ ramsize: 0x00ffffff00000000 ; The very first MMAPPED word must be RAM size.
+; Firmware reserved memory: 0x00 to 0x10000
+; This holds any firmware-specific variables like the default keyboard
+; handler's circular buffer.
+.equ freeptr: 0x10
+.equ kbstart: 0x18
+.equ kbend: 0x20
+.equ kblen: 0x28
+.equ kbbufferstart: 0x30
+.equ kbbufferend: 0x80
+.equ symboltable: 0x90
+.equ quote: 0xa0
+
+; Known memory mapped devices.
+; 0x00ff_ffff_00000000 forwards contains devices.
+.equ ramdevice: 0x00ffffff00000000 ; The very first MMAPPED device is Ram
+.equ vgastart: 0x00ffffff000b8000
+.equ cursorpos: 0x00ffffff000ba000
+.equ pressedkeyid: 0x00ffffff000c0010
 
 .equ fixnumtag: 1
 .equ symboltag: 2
 .equ constag: 3
 .equ chartag: 6
 .equ stringtag: 7
+.equ cons_free_start: 0x10000
+.equ cons_free_end: 0x20000
+.equ gen_free_start: 0x20000
+.equ gen_free_end: 0x30000
 
-.equ stackptr: 0x80000 ; TODO: Ask ram how much?
-.equ cons_free_start: 0x30000
-.equ cons_free_end: 0x40000
-.equ gen_free_start: 0x40000
-.equ gen_free_end: 0x50000
-
-.org 0x00ffffff00020000
+; Firmware constants
+.org 0x00fffffffff00000
     boot_str:
         .str "Booting...\n"
     boot_program:
-        .str "( this is a (program))"
+        .str "( this 'is a (program))"
     trap_str:
         .str "You broke the computer!\n"
     oom:
         .str "Out of memory!"
-    quote:
-        .w #!0
 
-.org 0x00fffffffff19000
+.org 0x00fffffffff01000
 bootstrap:
     ; Initial setup
 
     ; Set stack position
-    MOV SP, 'stackptr
+    MOV A0, 'ramdevice
+    MOV SP, [A0 + 0x10]
 
     ; Set up base BIOS interrupts
     MOV A1, 0x00
@@ -99,7 +105,6 @@ bootstrap:
     CONS R4, NIL, NIL
     MOV ['symboltable], R4
 
-
     MOV R0, #1
     MOV R1, 0x74 ; 't'
     MOV R5, #$0
@@ -116,7 +121,7 @@ bootstrap:
     MOV ['symboltable], R4
 
     MOV R0, #5
-    MOV R1, 0x7474747474 ; 'quote'
+    MOV R1, 0x65746F7571 ; 'quote'
     MOV R5, #$0
     MOV R6, #2
     REQ R5, R6 ; Allocate a string containting "quote"
@@ -130,6 +135,9 @@ bootstrap:
     CONS R4, R5, R6
     MOV ['symboltable], R4
 
+    MOV R0, ['symboltable] ; prepend
+    ; CALL 'print
+
   dumbloop:
     MOV R0, #$'boot_program
     MOV R1, #0
@@ -138,8 +146,8 @@ bootstrap:
     CALL 'print
     MOV R0, #\Newline
     INT 0xf0
-    HALT
-    JUMP 'dumbloop
+    ; HALT
+    ; JUMP 'dumbloop
 
   loop:
     CALL 'repl
@@ -432,8 +440,8 @@ kbpush:
     PUSH A3
     PUSH R0
     MOV A1, ['kbend]          ; A1 = *end
-    ADD A2, A1, 8             ; A2 = *end + 1
-    MOV A3, ['kbbufferend]
+    ADD A2, A1, 1             ; A2 = *end + 1
+    MOV A3, 'kbbufferend
     GTE R0, A2, A3 ; If a2 > limit, 
     JUMPIFNOT R0, PC + 32
     SUB A2, A2, 80            ; a2 -= size
@@ -441,7 +449,7 @@ kbpush:
     EQ R0, A2, A3             ; if *end+1 == *start
     JUMPIFNOT R0, PC + 32
     INT 0                     ; trap
-    MOV [A1], A0              ; *end = A0
+    MOV8 [A1], A0              ; *end = A0
     MOV ['kbend], A2          ; end = (end+1%10)
     POP R0
     POP A3
@@ -459,14 +467,16 @@ kbpop:
 
     PUSH R1
     PUSH A2
+    PUSH A3
     MOV A2, ['kbstart]
     MOV A0, [A2]
-    ADD A2, A2, 8             ; A2 = *start + 1
-    MOV A3, ['kbbufferend]
+    ADD A2, A2, 1             ; A2 = *start + 1
+    MOV A3, 'kbbufferend
     GTE R1, A2, A3 ; If a2 > limit, 
     JUMPIFNOT R1, PC + 32
     SUB A2, A2, 80            ; a2 -= size
     MOV ['kbstart], A2
+    POP A3
     POP A2
     POP R1
     RETURN
