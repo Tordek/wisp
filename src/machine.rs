@@ -3,7 +3,7 @@ use std::error::Error;
 use crate::{
     bus::{Bus, Device, Native},
     cpu::{self, assembler},
-    ram::RAM,
+    ram::Ram,
 };
 
 const BIOS_ASM: &str = include_str!("bios.asm");
@@ -102,9 +102,9 @@ impl<'a> WispMachine<'a> {
     pub fn new() -> Result<Self, WispMachineError> {
         let mut bus = Bus::new();
         let cpu = cpu::Cpu::default();
-        let ram = RAM::new(2 << 20);
-        let vram = RAM::new(2 << 14);
-        let kbram = RAM::new(2 << 10);
+        let ram = Ram::new(2 << 20);
+        let vram = Ram::new(2 << 14);
+        let kbram = Ram::new(2 << 10);
 
         let firmware = Firmware::make_firmware()
             .map_err(|x| WispMachineError::SetupError(format!("{:?}", x)))?;

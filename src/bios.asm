@@ -8,7 +8,10 @@
 .equ kbbufferstart: 0x30
 .equ kbbufferend: 0x80
 .equ symboltable: 0x90
+
+; Special symbols
 .equ quote: 0xa0
+.equ if: 0xa8
 
 ; Known memory mapped devices.
 ; 0x00ff_ffff_00000000 forwards contains devices.
@@ -20,6 +23,7 @@
 .equ fixnumtag: 1
 .equ symboltag: 2
 .equ constag: 3
+.equ functiontag: 5
 .equ chartag: 6
 .equ stringtag: 7
 .equ cons_free_start: 0x10000
@@ -32,9 +36,13 @@
     boot_str:
         .str "Booting...\n"
     boot_program:
-        .str "( this 'is a (program))"
+        .str "'('t if 2)"
     trap_str:
         .str "You broke the computer!\n"
+    not_found:
+        .str "Symbol not found."
+    not_function:
+        .str "Not a function."
     oom:
         .str "Out of memory!"
 
@@ -46,9 +54,7 @@ bootstrap:
     MOV A0, 'ramdevice
     MOV SP, [A0 + 0x10]
 
-    ; Set up base BIOS interrupts
-    MOV A1, 0x00
-    MOV ['pressedkeyid], A1
+    ; Set up base BIOS interrupts variables
     MOV A1, 'kbbufferstart
     MOV ['kbstart], A1
     MOV ['kbend], A1
@@ -91,12 +97,11 @@ bootstrap:
     MOV R1, 0x6C696E ; 'nil'
     MOV R5, #$0
     MOV R6, #2
-    REQ R5, R6 ; Allocate a string containting "nil"
-    MOV R0, R5
+    REQ R0, R5, R6 ; Allocate a string containting "nil"
     MOV R1, #!0 ; Temporary undefined symbol
     MOV R5, #!0 ; Allocate a symbol ["nil", nil]
     MOV R6, #2
-    REQ R5, R6
+    REQ R5, R5, R6
     GETPAYLOAD A0, R5
     MOV [A0 + 8], R5 ; Actually write NIL into the plist
     MOV NIL, R5 ; Define the real NIL
@@ -109,36 +114,75 @@ bootstrap:
     MOV R1, 0x74 ; 't'
     MOV R5, #$0
     MOV R6, #2
-    REQ R5, R6 ; Allocate a string containting "t"
-    MOV R0, R5
+    REQ R0, R5, R6 ; Allocate a string containting "t"
     MOV R1, NIL 
     MOV R5, #!0 ; Allocate a symbol ["t", nil]
     MOV R6, #2
-    REQ R5, R6
+    REQ R5, R5, R6
     MOV T, R5
     MOV R6, ['symboltable] ; prepend
-    CONS R4, R5, R6
-    MOV ['symboltable], R4
+    CONS R0, R5, R6
+    MOV ['symboltable], R0
 
     MOV R0, #5
     MOV R1, 0x65746F7571 ; 'quote'
     MOV R5, #$0
     MOV R6, #2
-    REQ R5, R6 ; Allocate a string containting "quote"
-    MOV R0, R5
+    REQ R0, R5, R6 ; Allocate a string containting "quote"
     MOV R1, NIL 
     MOV R5, #!0 ; Allocate a symbol ["quote", nil]
     MOV R6, #2
-    REQ R5, R6
+    REQ R5, R5, R6
     MOV ['quote], R5
     MOV R6, ['symboltable] ; prepend
-    CONS R4, R5, R6
-    MOV ['symboltable], R4
+    CONS R0, R5, R6
+    MOV ['symboltable], R0
 
-    MOV R0, ['symboltable] ; prepend
-    ; CALL 'print
+    MOV R0, #2
+    MOV R1, 0x6669 ; 'if'
+    MOV R5, #$0
+    MOV R6, #2
+    REQ R0, R5, R6 ; Allocate a string containting "if"
+    MOV R1, NIL 
+    MOV R5, #!0 ; Allocate a symbol ["if", nil]
+    MOV R6, #2
+    REQ R5, R5, R6
+    MOV ['if], R5
+    MOV R6, ['symboltable] ; prepend
+    CONS R0, R5, R6
+    MOV ['symboltable], R0
+
+    ; Create the root ENV
+    MOV ENV, NIL ; Empty list
+    CONS R5, NIL, NIL ; (NIL . NIL)
+    CONS ENV, R5, ENV ; ((NIL . NIL))
+    CONS R5, T, T ; (T . T)
+    CONS ENV, R5, ENV ; ((T . T) (NIL . NIL))
+    MOV R4, ['if]
+    MOV R5, #123
+    CONS R5, R4, R5
+    CONS ENV, R5, ENV ; (IF . 123)
+
+    MOV R0, ENV
+    CALL 'print
+
+    MOV A1, 'repl_notfound
+    MOV [VBR + 64], A1
+    MOV A1, 'repl_notfunction
+    MOV [VBR + 80], A1
 
   dumbloop:
+    MOV R0, #\Newline
+    INT 0xf0
+    MOV R1, #0x07
+    MOV R0, #\>
+    INT 0xf0
+    MOV R0, #\Space
+    INT 0xf0
+    MOV R0, #$'boot_program
+    CALL 'format
+    MOV R0, #\Newline
+    INT 0xf0
     MOV R0, #$'boot_program
     MOV R1, #0
     CALL 'read_string
@@ -178,7 +222,7 @@ video_interrupt:
     ; 0xb8000 + cursorpos(r2) * 2 + 1 = char
     MUL R2, R2, #2
     GETPAYLOAD A0, R2
-    ADD A0, A0, 0xB8000; ; VGA Start
+    ADD A0, A0, 0x00ffffff000B8000; ; VGA Start
     ; Save ATTR
     GETPAYLOAD A2, R1
     MOV8 [A0], A2
@@ -205,7 +249,7 @@ video_interrupt:
     MEMCPY A0, A1, 3840 ; Slide everything up one.
     MOV A0, 0xb8f00
     MOV A1, 0x07
-    MOV A2, #\Space
+    MOV A2, \Space
   clearline_loop:
     MOV8 [A0], A1
     ADD A0, A0, 1
@@ -296,7 +340,7 @@ print_symbol:
 print_string: ; Prints the string at R0
     PUSH R0
     MOV R0, #\"
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     POP R0
     GETPAYLOAD A0, R0
@@ -362,7 +406,7 @@ print_arbitrary:
 print_cons:
     PUSH R0
     MOV R0, #\(
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     POP R0
   print_cons_next:
@@ -376,7 +420,7 @@ print_cons:
 
     PUSH R0
     MOV R0, #\Space
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     POP R0
 
@@ -386,16 +430,16 @@ print_cons:
 
     PUSH R0
     MOV R0, #\.
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     MOV R0, #\Space
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     POP R0
     CALL 'print
   print_cons_end:
     MOV R0, #\)
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     RETURN
 
@@ -411,26 +455,34 @@ print_stringslice:
     MOV R0, #\0
     SETPAYLOAD R0, A1
     ADD A0, A0, 1
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     POP R0
     SUB R0, R0, #1
     JUMP 'print_stringslice_loop
   
 trap:
-    MOV R1, 0x70
     MOV R0, #$'trap_str
     CALL 'format
   trap_loop:
     HALT
     JUMP 'trap_loop
 
+repl_notfound:
+    MOV R0, #$'not_found
+    CALL 'format
+    IRETURN
+
+repl_notfunction:
+    MOV R0, #$'not_function
+    CALL 'format
+    IRETURN
+
 format:
     GETPAYLOAD A0, R0
     MOV R0, [A0]
     ADD A0, A0, 8
-    CALL 'print_stringslice
-    RETURN
+    JUMP 'print_stringslice
 
 ; Puts A0 into the keyboard circular buffer.
 ; Traps if full.
@@ -500,7 +552,7 @@ repl:
     JUMP 'repl
     MOV R0, #\0
     SETPAYLOAD R0, A0
-    MOV R1, 0x07
+    MOV R1, #0x07
     INT 0xf0
     JUMP 'repl
 
@@ -766,20 +818,18 @@ read_symbol:
     MOV R8, #$0 ; Request a string.
     ADD R6, R4, #15 ; Round size
     DIV R6, R7, R6, #8
-    REQ R8, R6
-    GETPAYLOAD A1, R8             ; R8 points to stringobj
+    REQ R0, R8, R6
+    GETPAYLOAD A1, R0             ; R8 points to stringobj
     MEMCPY A1, A3, R4 + #8        ; Put strdata into A1
 
     MOV R5, #!0 ; Request symbol
     MOV R6, #2
-    MOV R0, R8 ; pointing to string
     MOV R1, NIL ; empty plist
-    REQ R5, R6
+    REQ R0, R5, R6
 
     MOV R1, ['symboltable]
-    CONS R1, R5, R1
+    CONS R1, R0, R1
     MOV ['symboltable], R1 ; symbol table = cons(newsym, symbol table)
-    MOV R0, R5
 
   read_symbol_end:  ; Ensure: A0, A1, R1, R2
     POP R1 ; End of symbol
@@ -793,12 +843,10 @@ read_symbol:
 read_string_string:
     SUB SP, SP, 256 ; Scratch buffer
     MOV A3, SP
-    MOV [SP], SP
-    SUB SP, SP, 8 ; string header
     MOV R4, #0 ; Strlen
     CALL 'read_string_next_char ; Skip "
   read_string_loop:
-    EQ R3, A1, \" ; End of string
+    EQ R3, A1, \" ; End of string ?
     JUMPIF R3, 'read_string_endstring
     EQ R3, A1, \\ ; Backslash: Ignore specialness.
     JUMPIFNOT R3, 'read_string_addchar
@@ -812,22 +860,101 @@ read_string_string:
     JUMP 'read_string_loop
   read_string_endstring:
     CALL 'read_string_next_char ; Skip "
+    PUSH R4
     MOV A3, SP
-    PUSH R1
-    MOV [A3], R4
     MOV R5, #$0 ; Request a string.
-    MOV R0, R4  ; Of length R4
-    ADD R6, R4, #7 ; Round to next word
+    ADD R6, R4, #15 ; Round to next word
     DIV R6, R7, R6, #8
-    ADD R6, R6, #1
-    REQ R5, R6
-    GETPAYLOAD A1, R5 ; Put data into string
+    REQ R0, R5, R6
+    GETPAYLOAD A1, R0 ; Put data into string
     MEMCPY A1, A3, R4 + #8
-    POP R1
     ADD SP, SP, 264
     RETURN
 
+; Expects:
+; Object in R0.
+; Environment in ENV.
 eval:
+    ; Numbers and strings evaluate to themselves.
+    TYPEP R1, R0, 'fixnumtag ; Tag == fixnum?
+    JUMPIFNOT R1, 'eval_notfixnum
+    RETURN
+eval_notfixnum:
+
+    TYPEP R1, R0, 'stringtag ; Tag == string?
+    JUMPIFNOT R1, 'eval_notstring
+    RETURN
+eval_notstring:
+
+    ; Symbols require a lookup in ENV.
+    TYPEP R1, R0, 'symboltag ; Tag == symbol?
+    JUMPIFNOT R1, 'eval_notsym
+    JUMP 'eval_symbol
+eval_notsym:
+
+    TYPEP R1, R0, 'constag ; Tag == cons?
+    JUMPIFNOT R1, 'eval_notcons
+    JUMP 'eval_cons
+eval_notcons:
+
+    INT 0x08 ; Evaluating an invalid object.
+
+; Expects:
+; Object in R0.
+; Environment in ENV.
+eval_symbol:
+    MOV R4, ENV
+
+  eval_symbol_find_loop:
+    EQ R2, R4, NIL
+    JUMPIFNOT R2, 'eval_symbol_next
+    INT 0x0a ; Interrupt: not found.
+  eval_symbol_next:
+    UNCONS R1, R4, R4 ; hd, tl
+    UNCONS R1, R2, R1 ; sym, val
+    EQ R3, R1, R0 ;
+    JUMPIFNOT R3, 'eval_symbol_find_loop ; Try again
+    MOV R0, R2 ; Found!
+    RETURN
+
+; Expects:
+; Object in R0.
+; Environment in ENV.
+eval_cons:
+    UNCONS R0, R1, R0
+
+    MOV R3, ['quote]
+    EQ R2, R0, R3
+    JUMPIFNOT R2, 'eval_cons_notquote
+    CAR R0, R1
+    RETURN
+  eval_cons_notquote:
+
+    MOV R3, ['if] ; (if cond t f) => R0 = if, R0 = (cond t if)
+    EQ R2, R0, R3
+    JUMPIFNOT R2, 'eval_cons_notif
+    UNCONS R0, R1, R1 ; Put condition in R0 ; R0 = cond, R1 = (t if)
+    PUSH R1
+    CALL 'eval ; Eval it
+    POP R1
+    EQ R2, R0, NIL ; true?
+    UNCONS R0, R1, R1 ; R0 = t, R1 = (f)
+    JUMPIFNOT R2, 'eval_cons_true
+    CAR R0, R1 ; R0 = f
+  eval_cons_true:
+    CALL 'eval ; Eval whatever is at R0
+    RETURN
+
+  eval_cons_notif:
+    ; CALL 'eval ; Get the function in 'eval
+    TYPEP R2, R0, 'functiontag ; Is function?
+    JUMPIF R2, 'eval_function_call
+    INT 0x0a ; Not a function call.
+
+  eval_function_call:
+    ; TODO: Eval all params, then call apply
+
+
     RETURN
 
 .org 0xffffffffffffffe0

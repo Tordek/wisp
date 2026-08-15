@@ -72,6 +72,7 @@ fn register(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     terminated(
         alt((
             preceded(tag("R"), decimal).map(|c| AssemblyToken::Register(cpu::Register(c as u8))),
+            value(AssemblyToken::Register(cpu::Cpu::ENV), tag("ENV")),
             value(AssemblyToken::Register(cpu::Cpu::NIL), tag("NIL")),
             value(AssemblyToken::Register(cpu::Cpu::T), tag("T")),
         )),

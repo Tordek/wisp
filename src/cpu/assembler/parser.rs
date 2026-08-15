@@ -417,6 +417,11 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 let r = self.expect(r, "A reference")?;
                 Ok(Native::Raw(r))
             }
+            Some(AssemblyToken::Character(_)) => {
+                let r = self.try_char();
+                let r = self.expect(r, "A reference")?;
+                Ok(Native::Raw(Reference::Resolved(r as i64)))
+            }
             Some(AssemblyToken::Hash) => self.expect_lisp_value(),
             _ => Err(ParserError::Expected {
                 expected: "A value",
@@ -455,7 +460,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let str = self.expect(str, "A string")?;
 
         let unescaped = unescape(str)?;
-        let lenblock = cpu::LispWord::fixnum(unescaped.len() as u64);
+        let lenblock = cpu::LispWord::fixnum(unescaped.len() as i64);
 
         let mut encoded = lenblock.0.to_le_bytes().to_vec();
         encoded.extend(unescaped.as_bytes().to_vec());
@@ -879,10 +884,14 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let dst = self.try_register();
         let dst = self.expect(dst, "A register")?;
         self.expect_comma()?;
+        let prototype = self.try_register();
+        let prototype = self.expect(prototype, "A register")?;
+        self.expect_comma()?;
         let size = self.try_register();
         let size = self.expect(size, "A register")?;
         Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Req {
             dst,
+            prototype,
             size,
         }))
     }

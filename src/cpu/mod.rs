@@ -49,7 +49,7 @@ pub enum WordType {
     Symbol = 2,
     Cons = 3,
     Function = 4,
-    Closure = 5,
+    Macro = 5,
     Character = 6,
     String = 7,
     Vector = 8,
@@ -57,7 +57,7 @@ pub enum WordType {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub struct LispWord(u64);
+pub struct LispWord(WordSize);
 
 impl LispWord {
     pub const fn undefined() -> LispWord {
@@ -65,15 +65,15 @@ impl LispWord {
     }
 
     pub fn tag(&self) -> u8 {
-        (self.0 >> 56) as u8
+        (self.0 & 0xff) as u8
     }
 
-    pub const fn payload(&self) -> u64 {
-        self.0 & 0x00ff_ffff_ffff_ffff
+    pub const fn payload(&self) -> WordSize {
+        self.0 >> 8
     }
 
     pub const fn new(tag: u8, payload: WordSize) -> Self {
-        Self((tag as u64) << 56 | (payload & 0x00ff_ffff_ffff_ffff))
+        Self((payload << 8) | (tag as u64))
     }
 
     // Convenience methods
@@ -81,8 +81,8 @@ impl LispWord {
         Self::new(WordType::Symbol as u8, value)
     }
 
-    pub const fn fixnum(value: WordSize) -> Self {
-        Self::new(WordType::Fixnum as u8, value)
+    pub const fn fixnum(value: i64) -> Self {
+        Self::new(WordType::Fixnum as u8, value as u64)
     }
 
     pub const fn cons(address: WordSize) -> Self {
@@ -105,8 +105,9 @@ impl LispWord {
         }
     }
 
-    fn as_fixnum(self) -> Result<u64, Trap> {
-        Ok(self.ensure(WordType::Fixnum)?.payload())
+    fn as_fixnum(self) -> Result<i64, Trap> {
+        self.ensure(WordType::Fixnum)?;
+        Ok((self.0 as i64) >> 8)
     }
 }
 
@@ -137,7 +138,7 @@ impl From<LispWord> for Native {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Cpu {
     registers: [WordSize; 32],
 
@@ -165,17 +166,6 @@ impl Cpu {
     pub fn interrupt(&mut self, int: u64) {
         if self.pending_interrupt.is_none() {
             self.pending_interrupt = Some(int);
-        }
-    }
-}
-
-impl Default for Cpu {
-    fn default() -> Self {
-        Cpu {
-            registers: [0; 32],
-            halted: false,
-            pending_interrupt: None,
-            interrupts_disabled: false,
         }
     }
 }
@@ -379,6 +369,7 @@ pub enum Instruction {
     // Higher level
     Req {
         dst: Register,
+        prototype: Register,
         size: Register,
     },
     // Higher level
@@ -538,7 +529,7 @@ impl Cpu {
             tag = op.tag();
         }
         if let Some(off) = off {
-            add += off.0;
+            add += off.payload();
             tag = off.tag();
         }
         LispWord::new(tag, add)
@@ -548,7 +539,7 @@ impl Cpu {
         &self,
         base: Option<Register>,
         off: Option<LispWord>,
-    ) -> Result<u64, Trap> {
+    ) -> Result<i64, Trap> {
         let mut add = 0;
         if let Some(reg) = base {
             add += self.register(reg).as_fixnum()?
@@ -618,6 +609,23 @@ impl Cpu {
             Location::IndirectRegister(r) => {
                 let pos = Address(self.register(r).payload());
                 memory.read_word(pos)
+            }
+        }
+    }
+
+    fn read_location_byte(&self, memory: &Bus, src: Location) -> u8 {
+        match src {
+            Location::Literal(v) => v.0 as u8,
+            Location::Absolute(a) => memory.read_byte(a),
+            Location::Register(r) => self.register(r).payload() as u8,
+            Location::Machine(pos) => self.mregister(pos).0 as u8,
+            Location::IndirectMachine(reg, off) => {
+                let pos = Address::from(self.mregister(reg)) + off;
+                memory.read_byte(pos)
+            }
+            Location::IndirectRegister(r) => {
+                let pos = Address(self.register(r).payload());
+                memory.read_byte(pos)
             }
         }
     }
@@ -770,13 +778,13 @@ impl Cpu {
                 if free.0 + 16 <= self.mregister(Self::CONS_END).0 {
                     memory.write_word(
                         Address::from(free) + ConsLayout::CAR_OFFSET,
-                        Native(self.register(car).0),
+                        self.register(car).into(),
                     );
                     memory.write_word(
                         Address::from(free) + ConsLayout::CDR_OFFSET,
-                        Native(self.register(cdr).0),
+                        self.register(cdr).into(),
                     );
-                    self.set_register(dst, LispWord::cons(free.0 as u64));
+                    self.set_register(dst, LispWord::cons(free.0));
                     self.set_mregister(Self::CONS_FREE, free + Native(16));
                 } else {
                     return self.run_interrupt(
@@ -787,18 +795,22 @@ impl Cpu {
                 }
             }
 
-            Instruction::Req { dst, size } => {
-                let sizew = self.register(size).as_fixnum()?;
+            Instruction::Req {
+                dst,
+                prototype,
+                size,
+            } => {
+                let sizew = self.register(size).as_fixnum()? as u64;
                 let sizeb = sizew * 8;
                 let free = self.mregister(Self::GEN_FREE);
                 if free.0 + sizeb <= self.mregister(Self::GEN_END).0 {
                     for i in 0..sizew {
                         memory.write_word(
                             Address::from(free) + Offset(i as i64 * 8),
-                            Native(self.register(Register(i as u8)).0),
+                            self.register(Register(i as u8)).into(),
                         )
                     }
-                    let prototype = self.register(dst);
+                    let prototype = self.register(prototype);
                     let result = LispWord::new(prototype.tag(), free.0);
                     self.set_register(dst, result);
                     self.set_mregister(Self::GEN_FREE, free + Native(sizeb));
@@ -868,7 +880,7 @@ impl Cpu {
                 self.set_mregister(dst, Native(self.register(src).payload()));
             }
             Instruction::GetTag { src, dst } => {
-                self.set_mregister(dst, Native(self.register(src).tag() as u64));
+                self.set_mregister(dst, Native(self.register(src).tag() as WordSize));
             }
             Instruction::SetPayload { dst, src } => {
                 self.set_register(
@@ -883,11 +895,11 @@ impl Cpu {
                 );
             }
             Instruction::Mov8 { dst, src } => {
-                let value = self.read_location(memory, src).0 as u8;
+                let value = self.read_location_byte(memory, src);
                 match dst {
                     Location::Literal(_) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
                     Location::Absolute(a) => memory.write_byte(a, value),
-                    Location::Machine(r) => self.set_mregister(r, Native(value as u64)),
+                    Location::Machine(r) => self.set_mregister(r, Native(value as WordSize)),
                     Location::Register(_) => {
                         return Err(Trap::InvalidInstruction);
                     }
@@ -920,8 +932,8 @@ impl Cpu {
                 let dstadd = Address::from(self.mregister(dst));
                 let count = self.get_offset_reg_val(count.op1, count.off)?;
                 for i in 0..count {
-                    let value = memory.read_byte(srcadd + Offset(i as i64));
-                    memory.write_byte(dstadd + Offset(i as i64), value)
+                    let value = memory.read_byte(srcadd + Offset(i));
+                    memory.write_byte(dstadd + Offset(i), value)
                 }
             }
             // Instruction::MemSet { dst, src, count } => {
@@ -973,8 +985,8 @@ impl Cpu {
         let instruction = Instruction::decode(lo.0, hi.0).map_err(|_| Trap::InvalidInstruction)?;
         println!(
             "PC: 0x{:x} SP:{:x} {:?}",
-            Address(self.mregister(Cpu::PC).0).0,
-            Address(self.mregister(Cpu::SP).0).0,
+            self.mregister(Cpu::PC).0,
+            self.mregister(Cpu::SP).0,
             instruction
         );
         let next_pc = self.execute(instruction, memory)?;
@@ -987,7 +999,7 @@ impl Cpu {
             Ok(()) => {}
             Err(trap) => {
                 self.set_mregister(MachineRegister(0), self.mregister(Cpu::PC));
-                self.set_register(Register(0), LispWord::fixnum(trap as WordSize));
+                self.set_register(Register(0), LispWord::fixnum(trap as i64));
                 self.set_mregister(
                     Cpu::PC,
                     memory.read_word(
@@ -1007,7 +1019,7 @@ pub enum Trap {
 
 #[cfg(test)]
 mod tests {
-    use crate::ram::RAM;
+    use crate::ram::Ram;
 
     use super::*;
 
@@ -1027,7 +1039,7 @@ mod tests {
     }
 
     fn test_setup<'a>() -> Bus<'a> {
-        let memory = RAM::new(0x10000);
+        let memory = Ram::new(0x10000);
         let mut bus = Bus::new();
         bus.install(0x0..0x10000, Box::new(memory.ram_device))
             .unwrap();

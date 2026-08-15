@@ -83,9 +83,9 @@ struct MachAndOff {
 impl MachAndOff {
     fn encode(&self) -> Result<(u8, u64), EncoderError> {
         match (self.op1, self.off) {
-            (Some(o1), Some(off)) => Ok((ARegister::IMRegister(o1).encode(), off.0 as u64)),
+            (Some(o1), Some(off)) => Ok((ARegister::IMRegister(o1).encode(), off.0)),
             (Some(o1), None) => Ok((ARegister::MRegister(o1).encode(), 0)),
-            (None, Some(off)) => Ok((ARegister::None.encode(), off.0 as u64)),
+            (None, Some(off)) => Ok((ARegister::None.encode(), off.0)),
             (None, None) => Err(EncoderError::BadInstruction),
         }
     }
@@ -255,7 +255,7 @@ impl MachSource {
         let op1 = ARegister::decode(r1)?.mregister()?;
         let op2 = MachAndOff::decode(r2, imm)?;
         Ok(Self {
-            op1: op1,
+            op1,
             op2: op2.op1,
             op3: op2.off,
         })
@@ -491,7 +491,8 @@ impl Instruction {
             Opcode::EnableInterrupts => Ok(Instruction::EnableInterrupts),
             Opcode::Req => Ok(Instruction::Req {
                 dst: ARegister::decode(r0)?.register()?,
-                size: ARegister::decode(r1)?.register()?,
+                prototype: ARegister::decode(r1)?.register()?,
+                size: ARegister::decode(r2)?.register()?,
             }),
         }
     }
@@ -879,12 +880,16 @@ impl Instruction {
                 u64::from_le_bytes([Opcode::EnableInterrupts.into(), 0, 0, 0, 0, 0, 0, 0]),
                 0,
             ),
-            Instruction::Req { dst, size } => (
+            Instruction::Req {
+                dst,
+                prototype,
+                size,
+            } => (
                 u64::from_le_bytes([
                     Opcode::Req.into(),
                     ARegister::Register(*dst).encode(),
+                    ARegister::Register(*prototype).encode(),
                     ARegister::Register(*size).encode(),
-                    0,
                     0,
                     0,
                     0,

@@ -1,16 +1,16 @@
 use crate::bus::{Address, Device, Native};
 
-pub struct ROM {
+pub struct Rom {
     pub bytes: Vec<u8>,
 }
 
-impl ROM {
+impl Rom {
     pub fn new(data: Vec<u8>) -> Self {
-        ROM { bytes: data }
+        Rom { bytes: data }
     }
 }
 
-impl Device for ROM {
+impl Device for Rom {
     fn set_location(&mut self, _: Address) {}
     fn read_byte(&self, address: Address) -> u8 {
         self.bytes[address.0 as usize]

@@ -1,23 +1,22 @@
 use crate::{
     bus::{Address, Device, Native},
-    rom::ROM,
+    rom::Rom,
 };
 
-pub struct RAM {
+pub struct Ram {
     pub ram_device: Memory,
-    pub configuration_device: ROM,
+    pub configuration_device: Rom,
 }
 
 pub struct Memory {
     pub bytes: Vec<u8>,
 }
 
-impl RAM {
+impl Ram {
     pub fn new(size: usize) -> Self {
         let mut romdata = [
             vec![
-                0xaa, 0x55, 't' as u8, 'o' as u8, 'r' as u8, 'd' as u8, 'e' as u8, 'k' as u8, 0, 0,
-                0, 0, 0, 0, 0, 0,
+                0xaa, 0x55, b't', b'o', b'r', b'd', b'e', b'k', 0, 0, 0, 0, 0, 0, 0, 0,
             ],
             size.to_le_bytes().to_vec(),
         ]
@@ -27,7 +26,7 @@ impl RAM {
             ram_device: Memory {
                 bytes: vec![0; size],
             },
-            configuration_device: ROM::new(romdata),
+            configuration_device: Rom::new(romdata),
         }
     }
 }

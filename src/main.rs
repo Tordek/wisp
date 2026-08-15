@@ -55,7 +55,7 @@ fn main() -> Result<(), String> {
                     machine.interrupt(machine::Firmware::KEYBOARD_INTERRUPT as u64);
                     let key = keycode.unwrap().into_i32() as u8;
                     machine.bus.write_byte(
-                        bus::Address(machine::Firmware::KEYBOARD_LOCATION.start as u64 + 0x10),
+                        bus::Address(machine::Firmware::KEYBOARD_LOCATION.start + 0x10),
                         key,
                     )
                 }
