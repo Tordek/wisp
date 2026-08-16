@@ -44,8 +44,7 @@ impl ConsLayout {
 #[repr(u8)]
 #[derive(PartialEq, Eq, Clone, Copy, IntEnum, Debug)]
 pub enum WordType {
-    Undefined = 0,
-    Fixnum = 1,
+    Fixnum = 0,
     Symbol = 2,
     Cons = 3,
     Function = 4,
@@ -54,6 +53,7 @@ pub enum WordType {
     String = 7,
     Vector = 8,
     Float = 9,
+    Undefined = 0xff,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -122,15 +122,10 @@ impl Debug for LispWord {
     }
 }
 
-#[derive(Debug)]
-pub enum WordParseError {
-    InvalidPrefix,
-}
-impl TryFrom<Native> for LispWord {
-    fn try_from(value: Native) -> Result<Self, Self::Error> {
-        Ok(LispWord(value.0))
+impl From<Native> for LispWord {
+    fn from(value: Native) -> Self {
+        LispWord(value.0)
     }
-    type Error = WordParseError;
 }
 impl From<LispWord> for Native {
     fn from(value: LispWord) -> Native {
@@ -138,9 +133,9 @@ impl From<LispWord> for Native {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Cpu {
-    registers: [WordSize; 32],
+    registers: [WordSize; 256],
 
     pending_interrupt: Option<u64>,
 
@@ -148,18 +143,30 @@ pub struct Cpu {
     interrupts_disabled: bool,
 }
 
-impl Cpu {
-    pub const ENV: Register = Register(13);
-    pub const NIL: Register = Register(14);
-    pub const T: Register = Register(15);
+impl Default for Cpu {
+    fn default() -> Self {
+        Cpu {
+            registers: [0; 256],
+            pending_interrupt: None,
+            halted: false,
+            interrupts_disabled: false,
+        }
+    }
+}
 
-    pub const CONS_FREE: MachineRegister = MachineRegister(9);
-    pub const CONS_END: MachineRegister = MachineRegister(10);
-    pub const GEN_FREE: MachineRegister = MachineRegister(11);
-    pub const GEN_END: MachineRegister = MachineRegister(12);
-    pub const SP: MachineRegister = MachineRegister(13);
-    pub const PC: MachineRegister = MachineRegister(14);
-    pub const VBR: MachineRegister = MachineRegister(15);
+impl Cpu {
+    pub const ENV: Register = Register(245);
+    pub const NIL: Register = Register(246);
+    pub const T: Register = Register(247);
+    pub const CONS_FREE: Register = Register(248);
+    pub const CONS_END: Register = Register(249);
+    pub const GEN_FREE: Register = Register(250);
+    pub const GEN_END: Register = Register(251);
+    pub const FP: Register = Register(252);
+    pub const SP: Register = Register(253);
+    pub const PC: Register = Register(254);
+    pub const VBR: Register = Register(255);
+
     pub const WORD_SIZE: u64 = 8;
     pub const INSTRUCTION_SIZE: u64 = 2 * Self::WORD_SIZE;
 
@@ -174,95 +181,34 @@ impl Cpu {
 pub struct Register(pub u8);
 impl Debug for Register {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "R{}", self.0)
+        write!(f, "V{}", self.0)
     }
 }
 impl Register {
     fn offset(&self) -> usize {
         self.0 as usize
     }
-
-    fn from_offset(offset: usize) -> Self {
-        Self(offset as u8)
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct MachineRegister(pub u8);
-impl Debug for MachineRegister {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "A{}", self.0)
-    }
-}
-impl MachineRegister {
-    fn offset(&self) -> usize {
-        self.0 as usize + 16
-    }
-
-    fn from_offset(offset: usize) -> Self {
-        Self(offset as u8 - 16)
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct RegAndOff {
-    op1: Option<Register>,
-    off: Option<LispWord>,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub struct RegSource {
-    pub op1: Register,
-    pub op2: Option<Register>,
-    pub op3: Option<LispWord>,
-}
-impl Debug for RegSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (self.op2, self.op3) {
-            (Some(op2), Some(op3)) => write!(f, "{:?}, {:?} + {:?}", self.op1, op2, op3),
-            (Some(op2), None) => write!(f, "{:?}, {:?}", self.op1, op2),
-            (None, Some(op3)) => write!(f, "{:?}, {:?}", self.op1, op3),
-            (None, None) => write!(f, "!!!Invalid {:?}, NONE, NONE", self.op1),
-        }
-    }
+    op1: Register,
+    off: Option<Native>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct MachSource {
-    pub op1: MachineRegister,
-    pub op2: Option<MachineRegister>,
-    pub op3: Option<Native>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum EitherSource {
-    Reg(RegSource),
-    Mach(MachSource),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct TwoRegs {
-    dst: Register,
-    src: Register,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Location {
+pub enum RValue {
     Literal(Native),
-    Register(Register),
-    Machine(MachineRegister),
+    Register(RegAndOff),
     Absolute(Address),
-    IndirectRegister(Register),
-    IndirectMachine(MachineRegister, Offset),
+    Indirect(RegAndOff),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum JumpTarget {
+pub enum LValue {
     Absolute(Address),
     Register(Register),
-    Machine(MachineRegister, Offset),
-    IndirectRegister(Register),
-    IndirectMachine(MachineRegister, Offset),
+    Indirect(RegAndOff),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -306,10 +252,9 @@ pub enum Instruction {
     /// Do nothing.
     Nop,
 
-    /// Jumps unconditionally
     Jump {
         condition: Condition,
-        target: JumpTarget,
+        target: RValue,
     },
 
     /// PUSHes all Registers and Machinees to the stack, then the PC, and jumps.
@@ -321,46 +266,40 @@ pub enum Instruction {
     /// For some internal INTs, it may perform additional work.
     IReturn,
 
-    /// Push raw data onto the stack.
-    PushA {
-        src: MachineRegister,
-    },
-    /// Pop raw data from the stack.
-    PopA {
-        dst: MachineRegister,
-    },
     Mov {
-        dst: Location,
-        src: Location,
+        dst: LValue,
+        src: RValue,
     },
     Mov8 {
-        dst: Location,
-        src: Location,
+        dst: LValue,
+        src: RValue,
     },
     MBinary {
         op: MBinaryOp,
-        dst: MachineRegister,
-        operands: MachSource,
+        dst: Register,
+        op1: Register,
+        op2: RValue,
     },
     Comparison {
         op: Comparison,
         dst: Register,
-        operands: EitherSource,
+        op1: Register,
+        op2: RValue,
     },
     SetTag {
         dst: Register,
-        src: MachineRegister,
+        src: Register,
     },
     GetTag {
-        dst: MachineRegister,
+        dst: Register,
         src: Register,
     },
     SetPayload {
         dst: Register,
-        src: MachineRegister,
+        src: Register,
     },
     GetPayload {
-        dst: MachineRegister,
+        dst: Register,
         src: Register,
     },
     EnableInterrupts,
@@ -385,34 +324,48 @@ pub enum Instruction {
         src: Register,
     },
     /// Gets the first part of a cons - typechecks.
-    Car(TwoRegs),
+    Car {
+        dst: Register,
+        src: Register,
+    },
     /// Gets the second part of a cons - typechecks.
-    Cdr(TwoRegs),
+    Cdr {
+        dst: Register,
+        src: Register,
+    },
     /// Sets the first part of a cons - typechecks.
-    SetCar(TwoRegs),
+    SetCar {
+        dst: Register,
+        src: Register,
+    },
     /// Sets the second part of a cons - typechecks.
-    SetCdr(TwoRegs),
+    SetCdr {
+        dst: Register,
+        src: Register,
+    },
     /// Calculates div <- op1 / (op2 + imm), rem <- op1 % (op2 + imm)
     IDiv {
         div: Register,
         rem: Register,
-        operands: RegSource,
+        op1: Register,
+        op2: RValue,
     },
     Binary {
         op: BinaryOp,
         dst: Register,
-        operands: RegSource,
+        op1: Register,
+        op2: RValue,
     },
     MakeClosure {
         dst: Register,
-        code: MachineRegister,
+        code: Register,
     },
     /// Push a word onto the stack
-    PushR {
+    Push {
         src: Register,
     },
     /// Pop a word onto the stack - and validate it's a word.
-    PopR {
+    Pop {
         dst: Register,
     },
     Typep {
@@ -422,20 +375,20 @@ pub enum Instruction {
     },
     /// while (count--) *dst++ = *src++
     MemCpy {
-        dst: MachineRegister,
-        src: MachineRegister,
-        count: RegAndOff,
+        dst: Register,
+        src: Register,
+        count: RValue,
     },
     /// while (count--) *dst++ = src
     // MemSet {
-    //     dst: MachineRegister,
-    //     src: MachineRegister,
+    //     dst: Register,
+    //     src: Register,
     //     count: Count,
     // },
 
     /// PUSHes PC on the stack and jumps
     Call {
-        target: JumpTarget,
+        target: RValue,
     },
 
     /// POPs PC from the stack
@@ -444,121 +397,86 @@ pub enum Instruction {
 
 impl Cpu {
     pub fn reset(&mut self) {
-        self.set_mregister(Cpu::PC, Native::from(MemoryLayout::RESET_VECTOR));
-        self.set_register(Cpu::T, LispWord(0));
-        self.set_register(Cpu::NIL, LispWord(1));
+        self.set_reg(Cpu::PC, Native::from(MemoryLayout::RESET_VECTOR));
+        self.set_lreg(Cpu::T, LispWord(1));
+        self.set_lreg(Cpu::NIL, LispWord(0));
         self.interrupts_disabled = true;
         self.halted = false;
         self.pending_interrupt = None;
     }
 
-    fn register(&self, r: Register) -> LispWord {
+    fn lreg(&self, r: Register) -> LispWord {
         LispWord(self.registers[r.offset()])
     }
 
-    fn set_register(&mut self, r: Register, data: LispWord) {
+    fn set_lreg(&mut self, r: Register, data: LispWord) {
         self.registers[r.offset()] = data.0
     }
 
-    fn mregister(&self, r: MachineRegister) -> Native {
+    fn reg(&self, r: Register) -> Native {
         Native(self.registers[r.offset()])
     }
 
-    fn set_mregister(&mut self, r: MachineRegister, data: Native) {
+    fn set_reg(&mut self, r: Register, data: Native) {
         self.registers[r.offset()] = data.0
     }
 
     fn fetch(&self, memory: &Bus) -> (Native, Native) {
-        let instruction_low = memory.read_word(Address::from(self.mregister(Cpu::PC)));
-        let instruction_high = memory
-            .read_word(Address::from(self.mregister(Cpu::PC)) + Offset(Self::WORD_SIZE as i64));
+        let instruction_low = memory.read_word(Address::from(self.reg(Cpu::PC)));
+        let instruction_high =
+            memory.read_word(Address::from(self.reg(Cpu::PC)) + Offset(Self::WORD_SIZE as i64));
         (instruction_low, instruction_high)
     }
 
-    fn read_word(memory: &Bus, address: Address) -> Result<LispWord, Trap> {
-        memory
-            .read_word(address)
-            .try_into()
-            .map_err(|_| Trap::TypeError)
+    fn read_word(memory: &Bus, address: Address) -> LispWord {
+        memory.read_word(address).into()
     }
 
     fn to_machine_bool(&self, val: bool) -> LispWord {
         if val {
-            self.register(Cpu::T)
+            self.lreg(Cpu::T)
         } else {
-            self.register(Cpu::NIL)
+            self.lreg(Cpu::NIL)
         }
     }
 
     fn push(&mut self, memory: &mut Bus, val: Native) {
-        self.set_mregister(
+        self.set_reg(
             Cpu::SP,
-            (Address::from(self.mregister(Cpu::SP)) - Offset(Self::WORD_SIZE as i64)).into(),
+            (Address::from(self.reg(Cpu::SP)) - Offset(Self::WORD_SIZE as i64)).into(),
         );
-        memory.write_word(Address::from(self.mregister(Cpu::SP)), val);
+        memory.write_word(Address::from(self.reg(Cpu::SP)), val);
     }
 
     fn pop(&mut self, memory: &mut Bus) -> Native {
-        let res = memory.read_word(Address::from(self.mregister(Cpu::SP)));
-        self.set_mregister(
+        let res = memory.read_word(Address::from(self.reg(Cpu::SP)));
+        self.set_reg(
             Cpu::SP,
-            (Address::from(self.mregister(Cpu::SP)) + Offset(Self::WORD_SIZE as i64)).into(),
+            (Address::from(self.reg(Cpu::SP)) + Offset(Self::WORD_SIZE as i64)).into(),
         );
         res
     }
 
-    fn pop_word(&mut self, memory: &mut Bus) -> Result<LispWord, Trap> {
-        let res = Self::read_word(memory, Address::from(self.mregister(Cpu::SP)));
-        self.set_mregister(
-            Cpu::SP,
-            (Address::from(self.mregister(Cpu::SP)) + Offset(Self::WORD_SIZE as i64)).into(),
-        );
-        res
+    fn get_offset_raw(&self, RegAndOff { op1, off }: RegAndOff) -> Native {
+        self.reg(op1) + off.unwrap_or(Native(0))
     }
 
-    fn get_offset_reg_val_unchecked(
-        &self,
-        base: Option<Register>,
-        off: Option<LispWord>,
-    ) -> LispWord {
-        let mut add = 0;
-        let mut tag = 0;
-        if let Some(reg) = base {
-            let op = self.register(reg);
-            add += op.payload();
-            tag = op.tag();
+    fn read_rval(&self, bus: &Bus, rval: RValue) -> Native {
+        match rval {
+            RValue::Literal(l) => l,
+            RValue::Register(r) => self.get_offset_raw(r),
+            RValue::Absolute(adr) => bus.read_word(adr),
+            RValue::Indirect(pos) => bus.read_word(Address::from(self.get_offset_raw(pos))),
         }
-        if let Some(off) = off {
-            add += off.payload();
-            tag = off.tag();
-        }
-        LispWord::new(tag, add)
     }
 
-    fn get_offset_reg_val(
-        &self,
-        base: Option<Register>,
-        off: Option<LispWord>,
-    ) -> Result<i64, Trap> {
-        let mut add = 0;
-        if let Some(reg) = base {
-            add += self.register(reg).as_fixnum()?
+    fn read_rval_byte(&self, bus: &Bus, src: RValue) -> u8 {
+        match src {
+            RValue::Literal(v) => v.0 as u8,
+            RValue::Register(pos) => self.get_offset_raw(pos).0 as u8,
+            RValue::Absolute(adr) => bus.read_byte(adr),
+            RValue::Indirect(pos) => bus.read_byte(Address::from(self.get_offset_raw(pos))),
         }
-        if let Some(off) = off {
-            add += off.as_fixnum()?
-        }
-        Ok(add)
-    }
-
-    fn get_offset_addr_val(&self, base: Option<MachineRegister>, off: Option<Native>) -> Native {
-        let mut add = 0;
-        if let Some(reg) = base {
-            add = self.mregister(reg).0
-        }
-        if let Some(off) = off {
-            add += off.0
-        }
-        Native(add)
     }
 
     fn run_interrupt(
@@ -574,64 +492,14 @@ impl Cpu {
         self.push(memory, Native(next_pc.0));
         self.interrupts_disabled = true;
         let location = Address::from(memory.read_word(
-            Address::from(self.mregister(Cpu::VBR))
+            Address::from(self.reg(Cpu::VBR))
                 + Offset(interruption as i64 * Self::WORD_SIZE as i64),
         ));
         Ok(location)
     }
 
-    fn get_jump_addr(&self, memory: &Bus, src: JumpTarget) -> Address {
-        match src {
-            JumpTarget::Absolute(v) => v,
-            JumpTarget::Register(r) => Address(self.register(r).payload()),
-            JumpTarget::Machine(pos, off) => Address::from(self.mregister(pos)) + off,
-            JumpTarget::IndirectMachine(reg, off) => {
-                let pos = Address::from(self.mregister(reg)) + off;
-                memory.read_word(pos).into()
-            }
-            JumpTarget::IndirectRegister(r) => {
-                let pos = Address(self.register(r).payload());
-                memory.read_word(pos).into()
-            }
-        }
-    }
-
-    fn read_location(&self, memory: &Bus, src: Location) -> Native {
-        match src {
-            Location::Literal(v) => v,
-            Location::Absolute(a) => memory.read_word(a),
-            Location::Register(r) => self.register(r).into(),
-            Location::Machine(pos) => self.mregister(pos),
-            Location::IndirectMachine(reg, off) => {
-                let pos = Address::from(self.mregister(reg)) + off;
-                memory.read_word(pos)
-            }
-            Location::IndirectRegister(r) => {
-                let pos = Address(self.register(r).payload());
-                memory.read_word(pos)
-            }
-        }
-    }
-
-    fn read_location_byte(&self, memory: &Bus, src: Location) -> u8 {
-        match src {
-            Location::Literal(v) => v.0 as u8,
-            Location::Absolute(a) => memory.read_byte(a),
-            Location::Register(r) => self.register(r).payload() as u8,
-            Location::Machine(pos) => self.mregister(pos).0 as u8,
-            Location::IndirectMachine(reg, off) => {
-                let pos = Address::from(self.mregister(reg)) + off;
-                memory.read_byte(pos)
-            }
-            Location::IndirectRegister(r) => {
-                let pos = Address(self.register(r).payload());
-                memory.read_byte(pos)
-            }
-        }
-    }
-
     fn execute(&mut self, instruction: Instruction, memory: &mut Bus) -> Result<Address, Trap> {
-        let next_pc = Address(self.mregister(Cpu::PC).0) + Offset(Cpu::INSTRUCTION_SIZE as i64);
+        let next_pc = Address(self.reg(Cpu::PC).0) + Offset(Cpu::INSTRUCTION_SIZE as i64);
         match instruction {
             // Control flow
             Instruction::Halt => {
@@ -640,43 +508,46 @@ impl Cpu {
             Instruction::Nop => {}
 
             Instruction::Jump { condition, target } => {
-                let nil = self.register(Cpu::NIL);
+                let nil = self.lreg(Cpu::NIL);
 
                 let should_jump = match condition {
                     Condition::Always => true,
-                    Condition::False(r) => self.register(r) == nil,
-                    Condition::True(r) => self.register(r) != nil,
+                    Condition::False(r) => self.lreg(r) == nil,
+                    Condition::True(r) => self.lreg(r) != nil,
                 };
 
                 if should_jump {
-                    return Ok(self.get_jump_addr(memory, target));
+                    return Ok(Address::from(self.read_rval(memory, target)));
                 }
             }
 
             Instruction::Call { target } => {
                 let next_pc =
-                    Address::from(self.mregister(Cpu::PC)) + Offset(Cpu::INSTRUCTION_SIZE as i64);
-                let address = self.get_jump_addr(memory, target);
+                    Address::from(self.reg(Cpu::PC)) + Offset(Cpu::INSTRUCTION_SIZE as i64);
 
+                let prev_fp = self.reg(Cpu::FP);
+                self.set_reg(Cpu::FP, self.reg(Cpu::SP));
+
+                self.push(memory, prev_fp);
                 self.push(memory, Native::from(next_pc));
-                return Ok(address);
+                return Ok(Address::from(self.read_rval(memory, target)));
             }
 
             Instruction::Return => {
-                let return_address = self.pop(memory);
+                let fp = self.reg(Cpu::FP);
+                let prev_fp = memory.read_word(Address::from(fp) - Offset(8)); // FP points to previous FP.
+                let return_address = memory.read_word(Address::from(fp) - Offset(16)); // FP + 8 points to return value
+                self.set_reg(Cpu::FP, prev_fp);
+                self.set_reg(Cpu::SP, fp);
                 return Ok(Address::from(return_address));
             }
 
             Instruction::MakeClosure { dst: _, code: _ } => todo!(),
 
             // Comparison
-            Instruction::Comparison {
-                op,
-                dst,
-                operands: EitherSource::Mach(MachSource { op1, op2, op3 }),
-            } => {
-                let op1_obj = self.mregister(op1);
-                let op2_obj = self.get_offset_addr_val(op2, op3);
+            Instruction::Comparison { op, dst, op1, op2 } => {
+                let op1_obj = self.reg(op1);
+                let op2_obj = self.read_rval(memory, op2);
 
                 let result = match op {
                     Comparison::Eq => op1_obj == op2_obj,
@@ -687,35 +558,12 @@ impl Cpu {
                     Comparison::Lte => op1_obj <= op2_obj,
                 };
 
-                self.set_register(dst, self.to_machine_bool(result));
+                self.set_lreg(dst, self.to_machine_bool(result));
             }
 
-            Instruction::Comparison {
-                op,
-                dst,
-                operands: EitherSource::Reg(RegSource { op1, op2, op3 }),
-            } => {
-                let op1_obj = self.register(op1);
-                let op2_obj = self.get_offset_reg_val_unchecked(op2, op3);
-
-                let result = match op {
-                    Comparison::Eq => op1_obj == op2_obj,
-                    Comparison::Ne => op1_obj != op2_obj,
-                    Comparison::Gt => op1_obj.as_fixnum()? > op2_obj.as_fixnum()?,
-                    Comparison::Gte => op1_obj.as_fixnum()? >= op2_obj.as_fixnum()?,
-                    Comparison::Lt => op1_obj.as_fixnum()? < op2_obj.as_fixnum()?,
-                    Comparison::Lte => op1_obj.as_fixnum()? <= op2_obj.as_fixnum()?,
-                };
-                self.set_register(dst, self.to_machine_bool(result));
-            }
-
-            Instruction::Binary {
-                op,
-                dst,
-                operands: RegSource { op1, op2, op3 },
-            } => {
-                let op1_obj = self.register(op1).as_fixnum()?;
-                let op2_obj = self.get_offset_reg_val(op2, op3)?;
+            Instruction::Binary { op, dst, op1, op2 } => {
+                let op1_obj = self.lreg(op1).as_fixnum()?;
+                let op2_obj = LispWord::from(self.read_rval(memory, op2)).as_fixnum()?;
 
                 let result = LispWord::fixnum(match op {
                     BinaryOp::Add => op1_obj + op2_obj,
@@ -725,7 +573,7 @@ impl Cpu {
                     BinaryOp::Shr => op1_obj >> op2_obj,
                 });
 
-                self.set_register(dst, result);
+                self.set_lreg(dst, result);
             }
 
             Instruction::Int(interruption) => {
@@ -739,34 +587,34 @@ impl Cpu {
                 return Ok(Address::from(return_address));
             }
 
-            Instruction::Car(TwoRegs { dst, src }) => {
-                let src_obj = self.register(src).ensure(WordType::Cons)?;
+            Instruction::Car { dst, src } => {
+                let src_obj = self.lreg(src).ensure(WordType::Cons)?;
 
-                self.set_register(
+                self.set_lreg(
                     dst,
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET)?,
+                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET),
                 );
             }
-            Instruction::Cdr(TwoRegs { dst, src }) => {
-                let src_obj = self.register(src).ensure(WordType::Cons)?;
+            Instruction::Cdr { dst, src } => {
+                let src_obj = self.lreg(src).ensure(WordType::Cons)?;
 
-                self.set_register(
+                self.set_lreg(
                     dst,
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET)?,
+                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET),
                 );
             }
-            Instruction::SetCar(TwoRegs { dst, src }) => {
-                let dst_obj = self.register(dst).ensure(WordType::Cons)?;
-                let val_obj = self.register(src);
+            Instruction::SetCar { dst, src } => {
+                let dst_obj = self.lreg(dst).ensure(WordType::Cons)?;
+                let val_obj = self.lreg(src);
 
                 memory.write_word(
                     Address(dst_obj.payload()) + ConsLayout::CAR_OFFSET,
                     val_obj.into(),
                 );
             }
-            Instruction::SetCdr(TwoRegs { dst, src }) => {
-                let dst_obj = self.register(dst).ensure(WordType::Cons)?;
-                let val_obj = self.register(src);
+            Instruction::SetCdr { dst, src } => {
+                let dst_obj = self.lreg(dst).ensure(WordType::Cons)?;
+                let val_obj = self.lreg(src);
 
                 memory.write_word(
                     Address(dst_obj.payload()) + ConsLayout::CDR_OFFSET,
@@ -774,24 +622,20 @@ impl Cpu {
                 );
             }
             Instruction::Cons { dst, car, cdr } => {
-                let free = self.mregister(Self::CONS_FREE);
-                if free.0 + 16 <= self.mregister(Self::CONS_END).0 {
+                let free = self.reg(Self::CONS_FREE);
+                if free.0 + 16 <= self.reg(Self::CONS_END).0 {
                     memory.write_word(
                         Address::from(free) + ConsLayout::CAR_OFFSET,
-                        self.register(car).into(),
+                        self.lreg(car).into(),
                     );
                     memory.write_word(
                         Address::from(free) + ConsLayout::CDR_OFFSET,
-                        self.register(cdr).into(),
+                        self.lreg(cdr).into(),
                     );
-                    self.set_register(dst, LispWord::cons(free.0));
-                    self.set_mregister(Self::CONS_FREE, free + Native(16));
+                    self.set_lreg(dst, LispWord::cons(free.0));
+                    self.set_reg(Self::CONS_FREE, free + Native(16));
                 } else {
-                    return self.run_interrupt(
-                        memory,
-                        0x03,
-                        Address::from(self.mregister(Self::PC)),
-                    ); // Come back.
+                    return self.run_interrupt(memory, 0x03, Address::from(self.reg(Self::PC))); // Come back.
                 }
             }
 
@@ -800,137 +644,106 @@ impl Cpu {
                 prototype,
                 size,
             } => {
-                let sizew = self.register(size).as_fixnum()? as u64;
+                let sizew = self.lreg(size).as_fixnum()? as u64;
                 let sizeb = sizew * 8;
-                let free = self.mregister(Self::GEN_FREE);
-                if free.0 + sizeb <= self.mregister(Self::GEN_END).0 {
+                let free = self.reg(Self::GEN_FREE);
+                if free.0 + sizeb <= self.reg(Self::GEN_END).0 {
                     for i in 0..sizew {
                         memory.write_word(
                             Address::from(free) + Offset(i as i64 * 8),
-                            self.register(Register(i as u8)).into(),
+                            self.lreg(Register(i as u8)).into(),
                         )
                     }
-                    let prototype = self.register(prototype);
+                    let prototype = self.lreg(prototype);
                     let result = LispWord::new(prototype.tag(), free.0);
-                    self.set_register(dst, result);
-                    self.set_mregister(Self::GEN_FREE, free + Native(sizeb));
+                    self.set_lreg(dst, result);
+                    self.set_reg(Self::GEN_FREE, free + Native(sizeb));
                 } else {
-                    return self.run_interrupt(
-                        memory,
-                        0x03,
-                        Address::from(self.mregister(Self::PC)),
-                    ); // Come back.
+                    return self.run_interrupt(memory, 0x03, Address::from(self.reg(Self::PC))); // Come back.
                 }
             }
 
             Instruction::Uncons { car, cdr, src } => {
-                let src_obj = self.register(src).ensure(WordType::Cons)?;
+                let src_obj = self.lreg(src).ensure(WordType::Cons)?;
 
-                self.set_register(
+                self.set_lreg(
                     car,
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET)?,
+                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET),
                 );
-                self.set_register(
+                self.set_lreg(
                     cdr,
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET)?,
+                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET),
                 );
             }
 
-            Instruction::IDiv {
-                div,
-                rem,
-                operands: RegSource { op1, op2, op3 },
-            } => {
-                let op1_obj = self.register(op1).as_fixnum()?;
-                let op2_obj = self.get_offset_reg_val(op2, op3)?;
-                // TODO: When fetching numbers, extend the sign bit.
-                self.set_register(div, LispWord::fixnum(op1_obj / op2_obj));
-                self.set_register(rem, LispWord::fixnum(op1_obj % op2_obj));
+            Instruction::IDiv { div, rem, op1, op2 } => {
+                let op1_obj = self.lreg(op1).as_fixnum()?;
+                let op2_obj = LispWord::from(self.read_rval(memory, op2)).as_fixnum()?;
+                self.set_lreg(div, LispWord::fixnum(op1_obj / op2_obj));
+                self.set_lreg(rem, LispWord::fixnum(op1_obj % op2_obj));
             }
 
-            Instruction::PopR { dst } => {
-                let result = self.pop_word(memory)?;
-                self.set_register(dst, result);
-            }
-            Instruction::PushR { src } => {
-                self.push(memory, self.register(src).into());
-            }
-            Instruction::PopA { dst } => {
+            Instruction::Pop { dst } => {
                 let result = self.pop(memory);
-                self.set_mregister(dst, result);
+                self.set_reg(dst, result);
             }
-            Instruction::PushA { src } => {
-                self.push(memory, self.mregister(src));
+            Instruction::Push { src } => {
+                self.push(memory, self.reg(src));
             }
 
-            Instruction::MBinary {
-                op,
-                dst,
-                operands: MachSource { op1, op2, op3 },
-            } => {
-                let val1 = self.mregister(op1);
-                let val2 = self.get_offset_addr_val(op2, op3);
+            Instruction::MBinary { op, dst, op1, op2 } => {
+                let val1 = self.reg(op1);
+                let val2 = self.read_rval(memory, op2);
                 let result = match op {
                     MBinaryOp::Add => val1 + val2,
                     MBinaryOp::Sub => val1 - val2,
                 };
-                self.set_mregister(dst, result);
+                self.set_reg(dst, result);
             }
             Instruction::GetPayload { dst, src } => {
-                self.set_mregister(dst, Native(self.register(src).payload()));
+                self.set_reg(dst, Native(self.lreg(src).payload()));
             }
             Instruction::GetTag { src, dst } => {
-                self.set_mregister(dst, Native(self.register(src).tag() as WordSize));
+                self.set_reg(dst, Native(self.lreg(src).tag() as WordSize));
             }
             Instruction::SetPayload { dst, src } => {
-                self.set_register(
-                    dst,
-                    LispWord::new(self.register(dst).tag(), self.mregister(src).0),
-                );
+                self.set_lreg(dst, LispWord::new(self.lreg(dst).tag(), self.reg(src).0));
             }
             Instruction::SetTag { src, dst } => {
-                self.set_register(
+                self.set_lreg(
                     dst,
-                    LispWord::new(self.mregister(src).0 as u8, self.register(dst).payload()),
+                    LispWord::new(self.reg(src).0 as u8, self.lreg(dst).payload()),
                 );
             }
             Instruction::Mov8 { dst, src } => {
-                let value = self.read_location_byte(memory, src);
+                let value = self.read_rval_byte(memory, src);
                 match dst {
-                    Location::Literal(_) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
-                    Location::Absolute(a) => memory.write_byte(a, value),
-                    Location::Machine(r) => self.set_mregister(r, Native(value as WordSize)),
-                    Location::Register(_) => {
-                        return Err(Trap::InvalidInstruction);
+                    LValue::Absolute(a) => memory.write_byte(a, value),
+                    LValue::Register(r) => {
+                        self.set_reg(r, Native(value as u64));
                     }
-                    Location::IndirectMachine(r, off) => {
-                        memory.write_byte(Address::from(self.mregister(r)) + off, value)
-                    }
-                    Location::IndirectRegister(_) => {
-                        return Err(Trap::InvalidInstruction);
+                    LValue::Indirect(target) => {
+                        memory.write_byte(Address::from(self.get_offset_raw(target)), value);
                     }
                 }
             }
             Instruction::Mov { dst, src } => {
-                let value = self.read_location(memory, src);
+                let value = self.read_rval(memory, src);
                 match dst {
-                    Location::Literal(_) => return Err(Trap::InvalidInstruction), // Makes no sense to move into a literal.
-                    Location::Absolute(a) => memory.write_word(a, value),
-                    Location::Machine(r) => self.set_mregister(r, value),
-                    Location::Register(r) => self
-                        .set_register(r, LispWord::try_from(value).map_err(|_| Trap::TypeError)?),
-                    Location::IndirectMachine(r, off) => {
-                        memory.write_word(Address::from(self.mregister(r)) + off, value)
+                    LValue::Absolute(a) => memory.write_word(a, value),
+                    LValue::Register(r) => {
+                        self.set_lreg(r, LispWord::try_from(value).map_err(|_| Trap::TypeError)?)
                     }
-                    Location::IndirectRegister(r) => {
-                        memory.write_word(Address(self.register(r).payload()), value)
+                    LValue::Indirect(target) => {
+                        memory.write_word(Address::from(self.get_offset_raw(target)), value)
                     }
                 }
             }
             Instruction::MemCpy { dst, src, count } => {
-                let srcadd = Address::from(self.mregister(src));
-                let dstadd = Address::from(self.mregister(dst));
-                let count = self.get_offset_reg_val(count.op1, count.off)?;
+                let srcadd = Address::from(self.reg(src));
+                let dstadd = Address::from(self.reg(dst));
+                let count = LispWord::from(self.read_rval(memory, count)).as_fixnum()?;
+
                 for i in 0..count {
                     let value = memory.read_byte(srcadd + Offset(i));
                     memory.write_byte(dstadd + Offset(i), value)
@@ -949,8 +762,8 @@ impl Cpu {
             //         + Offset(Cpu::INSTRUCTION_SIZE as i64))
             // }
             Instruction::Typep { dst, src, compare } => {
-                let src_obj = self.register(src);
-                self.set_register(dst, self.to_machine_bool(src_obj.tag() as u64 == compare.0));
+                let src_obj = self.lreg(src);
+                self.set_lreg(dst, self.to_machine_bool(src_obj.tag() as u64 == compare.0));
             }
             Instruction::DisableInterrupts => {
                 self.interrupts_disabled = true;
@@ -970,9 +783,9 @@ impl Cpu {
                 let next_pc = Native::from(self.run_interrupt(
                     memory,
                     i,
-                    Address::from(self.mregister(Cpu::PC)),
+                    Address::from(self.reg(Cpu::PC)),
                 )?);
-                self.set_mregister(Cpu::PC, next_pc)
+                self.set_reg(Cpu::PC, next_pc)
             }
             None => {
                 if self.halted {
@@ -985,12 +798,12 @@ impl Cpu {
         let instruction = Instruction::decode(lo.0, hi.0).map_err(|_| Trap::InvalidInstruction)?;
         println!(
             "PC: 0x{:x} SP:{:x} {:?}",
-            self.mregister(Cpu::PC).0,
-            self.mregister(Cpu::SP).0,
+            self.reg(Cpu::PC).0,
+            self.reg(Cpu::SP).0,
             instruction
         );
         let next_pc = self.execute(instruction, memory)?;
-        self.set_mregister(Cpu::PC, Native::from(next_pc));
+        self.set_reg(Cpu::PC, Native::from(next_pc));
         Ok(())
     }
 
@@ -998,12 +811,12 @@ impl Cpu {
         match self.step(memory) {
             Ok(()) => {}
             Err(trap) => {
-                self.set_mregister(MachineRegister(0), self.mregister(Cpu::PC));
-                self.set_register(Register(0), LispWord::fixnum(trap as i64));
-                self.set_mregister(
+                self.set_reg(Register(0), self.reg(Cpu::PC));
+                self.set_lreg(Register(0), LispWord::fixnum(trap as i64));
+                self.set_reg(
                     Cpu::PC,
                     memory.read_word(
-                        Address::from(self.mregister(Cpu::VBR)) + InterruptTableOffset::TRAP_VECTOR,
+                        Address::from(self.reg(Cpu::VBR)) + InterruptTableOffset::TRAP_VECTOR,
                     ),
                 );
             }
@@ -1050,14 +863,14 @@ mod tests {
     fn test_halt() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut test_bus = test_setup();
-        cpu.set_mregister(Cpu::PC, Native(0x1000));
+        cpu.set_reg(Cpu::PC, Native(0x1000));
         TestMemory::load_instructions(
             &mut test_bus,
-            Address::from(cpu.mregister(Cpu::PC)),
+            Address::from(cpu.reg(Cpu::PC)),
             vec![Instruction::Halt],
         );
         cpu.full_step(&mut test_bus);
-        assert_eq!(cpu.mregister(Cpu::PC), Native(0x1010));
+        assert_eq!(cpu.reg(Cpu::PC), Native(0x1010));
         assert!(cpu.halted);
         Ok(())
     }
@@ -1066,14 +879,14 @@ mod tests {
     fn test_nop() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut test_bus = test_setup();
-        cpu.set_mregister(Cpu::PC, Native(0x1000));
+        cpu.set_reg(Cpu::PC, Native(0x1000));
         TestMemory::load_instructions(
             &mut test_bus,
-            Address::from(cpu.mregister(Cpu::PC)),
+            Address::from(cpu.reg(Cpu::PC)),
             vec![Instruction::Nop],
         );
         cpu.full_step(&mut test_bus);
-        assert_eq!(cpu.mregister(Cpu::PC), Native(0x1010));
+        assert_eq!(cpu.reg(Cpu::PC), Native(0x1010));
         assert!(!cpu.halted);
         Ok(())
     }
@@ -1082,10 +895,10 @@ mod tests {
     fn test_multiple_nop() -> Result<(), String> {
         let mut cpu = Cpu::default();
         let mut test_bus = test_setup();
-        cpu.set_mregister(Cpu::PC, Native(0x1000));
+        cpu.set_reg(Cpu::PC, Native(0x1000));
         TestMemory::load_instructions(
             &mut test_bus,
-            Address::from(cpu.mregister(Cpu::PC)),
+            Address::from(cpu.reg(Cpu::PC)),
             vec![
                 Instruction::Nop,
                 Instruction::Nop,
@@ -1102,7 +915,7 @@ mod tests {
         while !cpu.halted {
             cpu.full_step(&mut test_bus);
         }
-        assert_eq!(cpu.mregister(Cpu::PC), Native(0x10a0));
+        assert_eq!(cpu.reg(Cpu::PC), Native(0x10a0));
         Ok(())
     }
 

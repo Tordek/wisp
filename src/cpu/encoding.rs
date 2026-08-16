@@ -1,11 +1,8 @@
 use int_enum::IntEnum;
 
 use crate::{
-    bus::{Address, Offset},
-    cpu::{
-        self, EitherSource, Instruction, LispWord, Location, MachSource, MachineRegister, Native,
-        RegAndOff, RegSource, Register, TwoRegs,
-    },
+    bus::Address,
+    cpu::{self, Instruction, Native, RegAndOff, Register},
 };
 
 #[derive(Debug)]
@@ -18,256 +15,68 @@ pub enum DecoderError {
     BadInstruction,
 }
 
-enum ARegister {
-    Register(Register),
-    MRegister(MachineRegister),
-    IRegister(Register),
-    IMRegister(MachineRegister),
-    None,
-    Imm,
-}
-
-impl ARegister {
-    fn decode(r: u8) -> Result<ARegister, DecoderError> {
-        if r < 16 {
-            Ok(ARegister::Register(Register::from_offset(r as usize)))
-        } else if r < 32 {
-            Ok(ARegister::MRegister(MachineRegister::from_offset(
-                r as usize,
-            )))
-        } else if r < 48 {
-            Ok(ARegister::IRegister(Register::from_offset(r as usize - 32)))
-        } else if r < 64 {
-            Ok(ARegister::IMRegister(MachineRegister::from_offset(
-                r as usize - 32,
-            )))
-        } else if r == 64 {
-            Ok(ARegister::None)
-        } else if r == 65 {
-            Ok(ARegister::Imm)
-        } else {
-            Err(DecoderError::BadInstruction)
-        }
-    }
-
-    fn encode(&self) -> u8 {
+impl cpu::RValue {
+    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>) {
         match self {
-            ARegister::Imm => 65,
-            ARegister::None => 64,
-            ARegister::Register(r) => r.offset() as u8,
-            ARegister::MRegister(r) => r.offset() as u8,
-            ARegister::IRegister(r) => r.offset() as u8 + 32,
-            ARegister::IMRegister(r) => r.offset() as u8 + 32,
+            Self::Literal(l) => (Some(Register(0)), Some(Register(0)), Some(*l)),
+            Self::Absolute(l) => (None, None, Some(Native(l.0))),
+            Self::Register(RegAndOff { op1, off }) => (Some(*op1), None, *off),
+            Self::Indirect(RegAndOff { op1, off }) => (None, Some(*op1), *off),
         }
     }
 
-    fn register(self) -> Result<Register, DecoderError> {
-        match self {
-            ARegister::Register(r) => Ok(r),
+    fn decode(
+        direct: Option<Register>,
+        indirect: Option<Register>,
+        offset: Option<Native>,
+    ) -> Result<Self, DecoderError> {
+        match (direct, indirect, offset) {
+            (Some(op1), None, off) => Ok(cpu::RValue::Register(RegAndOff { op1, off })),
+            (None, Some(op1), off) => Ok(cpu::RValue::Indirect(RegAndOff { op1, off })),
+            (None, None, Some(abs)) => Ok(cpu::RValue::Absolute(Address::from(abs))),
+            (Some(_), Some(_), Some(off)) => Ok(cpu::RValue::Literal(off)),
             _ => Err(DecoderError::BadInstruction),
-        }
-    }
-
-    fn mregister(&self) -> Result<MachineRegister, DecoderError> {
-        match self {
-            ARegister::MRegister(r) => Ok(*r),
-            _ => Err(DecoderError::BadInstruction),
-        }
-    }
-}
-
-struct MachAndOff {
-    op1: Option<MachineRegister>,
-    off: Option<Native>,
-}
-impl MachAndOff {
-    fn encode(&self) -> Result<(u8, u64), EncoderError> {
-        match (self.op1, self.off) {
-            (Some(o1), Some(off)) => Ok((ARegister::IMRegister(o1).encode(), off.0)),
-            (Some(o1), None) => Ok((ARegister::MRegister(o1).encode(), 0)),
-            (None, Some(off)) => Ok((ARegister::None.encode(), off.0)),
-            (None, None) => Err(EncoderError::BadInstruction),
-        }
-    }
-
-    fn decode(r1: u8, off: u64) -> Result<Self, DecoderError> {
-        let r = ARegister::decode(r1)?;
-        match r {
-            ARegister::MRegister(r) => Ok(Self {
-                op1: Some(r),
-                off: None,
-            }),
-            ARegister::IMRegister(r) => Ok(Self {
-                op1: Some(r),
-                off: Some(Native(off)),
-            }),
-            ARegister::None => Ok(Self {
-                op1: None,
-                off: Some(Native(off)),
-            }),
-            _ => Err(DecoderError::BadInstruction),
-        }
-    }
-}
-impl RegAndOff {
-    fn encode(&self) -> Result<(u8, u64), EncoderError> {
-        match (self.op1, self.off) {
-            (Some(o1), Some(off)) => Ok((ARegister::IRegister(o1).encode(), off.0)),
-            (Some(o1), None) => Ok((ARegister::Register(o1).encode(), 0)),
-            (None, Some(off)) => Ok((ARegister::None.encode(), off.0)),
-            (None, None) => Err(EncoderError::BadInstruction),
-        }
-    }
-
-    fn decode(r1: u8, off: u64) -> Result<Self, DecoderError> {
-        let r = ARegister::decode(r1)?;
-        match r {
-            ARegister::Register(r) => Ok(RegAndOff {
-                op1: Some(r),
-                off: None,
-            }),
-            ARegister::IRegister(r) => Ok(RegAndOff {
-                op1: Some(r),
-                off: Some(LispWord(off)),
-            }),
-            ARegister::None => Ok(RegAndOff {
-                op1: None,
-                off: Some(LispWord(off)),
-            }),
-            _ => Err(DecoderError::BadInstruction),
-        }
-    }
-}
-
-impl TwoRegs {
-    fn encode(&self) -> (u8, u8) {
-        (
-            ARegister::Register(self.dst).encode(),
-            ARegister::Register(self.src).encode(),
-        )
-    }
-
-    fn decode(r1: u8, r2: u8) -> Result<Self, DecoderError> {
-        let reg1 = ARegister::decode(r1)?.register()?;
-        let reg2 = ARegister::decode(r2)?.register()?;
-        Ok(TwoRegs {
-            dst: reg1,
-            src: reg2,
-        })
-    }
-}
-
-impl RegSource {
-    fn encode(&self) -> Result<(u8, u8, u64), EncoderError> {
-        let op1 = ARegister::Register(self.op1).encode();
-        let op2 = RegAndOff {
-            op1: self.op2,
-            off: self.op3,
-        }
-        .encode()?;
-        Ok((op1, op2.0, op2.1))
-    }
-
-    fn decode(r1: u8, r2: u8, imm: u64) -> Result<RegSource, DecoderError> {
-        let op1 = ARegister::decode(r1)?.register()?;
-        let op2 = RegAndOff::decode(r2, imm)?;
-        Ok(RegSource {
-            op1,
-            op2: op2.op1,
-            op3: op2.off,
-        })
-    }
-}
-
-impl cpu::Location {
-    fn encode(&self) -> (u8, u64) {
-        match self {
-            Self::Literal(l) => (ARegister::Imm.encode(), l.0),
-            Self::Absolute(l) => (ARegister::None.encode(), l.0),
-            Self::Register(r) => (ARegister::Register(*r).encode(), 0),
-            Self::Machine(r) => (ARegister::MRegister(*r).encode(), 0),
-            Self::IndirectRegister(a) => (ARegister::IRegister(*a).encode(), 0),
-            Self::IndirectMachine(a, d) => (ARegister::IMRegister(*a).encode(), d.0 as u64),
-        }
-    }
-
-    fn decode(reg: u8, off: u64) -> Result<Self, DecoderError> {
-        let r = ARegister::decode(reg)?;
-        match r {
-            ARegister::Imm => Ok(Self::Literal(Native(off))),
-            ARegister::None => Ok(Self::Absolute(Address(off))),
-            ARegister::IMRegister(reg) => Ok(Self::IndirectMachine(reg, cpu::Offset(off as i64))),
-            ARegister::IRegister(reg) => Ok(Self::IndirectRegister(reg)),
-            ARegister::Register(reg) => Ok(Self::Register(reg)),
-            ARegister::MRegister(reg) => Ok(Self::Machine(reg)),
         }
     }
 
     fn needs_second_word(&self) -> bool {
         match self {
-            Location::Literal(_) => true,
-            Location::Absolute(_) => true,
-            Location::Machine(_) => false,
-            Location::Register(_) => false,
-            Location::IndirectMachine(_, _) => true,
-            Location::IndirectRegister(_) => false,
+            cpu::RValue::Literal(_) => true,
+            cpu::RValue::Absolute(_) => true,
+            cpu::RValue::Register(RegAndOff { op1: _, off }) => off.is_some(),
+            cpu::RValue::Indirect(RegAndOff { op1: _, off }) => off.is_some(),
         }
     }
 }
 
-impl cpu::JumpTarget {
-    fn encode(&self) -> (u8, u64) {
+impl cpu::LValue {
+    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>) {
         match self {
-            Self::Absolute(a) => (ARegister::None.encode(), a.0),
-            Self::Register(r) => (ARegister::Register(*r).encode(), 0),
-            Self::Machine(r, off) => (ARegister::MRegister(*r).encode(), off.0 as u64),
-            Self::IndirectRegister(a) => (ARegister::IRegister(*a).encode() + 32, 0),
-            Self::IndirectMachine(a, off) => {
-                (ARegister::IMRegister(*a).encode() + 32, off.0 as u64)
-            }
+            Self::Absolute(a) => (None, None, Some(Native(a.0))),
+            Self::Register(r) => (Some(*r), None, None),
+            Self::Indirect(RegAndOff { op1, off }) => (None, Some(*op1), *off),
         }
     }
 
-    fn decode(reg: u8, off: u64) -> Result<Self, DecoderError> {
-        let r = ARegister::decode(reg)?;
-        match r {
-            ARegister::None => Ok(Self::Absolute(Address(off))),
-            ARegister::IMRegister(reg) => Ok(Self::IndirectMachine(reg, cpu::Offset(off as i64))),
-            ARegister::IRegister(reg) => Ok(Self::IndirectRegister(reg)),
-            ARegister::Register(reg) => Ok(Self::Register(reg)),
-            ARegister::MRegister(reg) => Ok(Self::Machine(reg, Offset(off as i64))),
+    fn decode(
+        direct: Option<Register>,
+        indirect: Option<Register>,
+        offset: Option<Native>,
+    ) -> Result<Self, DecoderError> {
+        match (direct, indirect, offset) {
+            (Some(d), None, None) => Ok(cpu::LValue::Register(d)),
+            (None, None, Some(off)) => Ok(cpu::LValue::Absolute(Address::from(off))),
+            (None, Some(op1), off) => Ok(cpu::LValue::Indirect(RegAndOff { op1, off })),
+
             _ => Err(DecoderError::BadInstruction),
         }
     }
-}
 
-impl MachSource {
-    fn encode(&self) -> Result<(u8, u8, u64), EncoderError> {
-        let op1 = ARegister::MRegister(self.op1).encode();
-        let op2 = MachAndOff {
-            op1: self.op2,
-            off: self.op3,
-        }
-        .encode()?;
-        Ok((op1, op2.0, op2.1))
-    }
-    fn decode(r1: u8, r2: u8, imm: u64) -> Result<Self, DecoderError> {
-        let op1 = ARegister::decode(r1)?.mregister()?;
-        let op2 = MachAndOff::decode(r2, imm)?;
-        Ok(Self {
-            op1,
-            op2: op2.op1,
-            op3: op2.off,
-        })
-    }
-}
-
-impl cpu::EitherSource {
-    fn decode(r1: u8, r2: u8, hi: u64) -> Result<Self, DecoderError> {
-        if r1 >= 16 {
-            Ok(EitherSource::Mach(MachSource::decode(r1, r2, hi)?))
-        } else {
-            Ok(EitherSource::Reg(RegSource::decode(r1, r2, hi)?))
+    fn needs_second_word(&self) -> bool {
+        match self {
+            cpu::LValue::Absolute(_) => true,
+            cpu::LValue::Register(_) => false,
+            cpu::LValue::Indirect(RegAndOff { op1: _, off }) => off.is_some(),
         }
     }
 }
@@ -282,8 +91,6 @@ enum Opcode {
     JumpIfNot,
     Int,
     IReturn,
-    PushA,
-    PopA,
     Mov,
     Mov8,
     AAdd,
@@ -311,8 +118,8 @@ enum Opcode {
     Gte,
     Lt,
     Lte,
-    PushR,
-    PopR,
+    Push,
+    Pop,
     MakeClosure,
     Call,
     Return,
@@ -323,339 +130,403 @@ enum Opcode {
 }
 
 impl Instruction {
+    fn decode_params(
+        lo: u64,
+        off: u64,
+    ) -> Result<
+        (
+            Opcode,
+            Option<Register>,
+            Option<Register>,
+            Option<Register>,
+            Option<Register>,
+            Option<Register>,
+            Option<Native>,
+            u8,
+        ),
+        DecoderError,
+    > {
+        let [opcode, param_shape, p0, p1, p2, p3, p4, tiebreak] = lo.to_le_bytes();
+
+        let r0 = if param_shape & 1 != 0 {
+            Some(Register(p0))
+        } else {
+            None
+        };
+        let r1 = if param_shape & 2 != 0 {
+            Some(Register(p1))
+        } else {
+            None
+        };
+        let r2 = if param_shape & 4 != 0 {
+            Some(Register(p2))
+        } else {
+            None
+        };
+        let r3 = if param_shape & 8 != 0 {
+            Some(Register(p3))
+        } else {
+            None
+        };
+        let r4 = if param_shape & 16 != 0 {
+            Some(Register(p4))
+        } else {
+            None
+        };
+        let off = if param_shape & 32 != 0 {
+            Some(Native(off))
+        } else {
+            None
+        };
+
+        Ok((
+            Opcode::try_from(opcode).map_err(|_| DecoderError::BadInstruction)?,
+            r0,
+            r1,
+            r2,
+            r3,
+            r4,
+            off,
+            tiebreak,
+        ))
+    }
+
+    fn encode_params(
+        opcode: Opcode,
+        p0: Option<Register>,
+        p1: Option<Register>,
+        p2: Option<Register>,
+        p3: Option<Register>,
+        p4: Option<Register>,
+        off: Option<Native>,
+        tiebreak: u8,
+    ) -> (u64, u64) {
+        let mut shape = 0;
+        let r0 = match p0 {
+            None => 0,
+            Some(r) => {
+                shape |= 1;
+                r.0
+            }
+        };
+        let r1 = match p1 {
+            None => 0,
+            Some(r) => {
+                shape |= 2;
+                r.0
+            }
+        };
+        let r2 = match p2 {
+            None => 0,
+            Some(r) => {
+                shape |= 4;
+                r.0
+            }
+        };
+        let r3 = match p3 {
+            None => 0,
+            Some(r) => {
+                shape |= 8;
+                r.0
+            }
+        };
+        let r4 = match p4 {
+            None => 0,
+            Some(r) => {
+                shape |= 16;
+                r.0
+            }
+        };
+        let off = match off {
+            None => 0,
+            Some(r) => {
+                shape |= 32;
+                r.0
+            }
+        };
+
+        (
+            u64::from_le_bytes([opcode.into(), shape, r0, r1, r2, r3, r4, tiebreak]),
+            off,
+        )
+    }
+
     pub fn decode(lo: u64, hi: u64) -> Result<Self, DecoderError> {
-        let [opcode, r0, r1, r2, r3, ..] = lo.to_le_bytes();
-        match Opcode::try_from(opcode).map_err(|_| DecoderError::BadInstruction)? {
+        let (opcode, r0, r1, r2, r3, r4, off, tiebreak) = Self::decode_params(lo, hi)?;
+
+        match opcode {
             Opcode::Nop => Ok(Self::Nop),
             Opcode::Jump => Ok(Self::Jump {
                 condition: cpu::Condition::Always,
-                target: cpu::JumpTarget::decode(r0, hi)?,
+                target: cpu::RValue::decode(r1, r2, off)?,
             }),
             Opcode::JumpIf => Ok(Self::Jump {
-                condition: cpu::Condition::True(ARegister::decode(r0)?.register()?),
-                target: cpu::JumpTarget::decode(r1, hi)?,
+                condition: cpu::Condition::True(r0.ok_or(DecoderError::BadInstruction)?),
+                target: cpu::RValue::decode(r1, r2, off)?,
             }),
             Opcode::JumpIfNot => Ok(Self::Jump {
-                condition: cpu::Condition::False(ARegister::decode(r0)?.register()?),
-                target: cpu::JumpTarget::decode(r1, hi)?,
+                condition: cpu::Condition::False(r0.ok_or(DecoderError::BadInstruction)?),
+                target: cpu::RValue::decode(r1, r2, off)?,
             }),
             Opcode::Call => Ok(Self::Call {
-                target: cpu::JumpTarget::decode(r0, hi)?,
+                target: cpu::RValue::decode(r0, r1, off)?,
             }),
 
             Opcode::Return => Ok(Self::Return),
             Opcode::MakeClosure => Ok(Self::MakeClosure {
-                dst: ARegister::decode(r0)?.register()?,
-                code: ARegister::decode(r1)?.mregister()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                code: r1.ok_or(DecoderError::BadInstruction)?,
             }),
 
             Opcode::Eq => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Eq,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: cpu::EitherSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Ne => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Ne,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: cpu::EitherSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Gt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gt,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: cpu::EitherSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Gte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gte,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: cpu::EitherSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Lt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lt,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: cpu::EitherSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Lte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lte,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: cpu::EitherSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Add => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Add,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: RegSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Sub => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Sub,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: RegSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Mul => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Mul,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: RegSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Shl => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shl,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: RegSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::Shr => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shr,
-                dst: ARegister::decode(r0)?.register()?,
-                operands: RegSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
 
-            Opcode::Car => Ok(Self::Car(TwoRegs::decode(r0, r1)?)),
-            Opcode::Cdr => Ok(Self::Cdr(TwoRegs::decode(r0, r1)?)),
-            Opcode::SetCar => Ok(Self::SetCar(TwoRegs::decode(r0, r1)?)),
-            Opcode::SetCdr => Ok(Self::SetCdr(TwoRegs::decode(r0, r1)?)),
+            Opcode::Car => Ok(Self::Car {
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
+            }),
+            Opcode::Cdr => Ok(Self::Cdr {
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
+            }),
+            Opcode::SetCar => Ok(Self::SetCar {
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
+            }),
+            Opcode::SetCdr => Ok(Self::SetCdr {
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
+            }),
             Opcode::Cons => Ok(Self::Cons {
-                dst: ARegister::decode(r0)?.register()?,
-                car: ARegister::decode(r1)?.register()?,
-                cdr: ARegister::decode(r2)?.register()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                car: r1.ok_or(DecoderError::BadInstruction)?,
+                cdr: r2.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::Uncons => Ok(Self::Uncons {
-                car: ARegister::decode(r0)?.register()?,
-                cdr: ARegister::decode(r1)?.register()?,
-                src: ARegister::decode(r2)?.register()?,
+                car: r0.ok_or(DecoderError::BadInstruction)?,
+                cdr: r1.ok_or(DecoderError::BadInstruction)?,
+                src: r2.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::IDiv => Ok(Self::IDiv {
-                div: ARegister::decode(r0)?.register()?,
-                rem: ARegister::decode(r1)?.register()?,
-                operands: RegSource::decode(r2, r3, hi)?,
+                div: r0.ok_or(DecoderError::BadInstruction)?,
+                rem: r1.ok_or(DecoderError::BadInstruction)?,
+                op1: r2.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r3, r4, off)?,
             }),
-            Opcode::PopR => Ok(Self::PopR {
-                dst: ARegister::decode(r0)?.register()?,
+            Opcode::Pop => Ok(Self::Pop {
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
             }),
-            Opcode::PushR => Ok(Self::PushR {
-                src: ARegister::decode(r0)?.register()?,
-            }),
-            Opcode::PopA => Ok(Self::PopA {
-                dst: ARegister::decode(r0)?.mregister()?,
-            }),
-            Opcode::PushA => Ok(Self::PushA {
-                src: ARegister::decode(r0)?.mregister()?,
+            Opcode::Push => Ok(Self::Push {
+                src: r0.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::IReturn => Ok(Self::IReturn),
             Opcode::AAdd => Ok(Instruction::MBinary {
                 op: cpu::MBinaryOp::Add,
-                dst: ARegister::decode(r0)?.mregister()?,
-                operands: cpu::MachSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::ASub => Ok(Instruction::MBinary {
                 op: cpu::MBinaryOp::Sub,
-                dst: ARegister::decode(r0)?.mregister()?,
-                operands: cpu::MachSource::decode(r1, r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                op1: r1.ok_or(DecoderError::BadInstruction)?,
+                op2: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::GetPayload => Ok(Instruction::GetPayload {
-                dst: ARegister::decode(r0)?.mregister()?,
-                src: ARegister::decode(r1)?.register()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::GetTag => Ok(Instruction::GetTag {
-                dst: ARegister::decode(r0)?.mregister()?,
-                src: ARegister::decode(r1)?.register()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::Halt => Ok(Instruction::Halt),
             Opcode::Int => Ok(Instruction::Int(hi)),
             Opcode::SetPayload => Ok(Instruction::SetPayload {
-                dst: ARegister::decode(r0)?.register()?,
-                src: ARegister::decode(r1)?.mregister()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::SetTag => Ok(Instruction::SetTag {
-                dst: ARegister::decode(r0)?.register()?,
-                src: ARegister::decode(r1)?.mregister()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
             }),
-            Opcode::Mov => {
-                let dst = Location::decode(r0, hi)?;
-                let src = Location::decode(r1, hi)?;
-
-                Ok(Instruction::Mov { dst, src })
-            }
-            Opcode::Mov8 => {
-                let dst = Location::decode(r0, hi)?;
-                let src = Location::decode(r1, hi)?;
-
-                Ok(Instruction::Mov8 { dst, src })
-            }
+            Opcode::Mov => Ok(Instruction::Mov {
+                dst: cpu::LValue::decode(r0, r1, if tiebreak == 1 { off } else { None })?,
+                src: cpu::RValue::decode(r2, r3, if tiebreak == 0 { off } else { None })?,
+            }),
+            Opcode::Mov8 => Ok(Instruction::Mov8 {
+                dst: cpu::LValue::decode(r0, r1, if tiebreak == 1 { off } else { None })?,
+                src: cpu::RValue::decode(r2, r3, if tiebreak == 0 { off } else { None })?,
+            }),
             Opcode::Typep => Ok(Instruction::Typep {
-                dst: ARegister::decode(r0)?.register()?,
-                src: ARegister::decode(r1)?.register()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
                 compare: Native(hi),
             }),
             Opcode::MemCpy => Ok(Instruction::MemCpy {
-                dst: ARegister::decode(r0)?.mregister()?,
-                src: ARegister::decode(r1)?.mregister()?,
-                count: RegAndOff::decode(r2, hi)?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                src: r1.ok_or(DecoderError::BadInstruction)?,
+                count: cpu::RValue::decode(r2, r3, off)?,
             }),
             Opcode::DisableInterrupts => Ok(Instruction::DisableInterrupts),
             Opcode::EnableInterrupts => Ok(Instruction::EnableInterrupts),
             Opcode::Req => Ok(Instruction::Req {
-                dst: ARegister::decode(r0)?.register()?,
-                prototype: ARegister::decode(r1)?.register()?,
-                size: ARegister::decode(r2)?.register()?,
+                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                prototype: r1.ok_or(DecoderError::BadInstruction)?,
+                size: r2.ok_or(DecoderError::BadInstruction)?,
             }),
         }
-    }
-
-    fn encode_div(div: Register, rem: Register, r: RegSource) -> Result<(u64, u64), EncoderError> {
-        let (r2, r3, hi) = r.encode()?;
-        Ok((
-            u64::from_le_bytes([
-                Opcode::IDiv.into(),
-                ARegister::Register(div).encode(),
-                ARegister::Register(rem).encode(),
-                r2,
-                r3,
-                0,
-                0,
-                0,
-            ]),
-            hi,
-        ))
-    }
-
-    fn encode_three_adrs(
-        opcode: Opcode,
-        dst: u8,
-        target: &MachSource,
-    ) -> Result<(u64, u64), EncoderError> {
-        let (r1, r2, hi) = target.encode()?;
-        Ok((
-            u64::from_le_bytes([opcode.into(), dst, r1, r2, 0, 0, 0, 0]),
-            hi,
-        ))
-    }
-
-    fn encode_three_regs(
-        opcode: Opcode,
-        dst: u8,
-        target: &RegSource,
-    ) -> Result<(u64, u64), EncoderError> {
-        let (r1, r2, hi) = target.encode()?;
-        Ok((
-            u64::from_le_bytes([opcode.into(), dst, r1, r2, 0, 0, 0, 0]),
-            hi,
-        ))
-    }
-
-    fn encode_three_either(
-        opcode: Opcode,
-        dst: u8,
-        target: &EitherSource,
-    ) -> Result<(u64, u64), EncoderError> {
-        match target {
-            EitherSource::Mach(m) => Ok(Self::encode_three_adrs(opcode, dst, m)?),
-            EitherSource::Reg(r) => Ok(Self::encode_three_regs(opcode, dst, r)?),
-        }
-    }
-
-    fn encode_two_regs(opcode: Opcode, target: &TwoRegs) -> (u64, u64) {
-        let (r1, r2) = target.encode();
-        (
-            u64::from_le_bytes([opcode.into(), r1, r2, 0, 0, 0, 0, 0]),
-            0,
-        )
     }
 
     pub fn encode(&self) -> Result<(u64, u64), EncoderError> {
         Ok(match self {
             // Control flow
-            Instruction::Halt => (
-                u64::from_le_bytes([Opcode::Halt.into(), 0, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::Nop => (
-                u64::from_le_bytes([Opcode::Nop.into(), 0, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-
-            Instruction::Jump {
-                condition: crate::cpu::Condition::Always,
-                target: addressing,
-            } => {
-                let (r0, hi) = addressing.encode();
-                (
-                    u64::from_le_bytes([Opcode::Jump.into(), r0, 0, 0, 0, 0, 0, 0]),
-                    hi,
-                )
-            }
-            Instruction::Jump {
-                condition: crate::cpu::Condition::True(reg),
-                target: addressing,
-            } => {
-                let (r1, hi) = addressing.encode();
-                (
-                    u64::from_le_bytes([
-                        Opcode::JumpIf.into(),
-                        ARegister::Register(*reg).encode(),
-                        r1,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]),
-                    hi,
-                )
-            }
-            Instruction::Jump {
-                condition: crate::cpu::Condition::False(reg),
-                target: addressing,
-            } => {
-                let (r1, hi) = addressing.encode();
-                (
-                    u64::from_le_bytes([
-                        Opcode::JumpIfNot.into(),
-                        ARegister::Register(*reg).encode(),
-                        r1,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]),
-                    hi,
-                )
-            }
-            Instruction::Call { target: addressing } => {
-                let (r0, hi) = addressing.encode();
-                (
-                    u64::from_le_bytes([Opcode::Call.into(), r0, 0, 0, 0, 0, 0, 0]),
-                    hi,
-                )
-            }
-
-            Instruction::Return => (
-                u64::from_le_bytes([Opcode::Return.into(), 0, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::MakeClosure { dst, code } => (
-                u64::from_le_bytes([
-                    Opcode::MakeClosure.into(),
-                    ARegister::Register(*dst).encode(),
-                    ARegister::MRegister(*code).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-
-            // Comparison
-            Instruction::Comparison { op, dst, operands } => {
-                let opcode = match op {
-                    cpu::Comparison::Eq => Opcode::Eq,
-                    cpu::Comparison::Gt => Opcode::Gt,
-                    cpu::Comparison::Gte => Opcode::Gte,
-                    cpu::Comparison::Lt => Opcode::Lt,
-                    cpu::Comparison::Lte => Opcode::Lte,
-                    cpu::Comparison::Ne => Opcode::Ne,
+            // No params:
+            i @ (Instruction::Halt
+            | Instruction::Nop
+            | Instruction::EnableInterrupts
+            | Instruction::DisableInterrupts
+            | Instruction::IReturn
+            | Instruction::Return) => {
+                let opcode = match i {
+                    Instruction::Halt => Opcode::Halt,
+                    Instruction::Nop => Opcode::Nop,
+                    Instruction::Return => Opcode::Return,
+                    Instruction::IReturn => Opcode::IReturn,
+                    Instruction::EnableInterrupts => Opcode::EnableInterrupts,
+                    Instruction::DisableInterrupts => Opcode::DisableInterrupts,
+                    _ => panic!("Missing branch"),
                 };
-                Self::encode_three_either(opcode, ARegister::Register(*dst).encode(), operands)?
+                Instruction::encode_params(opcode, None, None, None, None, None, None, 0)
             }
-            Instruction::Binary { op, dst, operands } => {
+
+            // 1 arg
+            Instruction::Pop { dst } => {
+                Instruction::encode_params(Opcode::Pop, Some(*dst), None, None, None, None, None, 0)
+            }
+            Instruction::Push { src } => Instruction::encode_params(
+                Opcode::Push,
+                Some(*src),
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+            ),
+            Instruction::Int(i) => Instruction::encode_params(
+                Opcode::Int,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Native(*i)),
+                0,
+            ),
+
+            // 2 args:
+            i @ (Instruction::Car { dst, src }
+            | Instruction::Cdr { dst, src }
+            | Instruction::SetCar { dst, src }
+            | Instruction::SetCdr { dst, src }
+            | Instruction::GetPayload { dst, src }
+            | Instruction::GetTag { dst, src }
+            | Instruction::SetPayload { dst, src }
+            | Instruction::SetTag { dst, src }) => {
+                let opcode = match i {
+                    Instruction::Car { dst: _, src: _ } => Opcode::Car,
+                    Instruction::Cdr { dst: _, src: _ } => Opcode::Cdr,
+                    Instruction::SetCar { dst: _, src: _ } => Opcode::SetCar,
+                    Instruction::SetCdr { dst: _, src: _ } => Opcode::SetCdr,
+                    Instruction::GetPayload { dst: _, src: _ } => Opcode::GetPayload,
+                    Instruction::SetPayload { dst: _, src: _ } => Opcode::SetPayload,
+                    Instruction::GetTag { dst: _, src: _ } => Opcode::GetTag,
+                    Instruction::SetTag { dst: _, src: _ } => Opcode::SetTag,
+                    _ => panic!("Missing branch"),
+                };
+                Instruction::encode_params(
+                    opcode,
+                    Some(*dst),
+                    Some(*src),
+                    None,
+                    None,
+                    None,
+                    None,
+                    0,
+                )
+            }
+
+            // 3 + off args
+            Instruction::Binary { op, dst, op1, op2 } => {
                 let opcode = match op {
                     cpu::BinaryOp::Add => Opcode::Add,
                     cpu::BinaryOp::Mul => Opcode::Mul,
@@ -663,238 +534,184 @@ impl Instruction {
                     cpu::BinaryOp::Shr => Opcode::Shr,
                     cpu::BinaryOp::Sub => Opcode::Sub,
                 };
-                Self::encode_three_regs(opcode, ARegister::Register(*dst).encode(), operands)?
+                let (direct, indirect, off) = op2.encode();
+                Instruction::encode_params(
+                    opcode,
+                    Some(*dst),
+                    Some(*op1),
+                    direct,
+                    indirect,
+                    None,
+                    off,
+                    0,
+                )
             }
-
-            // Cons
-            Instruction::Car(regs) => Self::encode_two_regs(Opcode::Car, regs),
-            Instruction::Cdr(regs) => Self::encode_two_regs(Opcode::Cdr, regs),
-            Instruction::SetCar(regs) => Self::encode_two_regs(Opcode::SetCar, regs),
-            Instruction::SetCdr(regs) => Self::encode_two_regs(Opcode::SetCdr, regs),
-            Instruction::Cons { dst, car, cdr } => (
-                u64::from_le_bytes([
-                    Opcode::Cons.into(),
-                    ARegister::Register(*dst).encode(),
-                    ARegister::Register(*car).encode(),
-                    ARegister::Register(*cdr).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::Uncons { car, cdr, src } => (
-                u64::from_le_bytes([
-                    Opcode::Uncons.into(),
-                    ARegister::Register(*car).encode(),
-                    ARegister::Register(*cdr).encode(),
-                    ARegister::Register(*src).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-
-            &Instruction::IDiv { div, rem, operands } => {
-                Instruction::encode_div(div, rem, operands)?
-            }
-            Instruction::PopR { dst } => (
-                u64::from_le_bytes([
-                    Opcode::PopR.into(),
-                    ARegister::Register(*dst).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::PushR { src } => (
-                u64::from_le_bytes([
-                    Opcode::PushR.into(),
-                    ARegister::Register(*src).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::PopA { dst } => (
-                u64::from_le_bytes([
-                    Opcode::PopA.into(),
-                    ARegister::MRegister(*dst).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::PushA { src } => (
-                u64::from_le_bytes([
-                    Opcode::PushA.into(),
-                    ARegister::MRegister(*src).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::IReturn => (
-                u64::from_le_bytes([Opcode::IReturn.into(), 0, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::MBinary { op, dst, operands } => {
+            Instruction::MBinary { op, dst, op1, op2 } => {
                 let opcode = match op {
                     cpu::MBinaryOp::Add => Opcode::AAdd,
                     cpu::MBinaryOp::Sub => Opcode::ASub,
                 };
-                Self::encode_three_adrs(opcode, ARegister::MRegister(*dst).encode(), operands)?
+                let (direct, indirect, off) = op2.encode();
+                Instruction::encode_params(
+                    opcode,
+                    Some(*dst),
+                    Some(*op1),
+                    direct,
+                    indirect,
+                    None,
+                    off,
+                    0,
+                )
             }
-            Instruction::GetPayload { dst, src } => (
-                u64::from_le_bytes([
-                    Opcode::GetPayload.into(),
-                    ARegister::MRegister(*dst).encode(),
-                    ARegister::Register(*src).encode(),
+            Instruction::Comparison { op, dst, op1, op2 } => {
+                let opcode = match op {
+                    cpu::Comparison::Eq => Opcode::Eq,
+                    cpu::Comparison::Ne => Opcode::Ne,
+                    cpu::Comparison::Lt => Opcode::Lt,
+                    cpu::Comparison::Lte => Opcode::Lte,
+                    cpu::Comparison::Gt => Opcode::Gt,
+                    cpu::Comparison::Gte => Opcode::Gte,
+                };
+                let (direct, indirect, off) = op2.encode();
+                Instruction::encode_params(
+                    opcode,
+                    Some(*dst),
+                    Some(*op1),
+                    direct,
+                    indirect,
+                    None,
+                    off,
                     0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
+                )
+            }
+
+            Instruction::Call { target } => {
+                let (direct, indirect, off) = target.encode();
+                Instruction::encode_params(Opcode::Call, direct, indirect, None, None, None, off, 0)
+            }
+            Instruction::Jump { condition, target } => {
+                let (direct, indirect, off) = target.encode();
+                let (opcode, cond) = match condition {
+                    cpu::Condition::Always => (Opcode::Jump, None),
+                    cpu::Condition::False(r) => (Opcode::JumpIfNot, Some(*r)),
+                    cpu::Condition::True(r) => (Opcode::JumpIf, Some(*r)),
+                };
+                Instruction::encode_params(opcode, cond, direct, indirect, None, None, off, 0)
+            }
+            Instruction::Cons { dst, car, cdr } => Instruction::encode_params(
+                Opcode::Cons,
+                Some(*dst),
+                Some(*car),
+                Some(*cdr),
+                None,
+                None,
+                None,
                 0,
             ),
-            Instruction::GetTag { src, dst } => (
-                u64::from_le_bytes([
-                    Opcode::GetTag.into(),
-                    ARegister::MRegister(*dst).encode(),
-                    ARegister::Register(*src).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
+            Instruction::Uncons { car, cdr, src } => Instruction::encode_params(
+                Opcode::Uncons,
+                Some(*car),
+                Some(*cdr),
+                Some(*src),
+                None,
+                None,
+                None,
                 0,
             ),
-            Instruction::Int(count) => (
-                u64::from_le_bytes([Opcode::Int.into(), 0, 0, 0, 0, 0, 0, 0]),
-                *count,
+            Instruction::IDiv { div, rem, op1, op2 } => {
+                let (direct, indirect, off) = op2.encode();
+                Instruction::encode_params(
+                    Opcode::IDiv,
+                    Some(*div),
+                    Some(*rem),
+                    Some(*op1),
+                    direct,
+                    indirect,
+                    off,
+                    0,
+                )
+            }
+            Instruction::MakeClosure { dst, code } => Instruction::encode_params(
+                Opcode::MakeClosure,
+                Some(*dst),
+                Some(*code),
+                None,
+                None,
+                None,
+                None,
+                0,
             ),
+            Instruction::MemCpy { dst, src, count } => {
+                let (direct, indirect, off) = count.encode();
+                Instruction::encode_params(
+                    Opcode::MemCpy,
+                    Some(*dst),
+                    Some(*src),
+                    direct,
+                    indirect,
+                    None,
+                    off,
+                    0,
+                )
+            }
             Instruction::Mov { dst, src } => {
                 if dst.needs_second_word() && src.needs_second_word() {
                     return Err(EncoderError::BadInstruction);
                 }
-                let (edst, doff) = dst.encode();
-                let (esrc, soff) = src.encode();
-                (
-                    u64::from_le_bytes([Opcode::Mov.into(), edst, esrc, 0, 0, 0, 0, 0]),
-                    doff + soff,
+                let (ddst, idst, odst) = dst.encode();
+                let (dsrc, isrc, osrc) = src.encode();
+
+                Instruction::encode_params(
+                    Opcode::Mov,
+                    ddst,
+                    idst,
+                    dsrc,
+                    isrc,
+                    None,
+                    odst.or(osrc),
+                    if odst.is_some() { 1 } else { 0 },
                 )
             }
-            Instruction::SetPayload { dst, src } => (
-                u64::from_le_bytes([
-                    Opcode::SetPayload.into(),
-                    ARegister::Register(*dst).encode(),
-                    ARegister::MRegister(*src).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::SetTag { src, dst } => (
-                u64::from_le_bytes([
-                    Opcode::SetTag.into(),
-                    ARegister::Register(*dst).encode(),
-                    ARegister::MRegister(*src).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                0,
-            ),
-            Instruction::MemCpy { dst, src, count } => {
-                let (count, off) = count.encode()?;
-                (
-                    u64::from_le_bytes([
-                        Opcode::MemCpy.into(),
-                        ARegister::MRegister(*dst).encode(),
-                        ARegister::MRegister(*src).encode(),
-                        count,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]),
-                    off,
-                )
-            }
-            // Instruction::MemSet { dst: _, src: _, count: _ } => todo!(),
             Instruction::Mov8 { dst, src } => {
-                let (edst, doff) = dst.encode();
-                let (esrc, soff) = src.encode();
-                if doff != 0 && soff != 0 {
-                    panic!("Somehow you managed to construct an instruction with two offsets");
+                if dst.needs_second_word() && src.needs_second_word() {
+                    return Err(EncoderError::BadInstruction);
                 }
-                (
-                    u64::from_le_bytes([Opcode::Mov8.into(), edst, esrc, 0, 0, 0, 0, 0]),
-                    doff + soff,
+                let (ddst, idst, odst) = dst.encode();
+                let (dsrc, isrc, osrc) = src.encode();
+
+                Instruction::encode_params(
+                    Opcode::Mov8,
+                    ddst,
+                    idst,
+                    dsrc,
+                    isrc,
+                    None,
+                    odst.or(osrc),
+                    if odst.is_some() { 1 } else { 0 },
                 )
             }
-            Instruction::Typep { dst, src, compare } => (
-                u64::from_le_bytes([
-                    Opcode::Typep.into(),
-                    ARegister::Register(*dst).encode(),
-                    ARegister::Register(*src).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
-                compare.0,
-            ),
-            Instruction::DisableInterrupts => (
-                u64::from_le_bytes([Opcode::DisableInterrupts.into(), 0, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
-            Instruction::EnableInterrupts => (
-                u64::from_le_bytes([Opcode::EnableInterrupts.into(), 0, 0, 0, 0, 0, 0, 0]),
-                0,
-            ),
             Instruction::Req {
                 dst,
                 prototype,
                 size,
-            } => (
-                u64::from_le_bytes([
-                    Opcode::Req.into(),
-                    ARegister::Register(*dst).encode(),
-                    ARegister::Register(*prototype).encode(),
-                    ARegister::Register(*size).encode(),
-                    0,
-                    0,
-                    0,
-                    0,
-                ]),
+            } => Instruction::encode_params(
+                Opcode::Req,
+                Some(*dst),
+                Some(*prototype),
+                Some(*size),
+                None,
+                None,
+                None,
+                0,
+            ),
+            Instruction::Typep { dst, src, compare } => Instruction::encode_params(
+                Opcode::Typep,
+                Some(*dst),
+                Some(*src),
+                None,
+                None,
+                None,
+                Some(*compare),
                 0,
             ),
         })
@@ -916,9 +733,14 @@ mod test {
             for i in s.lines {
                 match i {
                     parser::AssemblyLine::ResolvedInstruction(r) => {
+                        dbg!(r);
                         let (lo, hi) = r.encode().map_err(|_| format!("Error encoding {:?}", r))?;
+                        dbg!(lo.to_le_bytes(), hi);
                         let decoded = cpu::Instruction::decode(lo, hi)
                             .map_err(|_| format!("Error decoding {:?}", r))?;
+                        dbg!(i);
+                        dbg!(decoded);
+                        assert_eq!(r, decoded);
                         let (lo, hi) = decoded
                             .encode()
                             .map_err(|_| format!("Error second encoding {:?}", r))?;

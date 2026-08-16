@@ -11,7 +11,7 @@ use nom::{
     sequence::{delimited, pair, preceded, terminated},
 };
 
-use crate::cpu;
+use crate::cpu::{self, assembler};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum AssemblyToken<'a> {
@@ -19,7 +19,6 @@ pub enum AssemblyToken<'a> {
     Dot,
     Number(i64),
     Register(cpu::Register),
-    MachineRegister(cpu::MachineRegister),
     OpenBracket,
     CloseBracket,
     Plus,
@@ -71,39 +70,83 @@ fn number(input: &str) -> IResult<&str, AssemblyToken<'_>> {
 fn register(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     terminated(
         alt((
-            preceded(tag("R"), decimal).map(|c| AssemblyToken::Register(cpu::Register(c as u8))),
-            value(AssemblyToken::Register(cpu::Cpu::ENV), tag("ENV")),
-            value(AssemblyToken::Register(cpu::Cpu::NIL), tag("NIL")),
-            value(AssemblyToken::Register(cpu::Cpu::T), tag("T")),
-        )),
-        peek(satisfy(|c| !c.is_alphanum())),
-    )
-    .parse(input)
-}
-fn machineregister(input: &str) -> IResult<&str, AssemblyToken<'_>> {
-    terminated(
-        alt((
-            preceded(tag("A"), decimal)
-                .map(|c| AssemblyToken::MachineRegister(cpu::MachineRegister(c as u8))),
-            value(
-                AssemblyToken::MachineRegister(cpu::Cpu::CONS_END),
-                tag("CONS_END"),
-            ),
-            value(
-                AssemblyToken::MachineRegister(cpu::Cpu::CONS_FREE),
-                tag("CONS_FREE"),
-            ),
-            value(
-                AssemblyToken::MachineRegister(cpu::Cpu::GEN_END),
-                tag("GEN_END"),
-            ),
-            value(
-                AssemblyToken::MachineRegister(cpu::Cpu::GEN_FREE),
-                tag("GEN_FREE"),
-            ),
-            value(AssemblyToken::MachineRegister(cpu::Cpu::PC), tag("PC")),
-            value(AssemblyToken::MachineRegister(cpu::Cpu::SP), tag("SP")),
-            value(AssemblyToken::MachineRegister(cpu::Cpu::VBR), tag("VBR")),
+            alt([
+                value(AssemblyToken::Register(cpu::Cpu::ENV), tag("ENV")),
+                value(AssemblyToken::Register(cpu::Cpu::NIL), tag("NIL")),
+                value(AssemblyToken::Register(cpu::Cpu::T), tag("T")),
+                value(AssemblyToken::Register(cpu::Cpu::CONS_END), tag("CONS_END")),
+                value(
+                    AssemblyToken::Register(cpu::Cpu::CONS_FREE),
+                    tag("CONS_FREE"),
+                ),
+                value(AssemblyToken::Register(cpu::Cpu::GEN_END), tag("GEN_END")),
+                value(AssemblyToken::Register(cpu::Cpu::GEN_FREE), tag("GEN_FREE")),
+                value(AssemblyToken::Register(cpu::Cpu::PC), tag("PC")),
+                value(AssemblyToken::Register(cpu::Cpu::FP), tag("FP")),
+                value(AssemblyToken::Register(cpu::Cpu::SP), tag("SP")),
+                value(AssemblyToken::Register(cpu::Cpu::VBR), tag("VBR")),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A0),
+                    tag("A0"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A1),
+                    tag("A1"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A2),
+                    tag("A2"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A3),
+                    tag("A3"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A4),
+                    tag("A4"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A5),
+                    tag("A5"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A6),
+                    tag("A6"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::A7),
+                    tag("A7"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::AN),
+                    tag("AN"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::R0),
+                    tag("R0"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::R1),
+                    tag("R1"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::R2),
+                    tag("R2"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::R3),
+                    tag("R3"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::RN),
+                    tag("RN"),
+                ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::RX),
+                    tag("RX"),
+                ),
+            ]),
+            preceded(tag("V"), decimal).map(|c| AssemblyToken::Register(cpu::Register(c as u8))),
         )),
         peek(satisfy(|c| !c.is_alphanum())),
     )
@@ -193,7 +236,6 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
             directive,
             number,
             register,
-            machineregister,
             openbracket,
             closebracket,
             plus,
