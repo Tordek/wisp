@@ -123,7 +123,7 @@ impl Gpu {
         let mut vga_framebuffer = vec![0u8; 720 * 400 * 3];
         vga_framebuffer.fill(0);
         for i in 0..(25 * 80) {
-            let position = 0x00ffffff000B8000 + 2 * i;
+            let position = 0x00ffffff000b8000 + 2 * i;
             let character = bus.read_byte(Address(position));
             let attributes = bus.read_byte(Address(position + 1));
 

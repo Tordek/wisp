@@ -16,12 +16,15 @@ pub enum DecoderError {
 }
 
 impl cpu::RValue {
-    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>) {
+    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>, u8) {
         match self {
-            Self::Literal(l) => (Some(Register(0)), Some(Register(0)), Some(*l)),
-            Self::Absolute(l) => (None, None, Some(Native(l.0))),
-            Self::Register(RegAndOff { op1, off }) => (Some(*op1), None, *off),
-            Self::Indirect(RegAndOff { op1, off }) => (None, Some(*op1), *off),
+            Self::Literal(l) => (Some(Register(0)), Some(Register(0)), Some(*l), 1),
+            Self::Absolute(l) => (None, None, Some(Native(l.0)), 1),
+            Self::Register(RegAndOff { op1, off }) => (Some(*op1), None, *off, off.is_some() as u8),
+            Self::Indirect(RegAndOff { op1, off }) => (None, Some(*op1), *off, off.is_some() as u8),
+            Self::LPointer(RegAndOff { op1, off }) => {
+                (None, Some(*op1), *off, 2 + off.is_some() as u8)
+            }
         }
     }
 
@@ -29,13 +32,32 @@ impl cpu::RValue {
         direct: Option<Register>,
         indirect: Option<Register>,
         offset: Option<Native>,
+        tiebreak: u8,
     ) -> Result<Self, DecoderError> {
         match (direct, indirect, offset) {
-            (Some(op1), None, off) => Ok(cpu::RValue::Register(RegAndOff { op1, off })),
-            (None, Some(op1), off) => Ok(cpu::RValue::Indirect(RegAndOff { op1, off })),
+            (Some(op1), None, off) => Ok(cpu::RValue::Register(RegAndOff {
+                op1,
+                off: if tiebreak & 1 == 1 { off } else { None },
+            })),
+            (None, Some(op1), off) => {
+                if tiebreak & 2 == 2 {
+                    Ok(cpu::RValue::LPointer(RegAndOff {
+                        op1,
+                        off: if tiebreak & 1 == 1 { off } else { None },
+                    }))
+                } else {
+                    Ok(cpu::RValue::Indirect(RegAndOff {
+                        op1,
+                        off: if tiebreak & 1 == 1 { off } else { None },
+                    }))
+                }
+            }
             (None, None, Some(abs)) => Ok(cpu::RValue::Absolute(Address::from(abs))),
             (Some(_), Some(_), Some(off)) => Ok(cpu::RValue::Literal(off)),
-            _ => Err(DecoderError::BadInstruction),
+            _ => {
+                dbg!(direct,);
+                Err(DecoderError::BadInstruction)
+            }
         }
     }
 
@@ -45,16 +67,25 @@ impl cpu::RValue {
             cpu::RValue::Absolute(_) => true,
             cpu::RValue::Register(RegAndOff { op1: _, off }) => off.is_some(),
             cpu::RValue::Indirect(RegAndOff { op1: _, off }) => off.is_some(),
+            cpu::RValue::LPointer(RegAndOff { op1: _, off }) => off.is_some(),
         }
     }
 }
 
 impl cpu::LValue {
-    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>) {
+    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>, u8) {
         match self {
-            Self::Absolute(a) => (None, None, Some(Native(a.0))),
-            Self::Register(r) => (Some(*r), None, None),
-            Self::Indirect(RegAndOff { op1, off }) => (None, Some(*op1), *off),
+            Self::Absolute(a) => (None, None, Some(Native(a.0)), 4),
+            Self::Register(r) => (Some(*r), None, None, 0),
+            Self::Indirect(RegAndOff { op1, off }) => {
+                (None, Some(*op1), *off, if off.is_some() { 4 } else { 0 })
+            }
+            Self::LPointer(RegAndOff { op1, off }) => (
+                None,
+                Some(*op1),
+                *off,
+                8 + if off.is_some() { 4 } else { 0 },
+            ),
         }
     }
 
@@ -62,11 +93,24 @@ impl cpu::LValue {
         direct: Option<Register>,
         indirect: Option<Register>,
         offset: Option<Native>,
+        tiebreak: u8,
     ) -> Result<Self, DecoderError> {
         match (direct, indirect, offset) {
-            (Some(d), None, None) => Ok(cpu::LValue::Register(d)),
+            (Some(d), None, _) => Ok(cpu::LValue::Register(d)),
             (None, None, Some(off)) => Ok(cpu::LValue::Absolute(Address::from(off))),
-            (None, Some(op1), off) => Ok(cpu::LValue::Indirect(RegAndOff { op1, off })),
+            (None, Some(op1), off) => {
+                if tiebreak & 8 == 8 {
+                    Ok(cpu::LValue::LPointer(RegAndOff {
+                        op1,
+                        off: if tiebreak & 4 == 4 { off } else { None },
+                    }))
+                } else {
+                    Ok(cpu::LValue::Indirect(RegAndOff {
+                        op1,
+                        off: if tiebreak & 4 == 4 { off } else { None },
+                    }))
+                }
+            }
 
             _ => Err(DecoderError::BadInstruction),
         }
@@ -77,6 +121,7 @@ impl cpu::LValue {
             cpu::LValue::Absolute(_) => true,
             cpu::LValue::Register(_) => false,
             cpu::LValue::Indirect(RegAndOff { op1: _, off }) => off.is_some(),
+            cpu::LValue::LPointer(RegAndOff { op1: _, off }) => off.is_some(),
         }
     }
 }
@@ -130,6 +175,7 @@ enum Opcode {
 }
 
 impl Instruction {
+    #[allow(clippy::type_complexity)]
     fn decode_params(
         lo: u64,
         off: u64,
@@ -141,8 +187,8 @@ impl Instruction {
             Option<Register>,
             Option<Register>,
             Option<Register>,
-            Option<Native>,
             u8,
+            Option<Native>,
         ),
         DecoderError,
     > {
@@ -186,11 +232,12 @@ impl Instruction {
             r2,
             r3,
             r4,
-            off,
             tiebreak,
+            off,
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn encode_params(
         opcode: Opcode,
         p0: Option<Register>,
@@ -198,8 +245,8 @@ impl Instruction {
         p2: Option<Register>,
         p3: Option<Register>,
         p4: Option<Register>,
-        off: Option<Native>,
         tiebreak: u8,
+        off: Option<Native>,
     ) -> (u64, u64) {
         let mut shape = 0;
         let r0 = match p0 {
@@ -252,24 +299,24 @@ impl Instruction {
     }
 
     pub fn decode(lo: u64, hi: u64) -> Result<Self, DecoderError> {
-        let (opcode, r0, r1, r2, r3, r4, off, tiebreak) = Self::decode_params(lo, hi)?;
+        let (opcode, r0, r1, r2, r3, r4, tiebreak, off) = Self::decode_params(lo, hi)?;
 
         match opcode {
             Opcode::Nop => Ok(Self::Nop),
             Opcode::Jump => Ok(Self::Jump {
                 condition: cpu::Condition::Always,
-                target: cpu::RValue::decode(r1, r2, off)?,
+                target: cpu::RValue::decode(r1, r2, off, tiebreak)?,
             }),
             Opcode::JumpIf => Ok(Self::Jump {
                 condition: cpu::Condition::True(r0.ok_or(DecoderError::BadInstruction)?),
-                target: cpu::RValue::decode(r1, r2, off)?,
+                target: cpu::RValue::decode(r1, r2, off, tiebreak)?,
             }),
             Opcode::JumpIfNot => Ok(Self::Jump {
                 condition: cpu::Condition::False(r0.ok_or(DecoderError::BadInstruction)?),
-                target: cpu::RValue::decode(r1, r2, off)?,
+                target: cpu::RValue::decode(r1, r2, off, tiebreak)?,
             }),
             Opcode::Call => Ok(Self::Call {
-                target: cpu::RValue::decode(r0, r1, off)?,
+                target: cpu::RValue::decode(r0, r1, off, tiebreak)?,
             }),
 
             Opcode::Return => Ok(Self::Return),
@@ -282,71 +329,71 @@ impl Instruction {
                 op: crate::cpu::Comparison::Eq,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Ne => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Ne,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Gt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gt,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
 
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Gte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gte,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
 
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Lt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lt,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
 
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Lte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lte,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
 
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Add => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Add,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Sub => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Sub,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Mul => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Mul,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Shl => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shl,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Shr => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shr,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
 
             Opcode::Car => Ok(Self::Car {
@@ -379,7 +426,7 @@ impl Instruction {
                 div: r0.ok_or(DecoderError::BadInstruction)?,
                 rem: r1.ok_or(DecoderError::BadInstruction)?,
                 op1: r2.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r3, r4, off)?,
+                op2: cpu::RValue::decode(r3, r4, off, tiebreak)?,
             }),
             Opcode::Pop => Ok(Self::Pop {
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
@@ -392,13 +439,13 @@ impl Instruction {
                 op: cpu::MBinaryOp::Add,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::ASub => Ok(Instruction::MBinary {
                 op: cpu::MBinaryOp::Sub,
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off)?,
+                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::GetPayload => Ok(Instruction::GetPayload {
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
@@ -419,12 +466,12 @@ impl Instruction {
                 src: r1.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::Mov => Ok(Instruction::Mov {
-                dst: cpu::LValue::decode(r0, r1, if tiebreak == 1 { off } else { None })?,
-                src: cpu::RValue::decode(r2, r3, if tiebreak == 0 { off } else { None })?,
+                dst: cpu::LValue::decode(r0, r1, off, tiebreak)?,
+                src: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Mov8 => Ok(Instruction::Mov8 {
-                dst: cpu::LValue::decode(r0, r1, if tiebreak == 1 { off } else { None })?,
-                src: cpu::RValue::decode(r2, r3, if tiebreak == 0 { off } else { None })?,
+                dst: cpu::LValue::decode(r0, r1, off, tiebreak)?,
+                src: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::Typep => Ok(Instruction::Typep {
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
@@ -434,7 +481,7 @@ impl Instruction {
             Opcode::MemCpy => Ok(Instruction::MemCpy {
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 src: r1.ok_or(DecoderError::BadInstruction)?,
-                count: cpu::RValue::decode(r2, r3, off)?,
+                count: cpu::RValue::decode(r2, r3, off, tiebreak)?,
             }),
             Opcode::DisableInterrupts => Ok(Instruction::DisableInterrupts),
             Opcode::EnableInterrupts => Ok(Instruction::EnableInterrupts),
@@ -465,12 +512,12 @@ impl Instruction {
                     Instruction::DisableInterrupts => Opcode::DisableInterrupts,
                     _ => panic!("Missing branch"),
                 };
-                Instruction::encode_params(opcode, None, None, None, None, None, None, 0)
+                Instruction::encode_params(opcode, None, None, None, None, None, 0, None)
             }
 
             // 1 arg
             Instruction::Pop { dst } => {
-                Instruction::encode_params(Opcode::Pop, Some(*dst), None, None, None, None, None, 0)
+                Instruction::encode_params(Opcode::Pop, Some(*dst), None, None, None, None, 0, None)
             }
             Instruction::Push { src } => Instruction::encode_params(
                 Opcode::Push,
@@ -479,8 +526,8 @@ impl Instruction {
                 None,
                 None,
                 None,
-                None,
                 0,
+                None,
             ),
             Instruction::Int(i) => Instruction::encode_params(
                 Opcode::Int,
@@ -489,8 +536,8 @@ impl Instruction {
                 None,
                 None,
                 None,
-                Some(Native(*i)),
                 0,
+                Some(Native(*i)),
             ),
 
             // 2 args:
@@ -520,8 +567,8 @@ impl Instruction {
                     None,
                     None,
                     None,
-                    None,
                     0,
+                    None,
                 )
             }
 
@@ -534,7 +581,7 @@ impl Instruction {
                     cpu::BinaryOp::Shr => Opcode::Shr,
                     cpu::BinaryOp::Sub => Opcode::Sub,
                 };
-                let (direct, indirect, off) = op2.encode();
+                let (direct, indirect, off, tiebreak) = op2.encode();
                 Instruction::encode_params(
                     opcode,
                     Some(*dst),
@@ -542,8 +589,8 @@ impl Instruction {
                     direct,
                     indirect,
                     None,
+                    tiebreak,
                     off,
-                    0,
                 )
             }
             Instruction::MBinary { op, dst, op1, op2 } => {
@@ -551,7 +598,7 @@ impl Instruction {
                     cpu::MBinaryOp::Add => Opcode::AAdd,
                     cpu::MBinaryOp::Sub => Opcode::ASub,
                 };
-                let (direct, indirect, off) = op2.encode();
+                let (direct, indirect, off, tiebreak) = op2.encode();
                 Instruction::encode_params(
                     opcode,
                     Some(*dst),
@@ -559,8 +606,8 @@ impl Instruction {
                     direct,
                     indirect,
                     None,
+                    tiebreak,
                     off,
-                    0,
                 )
             }
             Instruction::Comparison { op, dst, op1, op2 } => {
@@ -572,7 +619,7 @@ impl Instruction {
                     cpu::Comparison::Gt => Opcode::Gt,
                     cpu::Comparison::Gte => Opcode::Gte,
                 };
-                let (direct, indirect, off) = op2.encode();
+                let (direct, indirect, off, tiebreak) = op2.encode();
                 Instruction::encode_params(
                     opcode,
                     Some(*dst),
@@ -580,23 +627,34 @@ impl Instruction {
                     direct,
                     indirect,
                     None,
+                    tiebreak,
                     off,
-                    0,
                 )
             }
 
             Instruction::Call { target } => {
-                let (direct, indirect, off) = target.encode();
-                Instruction::encode_params(Opcode::Call, direct, indirect, None, None, None, off, 0)
+                let (direct, indirect, off, tiebreak) = target.encode();
+                Instruction::encode_params(
+                    Opcode::Call,
+                    direct,
+                    indirect,
+                    None,
+                    None,
+                    None,
+                    tiebreak,
+                    off,
+                )
             }
             Instruction::Jump { condition, target } => {
-                let (direct, indirect, off) = target.encode();
+                let (direct, indirect, off, tiebreak) = target.encode();
                 let (opcode, cond) = match condition {
                     cpu::Condition::Always => (Opcode::Jump, None),
                     cpu::Condition::False(r) => (Opcode::JumpIfNot, Some(*r)),
                     cpu::Condition::True(r) => (Opcode::JumpIf, Some(*r)),
                 };
-                Instruction::encode_params(opcode, cond, direct, indirect, None, None, off, 0)
+                Instruction::encode_params(
+                    opcode, cond, direct, indirect, None, None, tiebreak, off,
+                )
             }
             Instruction::Cons { dst, car, cdr } => Instruction::encode_params(
                 Opcode::Cons,
@@ -605,8 +663,8 @@ impl Instruction {
                 Some(*cdr),
                 None,
                 None,
-                None,
                 0,
+                None,
             ),
             Instruction::Uncons { car, cdr, src } => Instruction::encode_params(
                 Opcode::Uncons,
@@ -615,11 +673,11 @@ impl Instruction {
                 Some(*src),
                 None,
                 None,
-                None,
                 0,
+                None,
             ),
             Instruction::IDiv { div, rem, op1, op2 } => {
-                let (direct, indirect, off) = op2.encode();
+                let (direct, indirect, off, tiebreak) = op2.encode();
                 Instruction::encode_params(
                     Opcode::IDiv,
                     Some(*div),
@@ -627,8 +685,8 @@ impl Instruction {
                     Some(*op1),
                     direct,
                     indirect,
+                    tiebreak,
                     off,
-                    0,
                 )
             }
             Instruction::MakeClosure { dst, code } => Instruction::encode_params(
@@ -638,11 +696,11 @@ impl Instruction {
                 None,
                 None,
                 None,
-                None,
                 0,
+                None,
             ),
             Instruction::MemCpy { dst, src, count } => {
-                let (direct, indirect, off) = count.encode();
+                let (direct, indirect, off, tiebreak) = count.encode();
                 Instruction::encode_params(
                     Opcode::MemCpy,
                     Some(*dst),
@@ -650,16 +708,16 @@ impl Instruction {
                     direct,
                     indirect,
                     None,
+                    tiebreak,
                     off,
-                    0,
                 )
             }
             Instruction::Mov { dst, src } => {
                 if dst.needs_second_word() && src.needs_second_word() {
                     return Err(EncoderError::BadInstruction);
                 }
-                let (ddst, idst, odst) = dst.encode();
-                let (dsrc, isrc, osrc) = src.encode();
+                let (ddst, idst, odst, tdst) = dst.encode();
+                let (dsrc, isrc, osrc, tsrc) = src.encode();
 
                 Instruction::encode_params(
                     Opcode::Mov,
@@ -668,16 +726,16 @@ impl Instruction {
                     dsrc,
                     isrc,
                     None,
+                    tdst + tsrc,
                     odst.or(osrc),
-                    if odst.is_some() { 1 } else { 0 },
                 )
             }
             Instruction::Mov8 { dst, src } => {
                 if dst.needs_second_word() && src.needs_second_word() {
                     return Err(EncoderError::BadInstruction);
                 }
-                let (ddst, idst, odst) = dst.encode();
-                let (dsrc, isrc, osrc) = src.encode();
+                let (ddst, idst, odst, tdst) = dst.encode();
+                let (dsrc, isrc, osrc, tsrc) = src.encode();
 
                 Instruction::encode_params(
                     Opcode::Mov8,
@@ -686,8 +744,8 @@ impl Instruction {
                     dsrc,
                     isrc,
                     None,
+                    tdst + tsrc,
                     odst.or(osrc),
-                    if odst.is_some() { 1 } else { 0 },
                 )
             }
             Instruction::Req {
@@ -701,8 +759,8 @@ impl Instruction {
                 Some(*size),
                 None,
                 None,
-                None,
                 0,
+                None,
             ),
             Instruction::Typep { dst, src, compare } => Instruction::encode_params(
                 Opcode::Typep,
@@ -711,8 +769,8 @@ impl Instruction {
                 None,
                 None,
                 None,
-                Some(*compare),
                 0,
+                Some(*compare),
             ),
         })
     }
@@ -737,7 +795,7 @@ mod test {
                         let (lo, hi) = r.encode().map_err(|_| format!("Error encoding {:?}", r))?;
                         dbg!(lo.to_le_bytes(), hi);
                         let decoded = cpu::Instruction::decode(lo, hi)
-                            .map_err(|_| format!("Error decoding {:?}", r))?;
+                            .map_err(|e| format!("Error decoding {:?} {:?}", r, e))?;
                         dbg!(i);
                         dbg!(decoded);
                         assert_eq!(r, decoded);

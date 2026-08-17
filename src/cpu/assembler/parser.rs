@@ -15,6 +15,7 @@ pub enum RValue<'input> {
     Absolute(Native<'input>),
     Register(RegAndOff<'input>),
     Indirect(RegAndOff<'input>),
+    LPointer(RegAndOff<'input>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -22,6 +23,7 @@ pub enum LValue<'input> {
     Absolute(Native<'input>),
     Register(cpu::Register),
     Indirect(RegAndOff<'input>),
+    LPointer(RegAndOff<'input>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -556,22 +558,29 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let indirect = self.try_open_bracket();
         self.expect(indirect, "An indirect address")?;
 
-        let reg = self.try_register();
-        Ok(match reg {
-            None => {
-                let absolute = self.expect_any_value()?;
-                let close = self.try_close_bracket();
-                self.expect(close, "Close bracket")?;
-                LValue::Absolute(absolute)
-            }
-            Some(_) => {
-                self.position -= 1;
+        let lisp = self.consume_if(|c| match c {
+            AssemblyToken::Bang => Some(()),
+            _ => None,
+        });
+        let reg = self.peek();
+        match reg {
+            Some(AssemblyToken::Register(_)) => {
                 let r = self.expect_r_and_offset()?;
                 let close = self.try_close_bracket();
                 self.expect(close, "Close bracket")?;
-                LValue::Indirect(r)
+                if lisp.is_some() {
+                    Ok(LValue::LPointer(r))
+                } else {
+                    Ok(LValue::Indirect(r))
+                }
             }
-        })
+            _ => {
+                let v = self.expect_any_value()?;
+                let close = self.try_close_bracket();
+                self.expect(close, "Close bracket")?;
+                Ok(LValue::Absolute(v))
+            }
+        }
     }
 
     fn parse_jump(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
@@ -629,20 +638,27 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             return Ok(RValue::Literal(absolute));
         }
 
-        let reg = self.try_register();
+        let lisp = self.consume_if(|c| match c {
+            AssemblyToken::Bang => Some(()),
+            _ => None,
+        });
+        let reg = self.peek();
         match reg {
-            None => {
+            Some(AssemblyToken::Register(_)) => {
+                let r = self.expect_r_and_offset()?;
+                let close = self.try_close_bracket();
+                self.expect(close, "Close bracket")?;
+                if lisp.is_some() {
+                    Ok(RValue::LPointer(r))
+                } else {
+                    Ok(RValue::Indirect(r))
+                }
+            }
+            _ => {
                 let v = self.expect_any_value()?;
                 let close = self.try_close_bracket();
                 self.expect(close, "Close bracket")?;
                 Ok(RValue::Absolute(v))
-            }
-            Some(_) => {
-                self.position -= 1;
-                let r = self.expect_r_and_offset()?;
-                let close = self.try_close_bracket();
-                self.expect(close, "Close bracket")?;
-                Ok(RValue::Indirect(r))
             }
         }
     }

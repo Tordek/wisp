@@ -199,6 +199,7 @@ pub struct RegAndOff {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RValue {
     Literal(Native),
+    LPointer(RegAndOff),
     Register(RegAndOff),
     Absolute(Address),
     Indirect(RegAndOff),
@@ -209,6 +210,7 @@ pub enum LValue {
     Absolute(Address),
     Register(Register),
     Indirect(RegAndOff),
+    LPointer(RegAndOff),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -461,12 +463,23 @@ impl Cpu {
         self.reg(op1) + off.unwrap_or(Native(0))
     }
 
+    // TODO: require pointer?
+    fn get_offset_lisp(&self, RegAndOff { op1, off }: RegAndOff) -> LispWord {
+        let base = self.lreg(op1).payload();
+        let off = off
+            .map(LispWord::from)
+            .unwrap_or(LispWord::fixnum(0))
+            .payload();
+        LispWord::fixnum(base as i64 + off as i64)
+    }
+
     fn read_rval(&self, bus: &Bus, rval: RValue) -> Native {
         match rval {
             RValue::Literal(l) => l,
             RValue::Register(r) => self.get_offset_raw(r),
             RValue::Absolute(adr) => bus.read_word(adr),
             RValue::Indirect(pos) => bus.read_word(Address::from(self.get_offset_raw(pos))),
+            RValue::LPointer(r) => bus.read_word(Address(self.get_offset_lisp(r).payload())),
         }
     }
 
@@ -476,6 +489,7 @@ impl Cpu {
             RValue::Register(pos) => self.get_offset_raw(pos).0 as u8,
             RValue::Absolute(adr) => bus.read_byte(adr),
             RValue::Indirect(pos) => bus.read_byte(Address::from(self.get_offset_raw(pos))),
+            RValue::LPointer(r) => bus.read_byte(Address(self.get_offset_lisp(r).payload())),
         }
     }
 
@@ -725,17 +739,21 @@ impl Cpu {
                     LValue::Indirect(target) => {
                         memory.write_byte(Address::from(self.get_offset_raw(target)), value);
                     }
+                    LValue::LPointer(target) => {
+                        memory.write_byte(Address(self.get_offset_lisp(target).payload()), value);
+                    }
                 }
             }
             Instruction::Mov { dst, src } => {
                 let value = self.read_rval(memory, src);
                 match dst {
                     LValue::Absolute(a) => memory.write_word(a, value),
-                    LValue::Register(r) => {
-                        self.set_lreg(r, LispWord::try_from(value).map_err(|_| Trap::TypeError)?)
-                    }
+                    LValue::Register(r) => self.set_lreg(r, LispWord::from(value)),
                     LValue::Indirect(target) => {
                         memory.write_word(Address::from(self.get_offset_raw(target)), value)
+                    }
+                    LValue::LPointer(target) => {
+                        memory.write_word(Address(self.get_offset_lisp(target).payload()), value);
                     }
                 }
             }

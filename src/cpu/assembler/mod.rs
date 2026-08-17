@@ -218,6 +218,7 @@ pub fn resolve_lvalue<'a>(
         LValue::Absolute(r) => cpu::LValue::Absolute(cpu::Address(resolve_data(r, labels)?.0)),
         LValue::Indirect(r) => cpu::LValue::Indirect(resolve_reg_and_off(r, labels)?),
         LValue::Register(r) => cpu::LValue::Register(*r),
+        LValue::LPointer(r) => cpu::LValue::LPointer(resolve_reg_and_off(r, labels)?),
     })
 }
 
@@ -230,6 +231,7 @@ pub fn resolve_rvalue<'a>(
         RValue::Register(r) => cpu::RValue::Register(resolve_reg_and_off(r, labels)?),
         RValue::Absolute(r) => cpu::RValue::Absolute(cpu::Address::from(resolve_data(r, labels)?)),
         RValue::Indirect(r) => cpu::RValue::Indirect(resolve_reg_and_off(r, labels)?),
+        RValue::LPointer(r) => cpu::RValue::LPointer(resolve_reg_and_off(r, labels)?),
     })
 }
 
