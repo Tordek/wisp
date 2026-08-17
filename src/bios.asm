@@ -312,48 +312,33 @@ kbpending:
     CONS V4, NIL, NIL
     MOV ['symboltable], V4
 
-    MOV V0, #1
-    MOV V1, 0x74 ; 't'
-    MOV V5, #$0
-    MOV V6, #2
-    REQ V0, V5, V6 ; Allocate a string containting "t"
-    MOV V1, NIL
-    MOV V5, #!0 ; Allocate a symbol ["t", nil]
-    MOV V6, #2
-    REQ V5, V5, V6
-    MOV T, V5
-    MOV V6, ['symboltable] ; prepend
-    CONS V0, V5, V6
-    MOV ['symboltable], V0
+    MOV V0, 0x74 ; 't'
+    PUSH V0
+    MOV V0, #1 ; strlen
+    PUSH V0
+    MOV A0, #$0
+    SETPAYLOAD A0, SP
+    CALL 'intern_string
+    MOV T, R0
 
-    ; Evaluator helpers: quote, if...
-    MOV V0, #5
-    MOV V1, 0x65746F7571 ; 'quote'
-    MOV V5, #$0
-    MOV V6, #2
-    REQ V0, V5, V6 ; Allocate a string containting "quote"
-    MOV V1, NIL
-    MOV V5, #!0 ; Allocate a symbol ["quote", nil]
-    MOV V6, #2
-    REQ V5, V5, V6
-    MOV ['quote], V5
-    MOV V6, ['symboltable] ; prepend
-    CONS V0, V5, V6
-    MOV ['symboltable], V0
+    MOV V0, 0x65746F7571 ; 'quote'
+    PUSH V0
+    MOV V0, #5 ; strlen
+    PUSH V0
+    MOV A0, #$0
+    SETPAYLOAD A0, SP
+    CALL 'intern_string
+    MOV ['quote], R0
 
-    MOV V0, #2
-    MOV V1, 0x6669 ; 'if'
-    MOV V5, #$0
-    MOV V6, #2
-    REQ V0, V5, V6 ; Allocate a string containting "if"
-    MOV V1, NIL
-    MOV V5, #!0 ; Allocate a symbol ["if", nil]
-    MOV V6, #2
-    REQ V5, V5, V6
-    MOV ['if], V5
-    MOV V6, ['symboltable] ; prepend
-    CONS V0, V5, V6
-    MOV ['symboltable], V0
+    MOV V0, 0x6669 ; 'if'
+    PUSH V0
+    MOV V0, #2 ; strlen
+    PUSH V0
+    MOV A0, #$0
+    SETPAYLOAD A0, SP
+    CALL 'intern_string
+    MOV ['if], R0
+
 
     ; Create the root ENV as an AList
     MOV ENV, NIL ; Empty list
@@ -362,8 +347,8 @@ kbpending:
     CONS V5, T, T ; (T . T)
     CONS ENV, V5, ENV ; ((T . T) (NIL . NIL))
 
-    ; MOV A0, ENV
-    ; CALL 'print
+    MOV A0, ENV
+    CALL 'print
 
     ; Lisp-specific interrupts
     MOV V11, 'repl_notfound
@@ -623,62 +608,21 @@ read_symbol:
     CALL 'read_string_next_char
     JUMP 'read_symbol_loop
   read_symbol_endstring:
-    PUSH V4 ; The stack points to the data, so now it's got the whole string.
-
-    MOV V5, #$0
-    SETPAYLOAD V5, SP  ; Make a virtual string.
+    PUSH V4
+    MOV V13, SP ; V13 points to length + data
+    MOV V5, #$0 ; Build a temp string for intern.
+    SETPAYLOAD V5, V13
 
     PUSH V2
     PUSH A1
     PUSH A0
 
-    ; Find symbol
-    ; Traverse symbol table
-    MOV V2, ['symboltable]
+    MOV A0, V5
+    CALL 'intern_string
 
-
-  find_symbol_loop:
-    EQ V3, V2, NIL ; End of table?
-    JUMPIF V3, 'symbol_not_found
-
-    UNCONS A0, V2, V2 ; A1 = symbol, V2 = next.
-
-    MOV A1, V5
-    PUSH A0
-    PUSH V5
-    CALL 'symbol_equal_name
-    POP V5
-    POP V7
-
-    JUMPIF R0, 'symbol_found
-
-  symbol_not_found:
-  ; intern: Make room for header
-    MOV V4, [SP + 24]
-    MOV V13, SP + 24
-
-    ; Interning
-    MOV V8, #$0 ; Request a string.
-    ADD V6, V4, #15 ; Round size
-    DIV V6, V7, V6, #8
-    REQ V0, V8, V6
-    GETPAYLOAD V10, V0             ; V0 points to stringobj
-    MEMCPY V10, V13, V4 + #8       ; Put strdata into R0
-
-    MOV V5, #!0 ; Request symbol
-    MOV V6, #2
-    MOV V1, NIL ; empty plist
-    REQ V7, V5, V6
-
-    MOV V1, ['symboltable]
-    CONS V1, V7, V1
-    MOV ['symboltable], V1 ; symbol table = cons(newsym, symbol table)
-
-  symbol_found:
     POP A0
     POP A1
     POP V2
-    MOV R0, V7
     MOV RN, #1
     RETURN
 
@@ -789,7 +733,58 @@ skip_whitespace:
 skip_whitespace_done:
     RETURN
 
+; Expects:
+; A0: String.
+; Returns:
+; R0: A symbol
+; Modifies:
+; Allocates the string.
+; Puts the symbol in the intern list or returns an existing one.
+intern_string:
+    MOV V2, ['symboltable]
 
+  find_symbol_loop:
+    EQ V3, V2, NIL ; End of table?
+    JUMPIF V3, 'symbol_not_found
+
+    UNCONS V3, V2, V2 ; A2 = symbol, V2 = next.
+    MOV A1, [!V3] ; Take name string.
+
+    PUSH A0
+    PUSH A1
+    CALL 'string_equal
+    POP A1
+    POP A0
+
+    JUMPIFNOT R0, 'find_symbol_loop ; If not found, try again.
+    MOV R0, V3                      ; If found, return it.
+    MOV RN, #1
+    RETURN
+
+  symbol_not_found:                 ; If end of table, actually intern it.
+    ; Interning
+    MOV V8, A0 ; Request a string.
+    MOV V4, [!A0] ; Of the proper size
+    ADD V6, V4, #15 ; Round size
+    DIV V6, V7, V6, #8
+    REQ V0, V8, V6
+    GETPAYLOAD V13, A0             ; Find str address
+    GETPAYLOAD V10, V0             ; V0 points to stringobj
+    MEMCPY V10, V13, V4 + #8       ; Put strdata into R0
+
+    MOV V5, #!0 ; Request symbol
+    MOV V6, #2
+    MOV V1, NIL ; empty plist
+    REQ V3, V5, V6
+
+    MOV V1, ['symboltable]
+    CONS V1, V3, V1
+    MOV ['symboltable], V1 ; symbol table = cons(newsym, symbol table)
+
+  symbol_found:
+    MOV R0, V3
+    MOV RN, #1
+    RETURN
 
 ;;;
 ;;; Eval
@@ -803,8 +798,6 @@ eval:
     JUMPIF A1, 'eval_self
     TYPEP A1, A0, 'stringtag ; Tag == string?
     JUMPIF A1, 'eval_self
-
-    ; Symbols require a lookup in ENV.
     TYPEP A1, A0, 'symboltag ; Tag == symbol?
     JUMPIF A1, 'eval_symbol
     TYPEP A1, A0, 'constag ; Tag == cons?
@@ -1042,26 +1035,16 @@ format:
     AADD A1, V10, 8 ; Put pointer to data in A1
     JUMP 'print_stringslice
 
-; Expects symbols in A0, A1
-; Returns 't if they have the same name
-symbol_equal_name:
-    MOV A0, [!A0]      ; SYM1 name
-    MOV A1, [!A1]      ; SYM2 name
-    JUMP 'string_equal
-
 ; Expects strings in A0, A1
 ; Returns 't if they're equal, 'f is not.
 string_equal:
-    GETPAYLOAD A0, A0 ; Get pointer to str
-    MOV V5, [A0]      ; STR1 len
-    GETPAYLOAD A1, A1 ; Get pointer to str
-    MOV V6, [A1]      ; STR1 len
+    MOV V5, [!A0]      ; STR1 len
+    MOV V6, [!A1]      ; STR1 len
     EQ V3, V5, V6
-    JUMPIF V3, 'str_eq_same_length
-    MOV R0, NIL
-    MOV RN, #1
-    RETURN
-  str_eq_same_length:
+    JUMPIFNOT V3, 'str_neq
+
+    GETPAYLOAD A0, A0 ; Get pointer to str
+    GETPAYLOAD A1, A1 ; Get pointer to str
     AADD A0, A0, 8
     AADD A1, A1, 8
 
@@ -1070,18 +1053,22 @@ string_equal:
     MOV8 V6, [A0]
     MOV8 V7, [A1]
     EQ V3, V5, V6
-    JUMPIF V3, 'str_eq_continue
+    JUMPIF V3, 'str_neq
 
-    MOV R0, NIL
-    MOV RN, #1
-    RETURN
-
-  str_eq_continue:
     AADD A0, A0, 1
     AADD A1, A1, 1
     SUB V5, V5, #1
     EQ V3, V5, #0 ; End
-    JUMP 'str_eq_loop
+    JUMPIFNOT V4, 'str_eq_loop
+
+    MOV R0, T
+    MOV RN, #1
+    RETURN
+
+  str_neq:
+    MOV R0, NIL
+    MOV RN, #1
+    RETURN
 
 
 .org 0xffffffffffffffe0
