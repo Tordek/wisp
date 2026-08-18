@@ -77,6 +77,7 @@ pub enum UnresolvedInstruction<'input> {
     // },
     Call {
         target: RValue<'input>,
+        env: cpu::Register,
     },
     Typep {
         dst: cpu::Register,
@@ -86,8 +87,14 @@ pub enum UnresolvedInstruction<'input> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Sign {
+    Positive,
+    Negative,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Reference<'input> {
-    Unresolved(&'input str),
+    Unresolved(Sign, &'input str),
     Resolved(i64),
 }
 
@@ -211,12 +218,6 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         Some(value)
     }
 
-    fn try_plus(&mut self) -> Option<()> {
-        self.consume_if(|t| match t {
-            AssemblyToken::Plus => Some(()),
-            _ => None,
-        })
-    }
     fn try_number(&mut self) -> Option<i64> {
         self.consume_if(|t| match t {
             AssemblyToken::Number(n) => Some(*n),
@@ -313,13 +314,20 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             _ => None,
         })
     }
+    fn try_sign(&mut self) -> Option<Sign> {
+        self.consume_if(|reference| match reference {
+            AssemblyToken::Plus => Some(Sign::Positive),
+            AssemblyToken::Minus => Some(Sign::Negative),
+            _ => None,
+        })
+    }
 
-    fn try_reference(&mut self) -> Option<Reference<'input>> {
+    fn try_reference(&mut self, sign: Sign) -> Option<Reference<'input>> {
         self.try_quote()?;
         let name = self.try_identifier();
 
         match name {
-            Some(name) => Some(Reference::Unresolved(name)),
+            Some(name) => Some(Reference::Unresolved(sign, name)),
             None => {
                 self.position -= 1;
                 None
@@ -327,19 +335,19 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         }
     }
 
-    fn try_any_machine_value(&mut self) -> Option<Reference<'input>> {
+    fn try_any_machine_value(&mut self, sign: Sign) -> Option<Reference<'input>> {
         let next = self.peek();
         match next {
             Some(AssemblyToken::Number(_)) => self.try_number().map(Reference::Resolved),
             Some(AssemblyToken::Character(_)) => {
                 self.try_char().map(|c| Reference::Resolved(c as i64))
             }
-            Some(AssemblyToken::Quote) => self.try_reference(),
+            Some(AssemblyToken::Quote) => self.try_reference(sign),
             _ => None,
         }
     }
 
-    fn expect_lisp_value(&mut self) -> Result<Native<'input>, ParserError<'input>> {
+    fn expect_lisp_value(&mut self, sign: Sign) -> Result<Native<'input>, ParserError<'input>> {
         self.consume_if(|t| match t {
             AssemblyToken::Hash => Some(()),
             _ => None,
@@ -354,13 +362,13 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             }
             Some(AssemblyToken::OpenBracket) => {
                 self.next();
-                let v = self.try_any_machine_value();
+                let v = self.try_any_machine_value(sign);
                 let v = self.expect(v, "A value to encode")?;
                 Ok(Native::Cons(v))
             }
             Some(AssemblyToken::Bang) => {
                 self.next();
-                let v = self.try_any_machine_value();
+                let v = self.try_any_machine_value(sign);
                 let v = self.expect(v, "A value to encode")?;
                 Ok(Native::Symbol(v))
             }
@@ -373,11 +381,11 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 self.next();
                 let refr = self.try_identifier();
                 let refr = self.expect(refr, "A reference name")?;
-                Ok(Native::Fixnum(Reference::Unresolved(refr)))
+                Ok(Native::Fixnum(Reference::Unresolved(sign, refr)))
             }
             Some(AssemblyToken::Cash) => {
                 self.next();
-                let refr = self.try_any_machine_value();
+                let refr = self.try_any_machine_value(sign);
                 let refr = self.expect(refr, "A reference name")?;
                 Ok(Native::String(refr))
             }
@@ -388,7 +396,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         }
     }
 
-    fn expect_any_value(&mut self) -> Result<Native<'input>, ParserError<'input>> {
+    fn expect_any_value(&mut self, sign: Sign) -> Result<Native<'input>, ParserError<'input>> {
         let next = self.peek();
         match next {
             Some(AssemblyToken::Number(_)) => {
@@ -397,7 +405,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 Ok(Native::Raw(Reference::Resolved(n)))
             }
             Some(AssemblyToken::Quote) => {
-                let r = self.try_reference();
+                let r = self.try_reference(sign);
                 let r = self.expect(r, "A reference")?;
                 Ok(Native::Raw(r))
             }
@@ -406,7 +414,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 let r = self.expect(r, "A reference")?;
                 Ok(Native::Raw(Reference::Resolved(r as i64)))
             }
-            Some(AssemblyToken::Hash) => self.expect_lisp_value(),
+            Some(AssemblyToken::Hash) => self.expect_lisp_value(sign),
             _ => Err(ParserError::Expected {
                 expected: "Any value",
                 rest: self.tokens[self.position..].to_vec(),
@@ -452,7 +460,8 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
     fn parse_w(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_directive("w")?;
-        let contents = self.expect_any_value()?;
+        let sign = self.try_sign().unwrap_or(Sign::Positive);
+        let contents = self.expect_any_value(sign)?;
         Ok(AssemblyLine::UnresolvedData(contents))
     }
     fn parse_eq(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
@@ -505,7 +514,8 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
     fn parse_interrupt(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("INT")?;
-        let target = self.expect_any_value()?;
+        let sign = self.try_sign().unwrap_or(Sign::Positive);
+        let target = self.expect_any_value(sign)?;
         Ok(AssemblyLine::UnresolvedInstruction(
             UnresolvedInstruction::Int(target),
         ))
@@ -537,11 +547,10 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     fn expect_r_and_offset(&mut self) -> Result<RegAndOff<'input>, ParserError<'input>> {
         let mreg = self.try_register();
         let mreg = self.expect(mreg, "A register")?;
-        let plus = self.try_plus();
-        let extra = if plus.is_some() {
-            Some(self.expect_any_value()?)
-        } else {
-            None
+        let sign = self.try_sign();
+        let extra = match sign {
+            Some(sign) => Some(self.expect_any_value(sign)?),
+            None => None,
         };
         Ok(RegAndOff {
             op1: mreg,
@@ -575,7 +584,8 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 }
             }
             _ => {
-                let v = self.expect_any_value()?;
+                let sign = self.try_sign().unwrap_or(Sign::Positive);
+                let v = self.expect_any_value(sign)?;
                 let close = self.try_close_bracket();
                 self.expect(close, "Close bracket")?;
                 Ok(LValue::Absolute(v))
@@ -593,8 +603,11 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     fn parse_call(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("CALL")?;
         let target = self.expect_rvalue()?;
+        self.expect_comma()?;
+        let env = self.try_register();
+        let env = self.expect(env, "The environment")?;
         Ok(AssemblyLine::UnresolvedInstruction(
-            UnresolvedInstruction::Call { target },
+            UnresolvedInstruction::Call { target, env },
         ))
     }
     fn parse_push(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
@@ -634,7 +647,8 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 return Ok(RValue::Register(r));
             }
 
-            let absolute = self.expect_any_value()?;
+            let sign = self.try_sign().unwrap_or(Sign::Positive);
+            let absolute = self.expect_any_value(sign)?;
             return Ok(RValue::Literal(absolute));
         }
 
@@ -655,7 +669,8 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
                 }
             }
             _ => {
-                let v = self.expect_any_value()?;
+                let sign = self.try_sign().unwrap_or(Sign::Positive);
+                let v = self.expect_any_value(sign)?;
                 let close = self.try_close_bracket();
                 self.expect(close, "Close bracket")?;
                 Ok(RValue::Absolute(v))
@@ -912,7 +927,8 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let src = self.try_register();
         let src = self.expect(src, "A source")?;
         self.expect_comma()?;
-        let compare = self.expect_any_value()?;
+        let sign = self.try_sign().unwrap_or(Sign::Positive);
+        let compare = self.expect_any_value(sign)?;
         Ok(AssemblyLine::UnresolvedInstruction(
             UnresolvedInstruction::Typep { dst, src, compare },
         ))

@@ -2,12 +2,18 @@
 
 ## Registers
 
-- 16 GP Registers R0-R16 containing Lisp objects
-- 8 Machine objects A0-8 contain raw values
-- Of of these, 3 are aliased:
-  - SP, pointer to head of stack - alias for A5
-  - PC, pointer to current instruction - alias for A6
-  - ENV, pointer to environment - alias for A7
+256 general purpose registers. A few are reserved by ISA:
+
+- ENV: Pointer to current environment.
+- NIL: Cache for 'nil - on reset, equal to 0x00
+- T: Cache for 't - on reset, equal to 0x01
+- CONS/GEN_FREE/END: Pointers to start/end of current arena
+- SP: Stack pointer
+- FP: Pointer to start of current frame, for locals access.
+- PC: Program Counter
+- VBR: Interrupt table location
+
+And a few are aliased by the [calling convention](^calling_convention).
 
 ## Opcodes
 
@@ -140,17 +146,13 @@ to <- op1 <op> (op2 + imm)
 
 On reset, program execution starts at RESET_VECTOR.
 
-Lisp instructions require some symbols to be defined starting at 0x00.
+Lisp instructions require some symbols to be defined and stored in dedicated registers:
 
 - NIL
 - T
-- CONS
-- FIXNUM
-- POINTER
-- STRING
-- INVALID-INSTRUCTION
-- INVALID-WORD
-- ALLOCATION-ERROR
+
+Conditionals use these for comparison, and they're initialized to 0 and 1 on reset, meaning they will
+work correctly, but they won't be LISP objects until they've been setup.
 
 ## Interrupts
 
@@ -183,24 +185,6 @@ If R0 contains a Fixnum,
 
 ## Calling Convention
 
-The first 12 registers are caller-saved, as needed; their values can be modified
-freely by the function call.
+Registers A0..7 are used to pass the first few positional parameters. AN holds the count of passed parameters. Any further parameters are passed in the stack.
 
-The first 8 are used for parameter-passing and for returning values.
-
-When more than 5 values are needed (either for passing arguments or receiving
-results), R6 points to a contiguous, mixed ARRAYDATA of params.
-
-The last 4 registers may be used as temporary storage, but the function MUST
-restore their values before exiting.
-
-On return, R7 indicates how many of the parameters contain values.
-
-- R0-7 hold arguments to calls. Caller-saved.
-- R0-5 hold results from calls.
-- R6 may contain a pointer to extra values returned by the call.
-- R7 contains the count of Values returned by the call. Only the first R{R7-1} values are valid after a call.
-- R8-11 are temp variables, may be clobbered. Caller-saved.
-- R12-15 are temp variables, may not be clobbered. Callee-saved.
-
-- A0-3 are Machine registers, able to hold raw data, usually pointers.
+Return values are placed in R0..3, then RX points to additional storage. RN holds the count of return values.

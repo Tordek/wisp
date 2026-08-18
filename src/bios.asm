@@ -84,7 +84,7 @@ bootstrap:
     EI
 
     MOV A0, #$'boot_str
-    CALL 'format
+    CALL 'format, ENV
 
 ; TODO: Attempt to load LISP image
 
@@ -180,7 +180,7 @@ keyboard_interrupt:
     PUSH RN
     MOV A0, ['pressedkeyid]
     MOV AN, #1
-    CALL 'kbpush
+    CALL 'kbpush, ENV
     POP RN
     POP AN
     POP A0
@@ -202,13 +202,13 @@ alloc:
     ; POP V10
     ; IRETURN
     MOV A0, #$'oom
-    CALL 'format
+    CALL 'format, ENV
     HALT
     JUMP 'alloc
 
 trap:
     MOV A0, #$'trap_str
-    CALL 'format
+    CALL 'format, ENV
   trap_loop:
     HALT
     JUMP 'trap_loop
@@ -241,7 +241,7 @@ kbpush:
 ; Puts the first char in the circular buffer into V10
 ; Returns if any character was read in R0 and the character in R1.
 kbpop:
-    CALL 'kbpending
+    CALL 'kbpending, ENV
     JUMPIF R0, PC + 32
     MOV RN, #1
     RETURN
@@ -318,7 +318,7 @@ kbpending:
     PUSH V0
     MOV A0, #$0
     SETPAYLOAD A0, SP
-    CALL 'intern_string
+    CALL 'intern_string, ENV
     MOV T, R0
 
     MOV V0, 0x65746F7571 ; 'quote'
@@ -327,7 +327,7 @@ kbpending:
     PUSH V0
     MOV A0, #$0
     SETPAYLOAD A0, SP
-    CALL 'intern_string
+    CALL 'intern_string, ENV
     MOV ['quote], R0
 
     MOV V0, 0x6669 ; 'if'
@@ -336,7 +336,7 @@ kbpending:
     PUSH V0
     MOV A0, #$0
     SETPAYLOAD A0, SP
-    CALL 'intern_string
+    CALL 'intern_string, ENV
     MOV ['if], R0
 
 
@@ -348,7 +348,7 @@ kbpending:
     CONS ENV, V5, ENV ; ((T . T) (NIL . NIL))
 
     MOV A0, ENV
-    CALL 'print
+    CALL 'print, ENV
 
     ; Lisp-specific interrupts
     MOV V11, 'repl_notfound
@@ -366,29 +366,29 @@ kbpending:
     MOV A0, #\Space
     INT 0xf0
     MOV A0, #$'boot_program
-    CALL 'format
+    CALL 'format, ENV
     MOV A0, #\Newline
     INT 0xf0
 
     MOV A0, #$'boot_program
     MOV A1, #0
-    CALL 'read_string
+    CALL 'read_string, ENV
     ; MOV A0, R0 ; Put the response into A0
-    ; CALL 'eval
+    ; CALL 'eval, ENV
     MOV A0, R0 ; Put the response into A0
-    CALL 'print
+    CALL 'print, ENV
     MOV A0, #\Newline
     INT 0xf0
     HALT
     JUMP 'dumbloop
 
   loop:
-    CALL 'repl
+    CALL 'repl, ENV
     JUMP 'loop
 
 repl:
     ; Loop until there's something to look at in the KB buffer.
-    CALL 'kbpop
+    CALL 'kbpop, ENV
     JUMPIF R0, PC + 48
     HALT
     JUMP 'repl
@@ -400,12 +400,12 @@ repl:
 
 repl_notfound:
     MOV A0, #$'not_found
-    CALL 'format
+    CALL 'format, ENV
     IRETURN
 
 repl_notfunction:
     MOV A0, #$'not_function
-    CALL 'format
+    CALL 'format, ENV
     IRETURN
 
 ; (read-string "string" 0)
@@ -434,11 +434,11 @@ read_string:
     GETPAYLOAD V13, A1 ; skip first n + header
     AADD A0, A0, V13 + 8
     ; peek
-    CALL 'read_string_peek
+    CALL 'read_string_peek, ENV
 
 ; Expects stringbuf in A0, Char in R0, start in A1, len in V2
   read_stringslice:
-    CALL 'skip_whitespace
+    CALL 'skip_whitespace, ENV
 
     EQ V3, R0, \' ; Quote?
     JUMPIF V3, 'read_quote
@@ -486,7 +486,7 @@ read_number:
     SETPAYLOAD V4, R0
     SUB V4, V4, #0x30
     ADD V18, V18, V4 ; while (isnumber(n)) total = total * 10 + n - '0';
-    CALL 'read_string_next_char
+    CALL 'read_string_next_char, ENV
     JUMP 'read_number_loop
   rnnotnumber: ; End
     MOV R0, V18
@@ -505,9 +505,9 @@ read_number:
 ; A1: Start + n
 ; V2: Length - n
 read_quote:
-    CALL 'read_string_next_char ; Skip '
-    CALL 'skip_whitespace
-    CALL 'read_stringslice
+    CALL 'read_string_next_char, ENV ; Skip '
+    CALL 'skip_whitespace, ENV
+    CALL 'read_stringslice, ENV
     CONS R0, R0, NIL
     MOV V1, ['quote]
     CONS R0, V1, R0
@@ -526,25 +526,25 @@ read_quote:
 ; A1: Start + n
 ; V2: Length - n
 read_list:
-    CALL 'read_string_next_char ; Skip (
-    CALL 'skip_whitespace
+    CALL 'read_string_next_char, ENV ; Skip (
+    CALL 'skip_whitespace, ENV
     EQ V3, R0, \)               ; If (), return NIL
     JUMPIF V3, 'read_list_empty
 
     
-    CALL 'read_stringslice
+    CALL 'read_stringslice, ENV
     MOV V4, NIL
     CONS V4, R0, V4 ; (h) ; Start the list and keep a reference to the head.
     PUSH V4
 
   read_list_loop:
-    CALL 'skip_whitespace
+    CALL 'skip_whitespace, ENV
     EQ V3, R0, \)
     JUMPIF V3, 'read_list_end
     EQ V3, R0, \. ; Cons pair
     JUMPIF V3, 'read_list_pair_end
     PUSH V4
-    CALL 'read_stringslice ; Grab another component
+    CALL 'read_stringslice, ENV ; Grab another component
     CONS R0, R0, NIL ; (h)
     POP V4
     SETCDR V4, R0
@@ -552,25 +552,25 @@ read_list:
     JUMP 'read_list_loop
 
   read_list_empty:
-    CALL 'read_string_next_char ; Skip )
+    CALL 'read_string_next_char, ENV ; Skip )
     MOV R0, NIL
     MOV R1, #1
     RETURN
 
   read_list_pair_end:
     PUSH V4
-    CALL 'read_string_next_char ; Skip .
-    CALL 'read_stringslice ; Puts the new element in A0 and advances pointers.
+    CALL 'read_string_next_char, ENV ; Skip .
+    CALL 'read_stringslice, ENV ; Puts the new element in A0 and advances pointers.
     POP V4
     SETCDR V4, R0
-    CALL 'skip_whitespace
-    CALL 'read_string_next_char ; Skip ) TODO: Die if not )
+    CALL 'skip_whitespace, ENV
+    CALL 'read_string_next_char, ENV ; Skip ) TODO: Die if not )
     POP R0
     MOV RN, #1
     RETURN
 
   read_list_end:
-    CALL 'read_string_next_char ; Skip )
+    CALL 'read_string_next_char, ENV ; Skip )
     POP R0
     MOV RN, #1
     RETURN                ; Done: R0 contains the list.
@@ -605,7 +605,7 @@ read_symbol:
     AADD V13, V13, 1 ; Advance buffer
     ADD V4, V4, #1 ; Increase len
     ; TODO: Die if >256
-    CALL 'read_string_next_char
+    CALL 'read_string_next_char, ENV
     JUMP 'read_symbol_loop
   read_symbol_endstring:
     PUSH V4
@@ -618,7 +618,7 @@ read_symbol:
     PUSH A0
 
     MOV A0, V5
-    CALL 'intern_string
+    CALL 'intern_string, ENV
 
     POP A0
     POP A1
@@ -641,7 +641,7 @@ read_string_string:
     ASUB SP, SP, 256 ; Scratch buffer
     MOV V13, SP
     MOV V4, #0 ; Strlen
-    CALL 'read_string_next_char ; Skip "
+    CALL 'read_string_next_char, ENV ; Skip "
   read_string_loop:
     ; EQ V3, RN, #0
     ; JUMPIF V3, 'read_string_error ; EOF before close
@@ -649,7 +649,7 @@ read_string_string:
     JUMPIF V3, 'read_string_endstring
     EQ V3, R0, \\ ; Backslash: Ignore specialness.
     JUMPIFNOT V3, 'read_string_addchar
-    CALL 'read_string_next_char ; Skip \
+    CALL 'read_string_next_char, ENV ; Skip \
   read_string_addchar:
 
     MOV8 [V13], R0
@@ -657,10 +657,10 @@ read_string_string:
     ADD V4, V4, #1 ; Increase len
     ; GT V3, V4, #256
     ; JUMPIF V3, 'read_string_error ; String larger than scratch buffer.
-    CALL 'read_string_next_char
+    CALL 'read_string_next_char, ENV
     JUMP 'read_string_loop
   read_string_endstring:
-    CALL 'read_string_next_char ; Skip "
+    CALL 'read_string_next_char, ENV ; Skip "
     PUSH V4 ; Since the stack points at the data, pushing the length builds the string
     MOV V5, #$0 ; Request a string.
     ADD V6, V4, #15 ; Round to next word
@@ -722,13 +722,13 @@ read_string_next_char_eof:
 ; where n depends on the number of whitespace characters
 ; OK
 skip_whitespace:
-    CALL 'read_string_peek
+    CALL 'read_string_peek, ENV
   skip_whitespace_loop:
     EQ V3, RN, #0
     JUMPIF V3, 'skip_whitespace_done ; Nothing was read - EOF
     EQ V3, R0, \Space
     JUMPIFNOT V3, 'skip_whitespace_done ; Found non-whitespace
-    CALL 'read_string_next_char ; Advance
+    CALL 'read_string_next_char, ENV ; Advance
     JUMP 'skip_whitespace_loop
 skip_whitespace_done:
     RETURN
@@ -752,7 +752,7 @@ intern_string:
 
     PUSH A0
     PUSH A1
-    CALL 'string_equal
+    CALL 'string_equal, ENV
     POP A1
     POP A0
 
@@ -837,43 +837,141 @@ eval_symbol:
 ; Object in A0.
 ; Environment in ENV.
 eval_cons:
-    UNCONS A0, A1, A0
+    ; A0 = head, V3 = args
+    UNCONS V0, V3, V0
 
+  ; Special forms: Check if V0 is any of the special forms.
     MOV V3, ['quote]
-    EQ V2, A0, V3
+    EQ V2, V0, V3
     JUMPIFNOT V2, 'eval_cons_notquote
     CAR R0, A1
     MOV RN, #1
     RETURN
   eval_cons_notquote:
 
-    MOV V3, ['if] ; (if cond t f) => A0 = if, A0 = (cond t if)
-    EQ V2, A0, V3
+    MOV V3, ['if] ; (if cond t f) => V0 = if, V0 = (cond t if)
+    EQ V2, V0, V3
     JUMPIFNOT V2, 'eval_cons_notif
-    UNCONS A0, A1, A1 ; Put condition in A0 ; A0 = cond, A1 = (t if)
+    UNCONS V0, A1, A1 ; Put condition in V0 ; V0 = cond, A1 = (t if)
     PUSH A1
-    CALL 'eval ; Eval it
+    CALL 'eval, ENV ; Eval it
     POP A1
-    EQ V2, A0, NIL ; true?
-    UNCONS A0, A1, A1 ; A0 = t, A1 = (f)
-    JUMPIFNOT V2, 'eval_cons_true
-    CAR A0, A1 ; A0 = f
-  eval_cons_true:
-    CALL 'eval ; Eval whatever is at A0
+    EQ V2, V0, NIL ; true?
+    UNCONS V0, A1, A1 ; V0 = t, A1 = (f)
+    JUMPIFNOT V2, 'eval_cons_if_body
+    CAR V0, A1 ; V0 = f
+  eval_cons_if_body:
+    CALL 'eval, ENV ; Eval whatever is at A0
     RETURN
 
   eval_cons_notif:
-    ; CALL 'eval ; Get the function in 'eval
-    TYPEP V2, A0, 'functiontag ; Is function?
+    PUSH V3
+    CALL 'eval, ENV ; Get the function in 'eval
+    TYPEP V2, R0, 'functiontag ; Is function?
     JUMPIF V2, 'eval_function_call
     INT 0x0a ; Not a function call.
 
   eval_function_call:
-    ; TODO: Eval all params, then call apply
-
-
+    POP A0
+    PUSH R0
+    CALL 'eval_list, ENV ; Evaluate the list in R0
+    MOV A1, R0
+    POP A0
+    CALL 'apply, ENV
     RETURN
 
+; TODO:
+; Expects:
+; A0 a list of arguments
+; Returns
+; R0 a list of evaluated arguments
+eval_list:
+    RETURN
+
+apply:
+    PUSH A0
+    MOV V1, A1 ; keep arglist
+    MOV AN, #0 ; Arg count.
+    EQ V2, V1, NIL  ; Done?
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1    ; For each of the 8 first args, if any, push them.
+    UNCONS A0, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1
+    UNCONS A1, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1
+    UNCONS A2, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1
+    UNCONS A3, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1
+    UNCONS A4, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1
+    UNCONS A5, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1
+    UNCONS A6, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    ADD AN, AN, #1
+    UNCONS A7, V1, V1
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+
+    PUSH A0              ; After the first 8, allocate some space on the stack.
+    MOV A0, V1
+    CALL 'listlen, ENV
+    POP A0
+    MUL R0, R0, #8
+    GETPAYLOAD R0, R0
+    ASUB SP, SP, R0      ; Allocate n words
+    MOV V2, SP
+  argloop:               ; While there are more arguments, push them onto the stack
+    EQ V2, V1, NIL
+    JUMPIF V2, 'call
+    UNCONS V3, V1, V1
+    MOV [V2], V3
+    AADD V2, V2, 8
+    ADD AN, AN, #1
+    JUMP 'argloop
+  call:
+    MOV V1, [FP - 16]
+    CALL V1, ENV
+
+; Expects:
+; A0: A list
+; Returns:
+; R0: The number of elements in that list.
+listlen:
+    MOV V2, A0
+    MOV R0, #0
+    MOV RN, #1
+  lenloop:
+    EQ V3, V2, NIL
+    JUMPIF V3, 'endlistlen
+    ADD R0, R0, #1
+    CDR V2, V2
+    JUMP 'lenloop
+
+  endlistlen:
+    RETURN
 ;;;
 ;;; Prints something in A0
 ;;;
@@ -904,7 +1002,7 @@ print_string: ; Prints the string at A0
     GETPAYLOAD V10, A0
     MOV A0, [V10] ; Get length
     AADD A1, V10, 8 ; Skip header
-    CALL 'print_stringslice
+    CALL 'print_stringslice, ENV
     MOV A0, #\"
     MOV A1, #0x07
     INT 0xf0
@@ -929,7 +1027,7 @@ print_number:
     JUMPIFNOT A1, 'print_number_loop
     MOV A0, V4
     MOV A1, V10
-    CALL 'print_stringslice
+    CALL 'print_stringslice, ENV
     AADD SP, SP, 24
     MOV RN, #0
     RETURN
@@ -948,7 +1046,7 @@ print_arbitrary:
     GETTAG V10, V4
     SETPAYLOAD A0, V10
     PUSH V4
-    CALL 'print
+    CALL 'print, ENV
     POP V4
 
     MOV A1, #0x07
@@ -958,7 +1056,7 @@ print_arbitrary:
     MOV A0, #0
     GETPAYLOAD V10, V4
     SETPAYLOAD A0, V10
-    CALL 'print
+    CALL 'print, ENV
 
     MOV A1, #0x07
     MOV A0, #\>
@@ -975,7 +1073,7 @@ print_cons:
   print_cons_next:
     PUSH A0
     CAR A0, A0
-    CALL 'print
+    CALL 'print, ENV
     POP A0
     CDR A0, A0
     EQ A1, A0, NIL
@@ -999,7 +1097,7 @@ print_cons:
     MOV A1, #0x07
     INT 0xf0
     POP A0
-    CALL 'print
+    CALL 'print, ENV
   print_cons_end:
     MOV A0, #\)
     MOV A1, #0x07
