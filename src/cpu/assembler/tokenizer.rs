@@ -71,7 +71,6 @@ fn register(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     terminated(
         alt((
             alt([
-                value(AssemblyToken::Register(cpu::Cpu::ENV), tag("ENV")),
                 value(AssemblyToken::Register(cpu::Cpu::NIL), tag("NIL")),
                 value(AssemblyToken::Register(cpu::Cpu::T), tag("T")),
                 value(AssemblyToken::Register(cpu::Cpu::CONS_END), tag("CONS_END")),

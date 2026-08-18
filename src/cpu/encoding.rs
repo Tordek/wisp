@@ -317,7 +317,6 @@ impl Instruction {
             }),
             Opcode::Call => Ok(Self::Call {
                 target: cpu::RValue::decode(r0, r1, off, tiebreak)?,
-                env: r2.ok_or(DecoderError::BadInstruction)?,
             }),
 
             Opcode::Return => Ok(Self::Return),
@@ -633,13 +632,13 @@ impl Instruction {
                 )
             }
 
-            Instruction::Call { target, env } => {
+            Instruction::Call { target } => {
                 let (direct, indirect, off, tiebreak) = target.encode();
                 Instruction::encode_params(
                     Opcode::Call,
                     direct,
                     indirect,
-                    Some(*env),
+                    None,
                     None,
                     None,
                     tiebreak,

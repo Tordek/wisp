@@ -155,7 +155,6 @@ impl Default for Cpu {
 }
 
 impl Cpu {
-    pub const ENV: Register = Register(245);
     pub const NIL: Register = Register(246);
     pub const T: Register = Register(247);
     pub const CONS_FREE: Register = Register(248);
@@ -391,7 +390,6 @@ pub enum Instruction {
     /// PUSHes PC on the stack and jumps
     Call {
         target: RValue,
-        env: Register,
     },
 
     /// POPs PC from the stack
@@ -539,23 +537,16 @@ impl Cpu {
             // Creates a new frame containing:
             // Sets:
             // - FP = SP
-            // - ENV = env param
             // - PC = target
             // And creates a frame containing:
             // - Previous Frame Pointer
             // - Previous Environment
             // - Previous Program Counter
-            Instruction::Call { target, env } => {
-                let new_env = self.reg(env);
-
+            Instruction::Call { target } => {
                 let prev_fp = self.reg(Cpu::FP);
                 self.set_reg(Cpu::FP, self.reg(Cpu::SP));
 
-                let prev_env = self.reg(Cpu::ENV);
-                self.set_reg(Cpu::ENV, new_env);
-
                 self.push(memory, prev_fp);
-                self.push(memory, prev_env);
                 self.push(memory, Native::from(next_pc));
                 return Ok(Address::from(self.read_rval(memory, target)));
             }
@@ -563,16 +554,13 @@ impl Cpu {
             // Consumes a frame.
             // Sets:
             // - SP = FP
-            // - ENV = [FP - 24]
             // - PC = [FP - 16]
             // - FP = [FP - 8]
             Instruction::Return => {
                 let fp = self.reg(Cpu::FP);
                 let return_address = memory.read_word(Address::from(fp) - Offset(24)); // FP + 8 points to return value
-                let prev_env = memory.read_word(Address::from(fp) - Offset(16)); // FP points to previous FP.
                 let prev_fp = memory.read_word(Address::from(fp) - Offset(8)); // FP points to previous FP.
                 self.set_reg(Cpu::SP, fp);
-                self.set_reg(Cpu::ENV, prev_env);
                 self.set_reg(Cpu::FP, prev_fp);
                 return Ok(Address::from(return_address));
             }

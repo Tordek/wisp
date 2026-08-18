@@ -77,7 +77,6 @@ pub enum UnresolvedInstruction<'input> {
     // },
     Call {
         target: RValue<'input>,
-        env: cpu::Register,
     },
     Typep {
         dst: cpu::Register,
@@ -603,11 +602,8 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     fn parse_call(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("CALL")?;
         let target = self.expect_rvalue()?;
-        self.expect_comma()?;
-        let env = self.try_register();
-        let env = self.expect(env, "The environment")?;
         Ok(AssemblyLine::UnresolvedInstruction(
-            UnresolvedInstruction::Call { target, env },
+            UnresolvedInstruction::Call { target },
         ))
     }
     fn parse_push(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {

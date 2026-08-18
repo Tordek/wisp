@@ -280,13 +280,9 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                         op2: resolve_rvalue(op2, symbols)?,
                     })
                 }
-                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Call {
-                    target,
-                    env,
-                }) => {
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Call { target }) => {
                     *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Call {
                         target: resolve_rvalue(target, symbols)?,
-                        env: *env,
                     })
                 }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::IDiv {
@@ -477,11 +473,11 @@ pub mod test {
             JUMPIFNOT V5, V1 + 16
             JUMPIFNOT V5, V1
             JUMPIFNOT V5, 'loop
-            CALL 16, V1
-            CALL V1, V1
-            CALL V1 + 16, V1
-            CALL V1, V1
-            CALL 'loop, V1
+            CALL 16
+            CALL V1
+            CALL V1 + 16
+            CALL V1
+            CALL 'loop
             ; Stack variants
             PUSH V1
             POP V2
@@ -677,31 +673,21 @@ pub mod test {
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("CALL"),
             tokenizer::AssemblyToken::Number(16),
-            tokenizer::AssemblyToken::Comma,
-            tokenizer::AssemblyToken::Register(cpu::Register(1)),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("CALL"),
-            tokenizer::AssemblyToken::Register(cpu::Register(1)),
-            tokenizer::AssemblyToken::Comma,
             tokenizer::AssemblyToken::Register(cpu::Register(1)),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("CALL"),
             tokenizer::AssemblyToken::Register(cpu::Register(1)),
             tokenizer::AssemblyToken::Plus,
             tokenizer::AssemblyToken::Number(16),
-            tokenizer::AssemblyToken::Comma,
-            tokenizer::AssemblyToken::Register(cpu::Register(1)),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("CALL"),
             tokenizer::AssemblyToken::Register(Register(1)),
-            tokenizer::AssemblyToken::Comma,
-            tokenizer::AssemblyToken::Register(cpu::Register(1)),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("CALL"),
             tokenizer::AssemblyToken::Quote,
             tokenizer::AssemblyToken::Identifier("loop"),
-            tokenizer::AssemblyToken::Comma,
-            tokenizer::AssemblyToken::Register(cpu::Register(1)),
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Comment("; Stack variants"),
             tokenizer::AssemblyToken::Newline,
@@ -1405,34 +1391,29 @@ pub mod test {
                 target: assembler::RValue::Literal(assembler::Native::Raw(
                     assembler::Reference::Resolved(16),
                 )),
-                env: cpu::Register(1),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
                 target: parser::RValue::Register(parser::RegAndOff {
                     op1: Register(1),
                     off: None,
                 }),
-                env: cpu::Register(1),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
                 target: parser::RValue::Register(parser::RegAndOff {
                     op1: Register(1),
                     off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
                 }),
-                env: cpu::Register(1),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
                 target: parser::RValue::Register(parser::RegAndOff {
                     op1: Register(1),
                     off: None,
                 }),
-                env: cpu::Register(1),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
                 target: assembler::RValue::Literal(assembler::Native::Raw(
                     assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
                 )),
-                env: cpu::Register(1),
             }),
             parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Push { src: Register(1) }),
             parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop { dst: Register(2) }),
@@ -2080,9 +2061,9 @@ pub mod test {
                     39, 5, 0, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 4, 3, 5, 1, 0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0, 0, 0, 4, 35, 5, 1, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 4, 3, 5, 1, 0,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 39, 5, 0, 0, 0, 0, 1, 176, 0, 0, 0, 0, 0,
-                    0, 0, 37, 39, 0, 0, 1, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 37, 5, 1, 0, 1, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 37, 1, 0, 1, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0,
-                    37, 5, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 39, 0, 0, 1, 0, 0, 1, 176,
+                    0, 0, 37, 35, 0, 0, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 37, 1, 1, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 33, 1, 0, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0,
+                    37, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 35, 0, 0, 0, 0, 0, 1, 176,
                     0, 0, 0, 0, 0, 0, 0, 34, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35, 1, 2,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 34, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0, 35, 1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 45, 1, 0, 0, 0, 0,
