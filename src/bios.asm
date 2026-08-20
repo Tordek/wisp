@@ -12,6 +12,13 @@
 ; Special symbols
 .equ quote: 0xa0
 .equ if: 0xa8
+.equ builtin: 0xb0
+.equ lambda: 0xb8
+.equ let: 0xc0
+.equ bad_string: 0xc8
+.equ unknown_object: 0xd0
+.equ not_found: 0xd8
+.equ not_fn: 0xe0
 
 ; Known memory mapped devices.
 ; 0x00ff_ffff_00000000 forwards contains devices.
@@ -26,10 +33,15 @@
 .equ functiontag: 4
 .equ chartag: 6
 .equ stringtag: 7
+.equ error_handler_tag: 12
 .equ cons_free_start: 0x10000
 .equ cons_free_end: 0x20000
 .equ gen_free_start: 0x20000
 .equ gen_free_end: 0x30000
+
+.equ trap_interrupt: 0x00
+.equ lisp_trap: 0x20
+.equ video_interrupt: 0xf0
 
 ; Firmware constants
 .org 0x00fffffffff00000
@@ -40,15 +52,28 @@
         ; .str "\"123\""
         ; .str "t"
         ; .str "(123 123)"
+        ; .str "+"
+        .str "(s 1 2)"
         .str "(this is 'a (list \"of\" . things) 1112 21)"
     trap_str:
         .str "You broke the computer!\n"
-    not_found:
+    not_found_string:
         .str "Symbol not found."
-    not_function:
+    not_function_str:
         .str "Not a function."
     oom:
         .str "Out of memory!"
+    
+; Firmware lisp constants
+    t_str: .str "t"
+    quote_str: .str "quote"
+    builtin_str: .str "builtin"
+    if_str: .str "if"
+    plus_str: .str "+"
+    bad_string_str: .str "string-error"
+    unknown_object_str: .str "unknown-type"
+    not_found_str: .str "not-found"
+    not_fn_str: .str "not-a-function"
 
 .org 0x00fffffffff01000
 bootstrap:
@@ -77,9 +102,9 @@ bootstrap:
     MOV V11, 'alloc
     MOV [VBR + 16], V11
     MOV [VBR + 24], V11
-    MOV V11, 'video_interrupt
+    MOV V11, 'video_interrupt_handler
     MOV [VBR + 1920], V11
-    MOV V11, 'keyboard_interrupt
+    MOV V11, 'keyboard_interrupt_handler
     MOV [VBR + 1928], V11
     EI
 
@@ -95,9 +120,9 @@ bootstrap:
 ;;;
 
 ;;; Expects character in A0, attribtue in A1
-video_interrupt:
-    PUSH A0
-    PUSH A1
+video_interrupt_handler:
+    PUSH V0
+    PUSH V1
     PUSH V2
     PUSH V3
     PUSH V4
@@ -108,29 +133,27 @@ video_interrupt:
     ; Read cursor position.
     MOV V2, ['cursorpos]
 
-    ; Find Row(r4), Col(r3).
+    ; Find Row(v4), Col(v3).
     DIV V4, V3, V2, #80
 
     ; If c == '\n', row++, col=0
     EQ V5, A0, #\Newline
-    JUMPIF V5, 'newline; ; GOTO: newline.
+    JUMPIF V5, 'newline ; If char == newline, goto newline.
 
     ; Else, print character and advance cursor.
     ; 0xb8000 + cursorpos(r2) * 2 = char
     ; 0xb8000 + cursorpos(r2) * 2 + 1 = attrib
     MUL V2, V2, #2
     ADD V2, V2, #'vgastart; ; VGA Start
-    GETPAYLOAD V10, V2
-    ; Save CHAR
-    GETPAYLOAD V12, A0
-    MOV8 [V10], V12
-    ; Save ATTR
-    GETPAYLOAD V12, A1
-    MOV8 [V10 + 1], V12
+    GETPAYLOAD V12, A0 ; Save CHAR
+    MOV8 [!V2], V12
+    GETPAYLOAD V12, A1 ; Save ATTR
+    MOV8 [!V2 + 1], V12
+
     ; advance COLUMN
     ADD V3, V3, #1
 
-    ; if col>79, newline.
+    ; if col>=79, newline.
     GT V5, V3, #79
     JUMPIFNOT V5, 'no_newline
     newline:
@@ -142,18 +165,23 @@ video_interrupt:
     ; If row == 25, scroll (row--)
     GTE V5, V4, #25
     JUMPIFNOT V5, 'savecursor
-    MOV V10, 0xb8000
-    MOV V11, 0xb80a0
-    MEMCPY V10, V11, 3840 ; Slide everything up one.
-    MOV V10, 0xb8f00
+
+    MOV V10, 'vgastart
+    MOV V11, 'vgastart
+    AADD V11, V11, 160
+    MEMCPY V10, V11, #3840 ; Slide everything up one.
+
+    AADD V6, V10, 4000 ; 80 * 25 * 2
+    AADD V10, V10, 3840
     MOV V11, 0x07
     MOV V12, \Space
   clearline_loop:
     MOV8 [V10], V12
     MOV8 [V10 + 1], V11
     AADD V10, V10, 2
-    EQ V5, V10, 0xb8fa0
-    JUMPIFNOT V5, 'clearline_loop
+    EQ V5, V10, V6
+    JUMPIFNOT V5, 'clearline_loop ; Clear bottom line
+
     MOV V3, #0
     MOV V4, #24
 savecursor:
@@ -169,12 +197,12 @@ savecursor:
     POP V4
     POP V3
     POP V2
-    POP A1
-    POP A0
+    POP V1
+    POP V0
     IRETURN
 
 ; On keypress, adds the key to the circular buffer.
-keyboard_interrupt:
+keyboard_interrupt_handler:
     PUSH A0
     PUSH AN
     PUSH RN
@@ -191,16 +219,6 @@ keyboard_interrupt:
 ; V1: Size of allocation
 ; Results: A0 is modified.
 alloc:
-    ; PUSH V10
-    ; PUSH V11
-    ; MOV V10, ['freeptr]
-    ; SETPAYLOAD A0, V10
-    ; GETPAYLOAD V11, A1 ; *freeptr  += len
-    ; AADD V10, V10, V11 ; todo: Align
-    ; MOV ['freeptr], V10
-    ; POP V11
-    ; POP V10
-    ; IRETURN
     MOV A0, #$'oom
     CALL 'format
     HALT
@@ -312,75 +330,119 @@ kbpending:
     CONS V4, NIL, NIL
     MOV ['symboltable], V4
 
-    MOV V0, 0x74 ; 't'
+    MOV EH, NIL ; Initial dumb error handler.
+
+    ; Lisp-specific interrupts
+    MOV V11, 'lisp_trap_handler
+    MOV [VBR + 256], V11
+
+    MOV A0, #$'t_str
+    CALL 'intern_string
+    MOV T, R0
+
+    MOV A0, #$'quote_str
+    CALL 'intern_string
+    MOV ['quote], R0
+
+    MOV A0, #$'if_str
+    CALL 'intern_string
+    MOV ['if], R0
+
+    MOV A0, #$'builtin_str
+    CALL 'intern_string
+    MOV ['builtin], R0
+
+    MOV A0, #$'not_fn_str
+    CALL 'intern_string
+    MOV ['not_fn], R0
+
+    MOV A0, #$'bad_string_str
+    CALL 'intern_string
+    MOV ['bad_string], R0
+
+    MOV A0, #$'unknown_object_str
+    CALL 'intern_string
+    MOV ['unknown_object], R0
+
+    MOV A0, #$'not_found_str
+    CALL 'intern_string
+    MOV ['not_found], R0
+
+    ; Create the root ENV as an AList
+    MOV V20, NIL ; Empty list
+    CONS V5, NIL, NIL ; (NIL . NIL)
+    CONS V20, V5, V20 ; ((NIL . NIL))
+    CONS V5, T, T ; (T . T)
+    CONS V20, V5, V20 ; ((T . T) (NIL . NIL))
+
+    ; Define builtin functions.
+
+    MOV V0, 0x2B ; '+'
     PUSH V0
     MOV V0, #1 ; strlen
     PUSH V0
     MOV A0, #$0
     SETPAYLOAD A0, SP
     CALL 'intern_string
-    MOV T, R0
+    POP V0
+    POP V0
 
-    MOV V0, 0x65746F7571 ; 'quote'
-    PUSH V0
-    MOV V0, #5 ; strlen
-    PUSH V0
-    MOV A0, #$0
-    SETPAYLOAD A0, SP
-    CALL 'intern_string
-    MOV ['quote], R0
+    MOV V0, ['builtin]
+    MOV V1, 'add
+    MOV V5, #?0
+    MOV V6, #2          ; Alloc function
+    REQ V5, V5, V6
+    CONS V5, R0, V5     ; (+ . add)
+    CONS V20, V5, V20
 
-    MOV V0, 0x6669 ; 'if'
-    PUSH V0
-    MOV V0, #2 ; strlen
-    PUSH V0
-    MOV A0, #$0
-    SETPAYLOAD A0, SP
-    CALL 'intern_string
-    MOV ['if], R0
-
-
-    ; Create the root ENV as an AList
-    MOV V1, NIL ; Empty list
-    CONS V5, NIL, NIL ; (NIL . NIL)
-    CONS V1, V5 ; ((NIL . NIL))
-    CONS V5, T, T ; (T . T)
-    CONS V1, V5 ; ((T . T) (NIL . NIL))
-
-    MOV A0
+    MOV A0, V20
+    PUSH V20
     CALL 'print
-
-    ; Lisp-specific interrupts
-    MOV V11, 'repl_notfound
-    MOV [VBR + 64], V11
-    MOV V11, 'repl_notfunction
-    MOV [VBR + 80], V11
+    POP V20
 
 ;;; Debug helper: Read, eval print a string.
   dumbloop:
+    ; Create error handler
+    MOV V0, 'repl_error_handler
+    MOV V1, FP
+    MOV V2, SP
+    MOV V3, 'dumbloop
+    MOV V4, V20
+    MOV R0, #0 ; TODO: Fix tag
+    MOV V5, 'error_handler_tag
+    SETTAG R0, V5
+    MOV R1, #5
+    REQ R0, R0, R1 ; TODO: Make REQ take an rvalue?
+    CONS EH, R0, EH ; Set error handler
+
     MOV A0, #\Newline
-    INT 0xf0
+    INT 'video_interrupt
     MOV A1, #0x07
     MOV A0, #\>
-    INT 0xf0
+    INT 'video_interrupt
     MOV A0, #\Space
-    INT 0xf0
+    INT 'video_interrupt
     MOV A0, #$'boot_program
     CALL 'format
     MOV A0, #\Newline
-    INT 0xf0
+    INT 'video_interrupt
 
-    ; PUSH V1
+    PUSH V20
     MOV A0, #$'boot_program
     MOV A1, #0
     CALL 'read_string
-    ; MOV A0, R0 ; Put the response into A0
-    ; POP A1
-    ; CALL 'eval
+    MOV A0, R0 ; Put the response into A0
+    POP V20
+    MOV A1, V20
+    PUSH V20
+    CALL 'eval
     MOV A0, R0 ; Put the response into A0
     CALL 'print
+    POP V20
     MOV A0, #\Newline
-    INT 0xf0
+    INT 'video_interrupt
+
+    CDR EH, EH ; Remove error handler on success.
     HALT
     JUMP 'dumbloop
 
@@ -397,18 +459,46 @@ repl:
     MOV A0, #\0
     SETPAYLOAD A0, R1
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     JUMP 'repl
 
-repl_notfound:
-    MOV A0, #$'not_found
-    CALL 'format
+repl_error_handler:
+    PUSH A0
+    MOV A0, A1
+    CALL 'print
+    POP V20
     IRETURN
 
-repl_notfunction:
-    MOV A0, #$'not_function
-    CALL 'format
-    IRETURN
+lisp_trap_handler:
+    JUMPIFNOT EH, 'trap_handler_die ; If the handler list is empty, just die.
+
+    UNCONS V1, EH, EH ; Pop the error handler.    
+    TYPEP V3, V1, 'error_handler_tag
+    JUMPIFNOT V3, 'bad_error_handler
+
+    ; - Previous Frame Pointer
+    MOV V0, [!V1 + 8]
+    MOV [FP], V0
+    ; - Stack pointer
+    MOV V0, [!V1 + 16]
+    MOV [FP+8], V0
+    ; - Interruption value
+    ; - Status flags
+    ; - Previous Program Counter
+    MOV V0, [!V1 + 24]
+    MOV [FP + 32], V0
+    ; Env
+    MOV A0, [!V1 + 32]
+    JUMP [!V1] ; Hand off to actual handler.
+
+  trap_handler_die:
+    HALT
+    JUMP 'trap_handler_die ; literally nothing to do but die
+  
+  bad_error_handler:
+    MOV A1, ['bad_error_handler]
+    MOV A2, V1
+    INT 'lisp_trap
 
 ; (read-string "string" 0)
 ; Receives a String in A0, returns some lisp object in R0.
@@ -459,8 +549,6 @@ read_string:
   read_notnumber:
 
     JUMP 'read_symbol ; Symbol?
-
-
 
 ; Expects:
 ; A0: Pointer to string
@@ -566,7 +654,7 @@ read_list:
     POP V4
     SETCDR V4, R0
     CALL 'skip_whitespace
-    CALL 'read_string_next_char ; Skip ) TODO: Die if not )
+    CALL 'read_string_next_char ; TODO: Die if not )
     POP R0
     MOV RN, #1
     RETURN
@@ -675,7 +763,9 @@ read_string_string:
     MOV RN, #1
     RETURN
   read_string_error:
-    INT 0 ; Pick a better interrupt.
+    MOV A1, ['bad_string]
+    MOV A2, V4
+    INT 'lisp_trap
 
 ; Expects:
 ; A0: Pointer to string
@@ -746,15 +836,16 @@ intern_string:
     MOV V2, ['symboltable]
 
   find_symbol_loop:
-    EQ V3, V2, NIL ; End of table?
-    JUMPIF V3, 'symbol_not_found
+    JUMPIFNOT V2, 'symbol_not_found ; End of table
 
-    UNCONS V3, V2, V2 ; A2 = symbol, V2 = next.
+    UNCONS V3, V2, V2 ; V3 = symbol, V2 = next.
     MOV A1, [!V3] ; Take name string.
 
     PUSH A0
     PUSH A1
+    PUSH V3
     CALL 'string_equal
+    POP V3
     POP A1
     POP A0
 
@@ -805,7 +896,9 @@ eval:
     TYPEP V1, A0, 'constag ; Tag == cons?
     JUMPIF V1, 'eval_cons
 
-    INT 0x08 ; Evaluating an invalid object.
+    MOV A1, ['unknown_object]
+    MOV A2, A0
+    INT 'lisp_trap ; Evaluating an invalid object.
 
 ; Expects:
 ; An object in A0
@@ -818,15 +911,12 @@ eval_self:
 
 ; Expects:
 ; Object in A0.
-; Environment in ENV.
+; Environment in A1.
 eval_symbol:
-    MOV V4
+    MOV V4, A1
 
   eval_symbol_find_loop:
-    EQ V2, V4, NIL
-    JUMPIFNOT V2, 'eval_symbol_next
-    INT 0x0a ; Interrupt: not found.
-  eval_symbol_next:
+    JUMPIFNOT V4, 'eval_symbol_not_found
     UNCONS V5, V4, V4 ; hd, tl
     UNCONS V5, V2, V5 ; sym, val
     EQ V3, V5, A0
@@ -834,6 +924,10 @@ eval_symbol:
     MOV R0, V2 ; Found!
     MOV RN, #1
     RETURN
+  eval_symbol_not_found:
+    MOV A1, ['not_found]
+    MOV A2, A0
+    INT 'lisp_trap ; Interrupt: not found.
 
 ; Expects:
 ; Object in A0.
@@ -841,23 +935,15 @@ eval_symbol:
 eval_cons:
     UNCONS A0, V1, A0 ; A0 = head, V1 = args
 
-  ; Special forms: Check if V0 is any of the special forms.
+  ; Special forms: Check if A0 is any of the special forms.
     MOV V3, ['quote]
     EQ V2, A0, V3
     JUMPIF V2, 'eval_quote
-    MOV V3, ['if] ; (if cond t f) => V0 = if, V0 = (cond t if)
+    MOV V3, ['if] ; (if cond t f) => A0 = if, A0 = (cond t if)
     EQ V2, A0, V3
     JUMPIF V2, 'eval_cons_if
+    JUMP 'eval_function_call
 
-    PUSH V1
-    PUSH A1
-    MOV A0, V0
-    CALL 'eval ; Get the function in 'eval
-    POP A1
-    POP V1
-    TYPEP V2, R0, 'functiontag ; Is function?
-    JUMPIF V2, 'eval_function_call
-    INT 0x0a ; Not a function call.
 
   eval_quote:
     CAR R0, V1
@@ -878,6 +964,14 @@ eval_cons:
     JUMP 'eval                              ; Eval whatever is at A0
 
   eval_function_call:
+    PUSH V1
+    PUSH A1
+    CALL 'eval ; Get the function in 'eval
+    POP A1
+    POP V1
+
+    TYPEP V2, R0, 'functiontag ; Is function?
+    JUMPIFNOT V2, 'eval_function_call_not_fn
     PUSH R0
     MOV A0, V1
     PUSH A1
@@ -886,6 +980,10 @@ eval_cons:
     POP A2
     POP A0
     JUMP 'apply
+  
+  eval_function_call_not_fn:
+    MOV A1, ['not_fn]
+    INT 'lisp_trap ; Not a function call.
 
 ; TODO:
 ; Expects:
@@ -893,6 +991,7 @@ eval_cons:
 ; Returns
 ; R0 a list of evaluated arguments
 eval_list:
+    MOV R0, A0
     RETURN
 
 ; Expects
@@ -901,8 +1000,8 @@ eval_list:
 ; Environment in A2
 apply:
     MOV V1, [!A0] ; Fetch function type.
-    EQ V1, ['builtin'] ; Handle native functions.
-    JUMPEQ V1, 'apply_builtin
+    EQ V2, V1, ['builtin] ; Handle native functions.
+    JUMPIF V2, 'apply_builtin
   apply_lambda:
     MOV V2, [!A0 + 8] ; Fetch parameter list
     MOV V3, [!A0 + 16] ; Fetch lambda's env
@@ -914,8 +1013,7 @@ apply:
     ; For each line in the body, evaluate with the new environment.
     MOV A1, A2
   apply_lambda_loop:
-    EQ V6, V4, NIL
-    JUMPIF V6, 'apply_lambda_done
+    JUMPIFNOT V4, 'apply_lambda_done
     UNCONS A0, V4, V4
     PUSH V3
     PUSH A1
@@ -926,50 +1024,43 @@ apply:
     RETURN
 
   apply_builtin:
+    MOV V20, [!A0 + 8] ; Fetch function location.
+    PUSH V20
     MOV V1, A1 ; keep arglist
     MOV AN, #0 ; Arg count.
-    EQ V2, V1, NIL  ; Done?
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1    ; For each of the 8 first args, if any, push them.
     UNCONS A0, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1
     UNCONS A1, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1
     UNCONS A2, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1
     UNCONS A3, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1
     UNCONS A4, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1
     UNCONS A5, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1
     UNCONS A6, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     ADD AN, AN, #1
     UNCONS A7, V1, V1
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
 
     PUSH A0              ; After the first 8, allocate some space on the stack.
     MOV A0, V1
@@ -980,15 +1071,15 @@ apply:
     ASUB SP, SP, R0      ; Allocate n words
     MOV V2, SP
   argloop:               ; While there are more arguments, push them onto the stack
-    EQ V2, V1, NIL
-    JUMPIF V2, 'call
+    JUMPIFNOT V1, 'call
+
     UNCONS V3, V1, V1
     MOV [V2], V3
     AADD V2, V2, 8
     ADD AN, AN, #1
     JUMP 'argloop
   call:
-    MOV V1, [FP - 16]
+    POP V1
     JUMP V1
 
 ; Expects:
@@ -1000,8 +1091,7 @@ listlen:
     MOV R0, #0
     MOV RN, #1
   lenloop:
-    EQ V3, V2, NIL
-    JUMPIF V3, 'endlistlen
+    JUMPIFNOT V2, 'endlistlen
     ADD R0, R0, #1
     CDR V2, V2
     JUMP 'lenloop
@@ -1033,7 +1123,7 @@ print_string: ; Prints the string at A0
     PUSH A0
     MOV A0, #\"
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     POP A0
     GETPAYLOAD V10, A0
     MOV A0, [V10] ; Get length
@@ -1041,7 +1131,7 @@ print_string: ; Prints the string at A0
     CALL 'print_stringslice
     MOV A0, #\"
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     MOV RN, #0
     RETURN
 
@@ -1073,10 +1163,10 @@ print_arbitrary:
     MOV V4, A0
     MOV A1, #0x07
     MOV A0, #\#
-    INT 0xf0
+    INT 'video_interrupt
     MOV A1, #0x07
     MOV A0, #\<
-    INT 0xf0
+    INT 'video_interrupt
 
     MOV A0, #0
     GETTAG V10, V4
@@ -1087,7 +1177,7 @@ print_arbitrary:
 
     MOV A1, #0x07
     MOV A0, #\:
-    INT 0xf0
+    INT 'video_interrupt
 
     MOV A0, #0
     GETPAYLOAD V10, V4
@@ -1096,7 +1186,7 @@ print_arbitrary:
 
     MOV A1, #0x07
     MOV A0, #\>
-    INT 0xf0
+    INT 'video_interrupt
     MOV RN, #0
     RETURN
 
@@ -1104,7 +1194,7 @@ print_cons:
     PUSH A0
     MOV A0, #\(
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     POP A0
   print_cons_next:
     PUSH A0
@@ -1112,13 +1202,12 @@ print_cons:
     CALL 'print
     POP A0
     CDR A0, A0
-    EQ A1, A0, NIL
-    JUMPIF A1, 'print_cons_end
+    JUMPIFNOT A0, 'print_cons_end
 
     PUSH A0
     MOV A0, #\Space
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     POP A0
 
     TYPEP A1, A0, 'constag ; if cons?
@@ -1128,16 +1217,16 @@ print_cons:
     PUSH A0
     MOV A0, #\.
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     MOV A0, #\Space
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     POP A0
     CALL 'print
   print_cons_end:
     MOV A0, #\)
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     MOV RN, #0
     RETURN
 
@@ -1156,7 +1245,7 @@ print_stringslice:
     AADD A1, A1, 1
     PUSH A1
     MOV A1, #0x07
-    INT 0xf0
+    INT 'video_interrupt
     POP A1
     POP A0
     SUB A0, A0, #1
@@ -1186,8 +1275,8 @@ string_equal:
 
     MOV8 V6, [A0]
     MOV8 V7, [A1]
-    EQ V3, V5, V6
-    JUMPIF V3, 'str_neq
+    EQ V3, V6, V7
+    JUMPIFNOT V3, 'str_neq
 
     AADD A0, A0, 1
     AADD A1, A1, 1
@@ -1204,6 +1293,14 @@ string_equal:
     MOV RN, #1
     RETURN
 
+;;;
+;;; Builtin functions
+;;;
+
+add:
+    ADD R0, A0, A1
+    MOV RN, #1
+    RETURN
 
 .org 0xffffffffffffffe0
     JUMP 'bootstrap

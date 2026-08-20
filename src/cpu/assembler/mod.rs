@@ -13,6 +13,7 @@ use crate::cpu::{
 
 pub struct AbiRegisters {}
 impl AbiRegisters {
+    const EH: cpu::Register = cpu::Register(225);
     // Argument registers: Quick arguments for functions.
     const A0: cpu::Register = cpu::Register(226);
     const A1: cpu::Register = cpu::Register(227);
@@ -197,21 +198,10 @@ pub fn resolve_data<'a>(
 ) -> Result<cpu::Native, AssemblerError<'a>> {
     Ok(match data {
         Native::Raw(refr) => cpu::Native(resolve_reference(refr, symbols)? as u64),
-        Native::Char(refr) => {
-            cpu::Native::from(cpu::LispWord::char(resolve_reference(refr, symbols)? as u64))
-        }
-        Native::Symbol(refr) => cpu::Native::from(cpu::LispWord::symbol(resolve_reference(
-            refr, symbols,
-        )? as u64)),
-        Native::Cons(refr) => {
-            cpu::Native::from(cpu::LispWord::cons(resolve_reference(refr, symbols)? as u64))
-        }
-        Native::Fixnum(refr) => cpu::Native::from(cpu::LispWord::fixnum(resolve_reference(
-            refr, symbols,
-        )? as i64)),
-        Native::String(refr) => cpu::Native::from(cpu::LispWord::string(resolve_reference(
-            refr, symbols,
-        )? as u64)),
+        Native::LispWord(wordtype, refr) => cpu::Native::from(cpu::LispWord::new(
+            (*wordtype).into(),
+            resolve_reference(refr, symbols)? as u64,
+        )),
     })
 }
 
@@ -502,6 +492,7 @@ pub mod test {
             MOV [V5 + 8], V6
             MOV V5, [V6]
             MOV V5, [V6 + 8]
+            MOV A1, [!V3 + 16]
             MOV8 V3, [V4]
             MOV8 V3, [V4 + 5]
             MOV8 V3, [5]
@@ -826,6 +817,16 @@ pub mod test {
             tokenizer::AssemblyToken::Register(cpu::Register(6)),
             tokenizer::AssemblyToken::Plus,
             tokenizer::AssemblyToken::Number(8),
+            tokenizer::AssemblyToken::CloseBracket,
+            tokenizer::AssemblyToken::Newline,
+            tokenizer::AssemblyToken::Identifier("MOV"),
+            tokenizer::AssemblyToken::Register(Register(227)),
+            tokenizer::AssemblyToken::Comma,
+            tokenizer::AssemblyToken::OpenBracket,
+            tokenizer::AssemblyToken::Bang,
+            tokenizer::AssemblyToken::Register(cpu::Register(3)),
+            tokenizer::AssemblyToken::Plus,
+            tokenizer::AssemblyToken::Number(16),
             tokenizer::AssemblyToken::CloseBracket,
             tokenizer::AssemblyToken::Newline,
             tokenizer::AssemblyToken::Identifier("MOV8"),
@@ -1421,7 +1422,8 @@ pub mod test {
             parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop { dst: Register(4) }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
                 dst: parser::LValue::Register(Register(1)),
-                src: assembler::RValue::Literal(parser::Native::Fixnum(
+                src: assembler::RValue::Literal(parser::Native::LispWord(
+                    cpu::WordType::Fixnum,
                     assembler::Reference::Resolved(1234),
                 )),
             }),
@@ -1557,6 +1559,13 @@ pub mod test {
                 src: parser::RValue::Indirect(parser::RegAndOff {
                     op1: Register(6),
                     off: Some(assembler::Native::Raw(assembler::Reference::Resolved(8))),
+                }),
+            }),
+            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+                dst: parser::LValue::Register(Register(227)),
+                src: parser::RValue::LPointer(parser::RegAndOff {
+                    op1: Register(3),
+                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
                 }),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
@@ -1717,14 +1726,18 @@ pub mod test {
                 op1: Register(2),
                 op2: parser::RValue::Register(parser::RegAndOff {
                     op1: Register(3),
-                    off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    off: Some(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
+                        assembler::Reference::Resolved(5),
+                    )),
                 }),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
                 op: cpu::BinaryOp::Add,
                 dst: Register(1),
                 op1: Register(2),
-                op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                    cpu::WordType::Fixnum,
                     assembler::Reference::Resolved(10),
                 )),
             }),
@@ -1743,14 +1756,18 @@ pub mod test {
                 op1: Register(2),
                 op2: parser::RValue::Register(parser::RegAndOff {
                     op1: Register(3),
-                    off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    off: Some(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
+                        assembler::Reference::Resolved(5),
+                    )),
                 }),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
                 op: cpu::BinaryOp::Sub,
                 dst: Register(1),
                 op1: Register(2),
-                op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                    cpu::WordType::Fixnum,
                     assembler::Reference::Resolved(10),
                 )),
             }),
@@ -1769,14 +1786,18 @@ pub mod test {
                 op1: Register(2),
                 op2: parser::RValue::Register(parser::RegAndOff {
                     op1: Register(3),
-                    off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    off: Some(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
+                        assembler::Reference::Resolved(5),
+                    )),
                 }),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
                 op: cpu::BinaryOp::Mul,
                 dst: Register(1),
                 op1: Register(2),
-                op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                    cpu::WordType::Fixnum,
                     assembler::Reference::Resolved(10),
                 )),
             }),
@@ -1798,7 +1819,10 @@ pub mod test {
                     op1: Register(2),
                     op2: parser::RValue::Register(parser::RegAndOff {
                         op1: Register(3),
-                        off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                        off: Some(assembler::Native::LispWord(
+                            cpu::WordType::Fixnum,
+                            assembler::Reference::Resolved(5),
+                        )),
                     }),
                 },
             ),
@@ -1807,7 +1831,8 @@ pub mod test {
                     op: cpu::Comparison::Eq,
                     dst: Register(1),
                     op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
                         assembler::Reference::Resolved(10),
                     )),
                 },
@@ -1830,7 +1855,10 @@ pub mod test {
                     op1: Register(2),
                     op2: parser::RValue::Register(parser::RegAndOff {
                         op1: Register(3),
-                        off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                        off: Some(assembler::Native::LispWord(
+                            cpu::WordType::Fixnum,
+                            assembler::Reference::Resolved(5),
+                        )),
                     }),
                 },
             ),
@@ -1839,7 +1867,8 @@ pub mod test {
                     op: cpu::Comparison::Ne,
                     dst: Register(1),
                     op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
                         assembler::Reference::Resolved(10),
                     )),
                 },
@@ -1862,7 +1891,10 @@ pub mod test {
                     op1: Register(2),
                     op2: parser::RValue::Register(parser::RegAndOff {
                         op1: Register(3),
-                        off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                        off: Some(assembler::Native::LispWord(
+                            cpu::WordType::Fixnum,
+                            assembler::Reference::Resolved(5),
+                        )),
                     }),
                 },
             ),
@@ -1871,7 +1903,8 @@ pub mod test {
                     op: cpu::Comparison::Lt,
                     dst: Register(1),
                     op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
                         assembler::Reference::Resolved(10),
                     )),
                 },
@@ -1894,7 +1927,10 @@ pub mod test {
                     op1: Register(2),
                     op2: parser::RValue::Register(parser::RegAndOff {
                         op1: Register(3),
-                        off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                        off: Some(assembler::Native::LispWord(
+                            cpu::WordType::Fixnum,
+                            assembler::Reference::Resolved(5),
+                        )),
                     }),
                 },
             ),
@@ -1903,7 +1939,8 @@ pub mod test {
                     op: cpu::Comparison::Lte,
                     dst: Register(1),
                     op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
                         assembler::Reference::Resolved(10),
                     )),
                 },
@@ -1926,7 +1963,10 @@ pub mod test {
                     op1: Register(2),
                     op2: parser::RValue::Register(parser::RegAndOff {
                         op1: Register(3),
-                        off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                        off: Some(assembler::Native::LispWord(
+                            cpu::WordType::Fixnum,
+                            assembler::Reference::Resolved(5),
+                        )),
                     }),
                 },
             ),
@@ -1935,7 +1975,8 @@ pub mod test {
                     op: cpu::Comparison::Gt,
                     dst: Register(1),
                     op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
                         assembler::Reference::Resolved(10),
                     )),
                 },
@@ -1958,7 +1999,10 @@ pub mod test {
                     op1: Register(2),
                     op2: parser::RValue::Register(parser::RegAndOff {
                         op1: Register(3),
-                        off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                        off: Some(assembler::Native::LispWord(
+                            cpu::WordType::Fixnum,
+                            assembler::Reference::Resolved(5),
+                        )),
                     }),
                 },
             ),
@@ -1967,7 +2011,8 @@ pub mod test {
                     op: cpu::Comparison::Gte,
                     dst: Register(1),
                     op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
                         assembler::Reference::Resolved(10),
                     )),
                 },
@@ -1987,14 +2032,18 @@ pub mod test {
                 op1: Register(3),
                 op2: parser::RValue::Register(parser::RegAndOff {
                     op1: Register(4),
-                    off: Some(assembler::Native::Fixnum(assembler::Reference::Resolved(5))),
+                    off: Some(assembler::Native::LispWord(
+                        cpu::WordType::Fixnum,
+                        assembler::Reference::Resolved(5),
+                    )),
                 }),
             }),
             parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
                 div: Register(9),
                 rem: Register(2),
                 op1: Register(3),
-                op2: assembler::RValue::Literal(assembler::Native::Fixnum(
+                op2: assembler::RValue::Literal(assembler::Native::LispWord(
+                    cpu::WordType::Fixnum,
                     assembler::Reference::Resolved(5),
                 )),
             }),
@@ -2078,42 +2127,43 @@ pub mod test {
                     9, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 6, 0, 5, 8, 0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0, 0, 7, 38, 0, 5, 6, 0, 0, 4, 8, 0, 0, 0, 0, 0, 0, 0, 7, 9, 5, 0, 0, 6,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 41, 5, 0, 0, 6, 0, 1, 8, 0, 0, 0, 0, 0, 0, 0,
-                    8, 9, 3, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 41, 3, 0, 0, 4, 0, 1, 5, 0,
-                    0, 0, 0, 0, 0, 0, 8, 33, 3, 0, 0, 0, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0, 8, 6, 0, 4,
-                    6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 38, 0, 4, 6, 0, 0, 4, 5, 0, 0, 0, 0, 0,
-                    0, 0, 8, 36, 0, 0, 6, 0, 0, 4, 5, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 22, 39, 1, 2, 3, 0, 0, 1, 4, 0, 0, 0, 0, 0, 0, 0, 22,
-                    47, 1, 2, 0, 0, 0, 1, 8, 0, 0, 0, 0, 0, 0, 0, 27, 7, 4, 5, 6, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 27, 39, 4, 5, 6, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 27, 47, 4, 5,
-                    0, 0, 0, 1, 12, 0, 0, 0, 0, 0, 0, 0, 11, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 12, 3, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, 3, 4, 3, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 14, 3, 5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 7,
-                    1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 18, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 3, 6, 7, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 3, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    21, 3, 10, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 22, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 22, 47,
-                    1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 27, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 27, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 27, 47, 1, 2, 0,
-                    0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 23, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 23, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 23, 47, 1, 2, 0, 0, 0, 1,
-                    0, 10, 0, 0, 0, 0, 0, 0, 28, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 28,
-                    39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 28, 47, 1, 2, 0, 0, 0, 1, 0, 10,
-                    0, 0, 0, 0, 0, 0, 29, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29, 39, 1,
-                    2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 29, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0,
-                    0, 0, 0, 0, 32, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 39, 1, 2, 3,
-                    0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 32, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0,
-                    0, 0, 33, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 39, 1, 2, 3, 0, 0,
-                    1, 0, 5, 0, 0, 0, 0, 0, 0, 33, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0,
-                    30, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 39, 1, 2, 3, 0, 0, 1, 0,
-                    5, 0, 0, 0, 0, 0, 0, 30, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 31, 7,
-                    1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0,
-                    0, 0, 0, 0, 31, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 26, 15, 9, 2, 3,
-                    4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 26, 47, 9, 2, 3, 4, 0, 1, 0, 5, 0, 0, 0, 0, 0,
-                    0, 26, 63, 9, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 36, 3, 5, 6, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 40, 47, 1, 2, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 39,
-                    35, 1, 1, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 31, 7, 0, 1, 2, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                    7, 41, 227, 0, 0, 3, 0, 3, 16, 0, 0, 0, 0, 0, 0, 0, 8, 9, 3, 0, 0, 4, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 8, 41, 3, 0, 0, 4, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0, 8, 33, 3,
+                    0, 0, 0, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0, 8, 6, 0, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 8, 38, 0, 4, 6, 0, 0, 4, 5, 0, 0, 0, 0, 0, 0, 0, 8, 36, 0, 0, 6, 0, 0,
+                    4, 5, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22,
+                    39, 1, 2, 3, 0, 0, 1, 4, 0, 0, 0, 0, 0, 0, 0, 22, 47, 1, 2, 0, 0, 0, 1, 8, 0,
+                    0, 0, 0, 0, 0, 0, 27, 7, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27, 39, 4,
+                    5, 6, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 27, 47, 4, 5, 0, 0, 0, 1, 12, 0, 0, 0,
+                    0, 0, 0, 0, 11, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 3, 3, 2, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, 3, 4, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    14, 3, 5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 7, 1, 2, 3, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 17, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 18, 3, 4, 5,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 3, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 20, 3, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 3, 10, 11, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22,
+                    39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 22, 47, 1, 2, 0, 0, 0, 1, 0, 10,
+                    0, 0, 0, 0, 0, 0, 27, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27, 39, 1,
+                    2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 27, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0,
+                    0, 0, 0, 0, 23, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 39, 1, 2, 3,
+                    0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 23, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0,
+                    0, 0, 28, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 28, 39, 1, 2, 3, 0, 0,
+                    1, 0, 5, 0, 0, 0, 0, 0, 0, 28, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0,
+                    29, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29, 39, 1, 2, 3, 0, 0, 1, 0,
+                    5, 0, 0, 0, 0, 0, 0, 29, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 32, 7,
+                    1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0,
+                    0, 0, 0, 0, 32, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 33, 7, 1, 2, 3,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0,
+                    0, 33, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 30, 7, 1, 2, 3, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 30, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 30,
+                    47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 31, 7, 1, 2, 3, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 31, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 31, 47, 1,
+                    2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 26, 15, 9, 2, 3, 4, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 26, 47, 9, 2, 3, 4, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 26, 63, 9, 2, 3,
+                    0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 36, 3, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 40, 47, 1, 2, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 39, 35, 1, 1, 0, 0, 0, 0,
+                    3, 0, 0, 0, 0, 0, 0, 0, 31, 7, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0
                 ],
                 base: 128
             }]

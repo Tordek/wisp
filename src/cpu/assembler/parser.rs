@@ -100,11 +100,7 @@ pub enum Reference<'input> {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Native<'input> {
     Raw(Reference<'input>),
-    Char(Reference<'input>),
-    Fixnum(Reference<'input>),
-    Cons(Reference<'input>),
-    Symbol(Reference<'input>),
-    String(Reference<'input>),
+    LispWord(cpu::WordType, Reference<'input>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -357,36 +353,38 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(AssemblyToken::Character(c)) => {
                 let v = *c;
                 self.next();
-                Ok(Native::Char(Reference::Resolved(v as i64)))
-            }
-            Some(AssemblyToken::OpenBracket) => {
-                self.next();
-                let v = self.try_any_machine_value(sign);
-                let v = self.expect(v, "A value to encode")?;
-                Ok(Native::Cons(v))
-            }
-            Some(AssemblyToken::Bang) => {
-                self.next();
-                let v = self.try_any_machine_value(sign);
-                let v = self.expect(v, "A value to encode")?;
-                Ok(Native::Symbol(v))
+                Ok(Native::LispWord(
+                    cpu::WordType::Character,
+                    Reference::Resolved(v as i64),
+                ))
             }
             Some(AssemblyToken::Number(n)) => {
                 let v = *n;
                 self.next();
-                Ok(Native::Fixnum(Reference::Resolved(v)))
+                Ok(Native::LispWord(
+                    cpu::WordType::Fixnum,
+                    Reference::Resolved(v),
+                ))
             }
             Some(AssemblyToken::Quote) => {
-                self.next();
-                let refr = self.try_identifier();
-                let refr = self.expect(refr, "A reference name")?;
-                Ok(Native::Fixnum(Reference::Unresolved(sign, refr)))
-            }
-            Some(AssemblyToken::Cash) => {
-                self.next();
                 let refr = self.try_any_machine_value(sign);
                 let refr = self.expect(refr, "A reference name")?;
-                Ok(Native::String(refr))
+                Ok(Native::LispWord(cpu::WordType::Fixnum, refr))
+            }
+            prefix @ (Some(AssemblyToken::OpenBracket)
+            | Some(AssemblyToken::Bang)
+            | Some(AssemblyToken::Cash)
+            | Some(AssemblyToken::Question)) => {
+                let wordype = match prefix {
+                    Some(AssemblyToken::Bang) => cpu::WordType::Symbol,
+                    Some(AssemblyToken::Cash) => cpu::WordType::String,
+                    Some(AssemblyToken::Question) => cpu::WordType::Function,
+                    _ => return Err(ParserError::InvalidInstruction),
+                };
+                self.next();
+                let v = self.try_any_machine_value(sign);
+                let v = self.expect(v, "A value to encode")?;
+                Ok(Native::LispWord(wordype, v))
             }
             _ => Err(ParserError::Expected {
                 expected: "A value to convert",

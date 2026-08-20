@@ -23,6 +23,7 @@ pub enum AssemblyToken<'a> {
     CloseBracket,
     Plus,
     Minus,
+    Question,
     Comment(&'a str),
     Identifier(&'a str),
     Cash,
@@ -144,6 +145,10 @@ fn register(input: &str) -> IResult<&str, AssemblyToken<'_>> {
                     AssemblyToken::Register(assembler::AbiRegisters::RX),
                     tag("RX"),
                 ),
+                value(
+                    AssemblyToken::Register(assembler::AbiRegisters::EH),
+                    tag("EH"),
+                ),
             ]),
             preceded(tag("V"), decimal).map(|c| AssemblyToken::Register(cpu::Register(c as u8))),
         )),
@@ -162,6 +167,9 @@ fn plus(input: &str) -> IResult<&str, AssemblyToken<'_>> {
 }
 fn minus(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     value(AssemblyToken::Minus, tag("-")).parse(input)
+}
+fn question(input: &str) -> IResult<&str, AssemblyToken<'_>> {
+    value(AssemblyToken::Question, tag("?")).parse(input)
 }
 fn comment(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     recognize(preceded(tag(";"), take_until("\n")))
@@ -225,7 +233,7 @@ fn bang(input: &str) -> IResult<&str, AssemblyToken<'_>> {
 fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
     preceded(
         space0,
-        alt((
+        alt([
             colon,
             bang,
             literal,
@@ -244,7 +252,8 @@ fn token(input: &str) -> IResult<&str, AssemblyToken<'_>> {
             cash,
             comma,
             newline,
-        )),
+            question,
+        ]),
     )
     .parse(input)
 }

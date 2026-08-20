@@ -465,10 +465,7 @@ impl Cpu {
     // TODO: require pointer?
     fn get_offset_lisp(&self, RegAndOff { op1, off }: RegAndOff) -> LispWord {
         let base = self.lreg(op1).payload();
-        let off = off
-            .map(LispWord::from)
-            .unwrap_or(LispWord::fixnum(0))
-            .payload();
+        let off = off.map(|v| v.0).unwrap_or(0);
         LispWord::fixnum(base as i64 + off as i64)
     }
 
@@ -492,18 +489,33 @@ impl Cpu {
         }
     }
 
+    // Creates a new frame with
+    // - Previous Program Counter
+    // - Status flags
+    // - Interruption value
+    // - Previous Stack pointer (before PC).
+    // - Previous Frame Pointer
+    // Then:
+    // - Disables interrupts
+    // - Clears pending interrupt.
+    // - FP = SP
+    // - PC = target
     fn run_interrupt(
         &mut self,
         memory: &mut Bus,
         interruption: u64,
         next_pc: Address,
     ) -> Result<Address, Trap> {
-        self.pending_interrupt = None;
-        // TODO: This should be one Status register
+        let prev_sp = self.reg(Cpu::SP);
+        self.push(memory, Native::from(next_pc));
         self.push(memory, Native(self.interrupts_disabled as u64));
         self.push(memory, Native(interruption));
-        self.push(memory, Native(next_pc.0));
+        self.push(memory, prev_sp);
+        self.push(memory, self.reg(Cpu::FP));
+
+        self.pending_interrupt = None;
         self.interrupts_disabled = true;
+        self.set_reg(Cpu::FP, self.reg(Cpu::SP));
         let location = Address::from(memory.read_word(
             Address::from(self.reg(Cpu::VBR))
                 + Offset(interruption as i64 * Self::WORD_SIZE as i64),
@@ -535,33 +547,28 @@ impl Cpu {
             }
 
             // Creates a new frame containing:
-            // Sets:
+            // - Previous Program Counter
+            // - Previous Frame Pointer
+            // Then sets:
             // - FP = SP
             // - PC = target
-            // And creates a frame containing:
-            // - Previous Frame Pointer
-            // - Previous Environment
-            // - Previous Program Counter
             Instruction::Call { target } => {
-                let prev_fp = self.reg(Cpu::FP);
-                self.set_reg(Cpu::FP, self.reg(Cpu::SP));
-
-                self.push(memory, prev_fp);
                 self.push(memory, Native::from(next_pc));
+                self.push(memory, self.reg(Cpu::FP));
+                self.set_reg(Cpu::FP, self.reg(Cpu::SP));
                 return Ok(Address::from(self.read_rval(memory, target)));
             }
 
             // Consumes a frame.
             // Sets:
             // - SP = FP
-            // - PC = [FP - 16]
-            // - FP = [FP - 8]
+            // - FP = POP
+            // - PC = POP
             Instruction::Return => {
-                let fp = self.reg(Cpu::FP);
-                let return_address = memory.read_word(Address::from(fp) - Offset(24)); // FP + 8 points to return value
-                let prev_fp = memory.read_word(Address::from(fp) - Offset(8)); // FP points to previous FP.
-                self.set_reg(Cpu::SP, fp);
-                self.set_reg(Cpu::FP, prev_fp);
+                self.set_reg(Cpu::SP, self.reg(Cpu::FP));
+                let fp = self.pop(memory);
+                self.set_reg(Cpu::FP, fp);
+                let return_address = self.pop(memory);
                 return Ok(Address::from(return_address));
             }
 
@@ -603,29 +610,48 @@ impl Cpu {
                 return self.run_interrupt(memory, interruption, next_pc);
             }
 
+            // Restores interrupt frame:
+            // - Previous Frame Pointer
+            // - Previous Stack Pointer
+            // - Interruption value
+            // - Status flags
+            // - Previous Program Counter
             Instruction::IReturn => {
-                let return_address = self.pop(memory);
+                self.set_reg(Self::SP, self.reg(Cpu::FP));
+                let prev_fp = self.pop(memory);
+                let prev_sp = self.pop(memory);
                 let _interrupt = self.pop(memory);
                 self.interrupts_disabled = self.pop(memory).0 != 0;
+                let return_address = self.pop(memory);
+                self.set_reg(Self::SP, prev_sp);
+                self.set_reg(Self::FP, prev_fp);
                 return Ok(Address::from(return_address));
             }
 
             Instruction::Car { dst, src } => {
-                let src_obj = self.lreg(src).ensure(WordType::Cons)?;
+                let car = if src == Cpu::NIL {
+                    self.lreg(Cpu::NIL)
+                } else {
+                    let src_obj = self.lreg(src).ensure(WordType::Cons)?;
 
-                self.set_lreg(
-                    dst,
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET),
-                );
+                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET)
+                };
+
+                self.set_lreg(dst, car);
             }
+
             Instruction::Cdr { dst, src } => {
-                let src_obj = self.lreg(src).ensure(WordType::Cons)?;
+                let cdr = if src == Cpu::NIL {
+                    self.lreg(Cpu::NIL)
+                } else {
+                    let src_obj = self.lreg(src).ensure(WordType::Cons)?;
 
-                self.set_lreg(
-                    dst,
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET),
-                );
+                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET)
+                };
+
+                self.set_lreg(dst, cdr);
             }
+
             Instruction::SetCar { dst, src } => {
                 let dst_obj = self.lreg(dst).ensure(WordType::Cons)?;
                 let val_obj = self.lreg(src);
@@ -671,7 +697,7 @@ impl Cpu {
                 let sizeb = sizew * 8;
                 let free = self.reg(Self::GEN_FREE);
                 if free.0 + sizeb <= self.reg(Self::GEN_END).0 {
-                    for i in 0..sizew {
+                    for i in 0..sizew.max(16) {
                         memory.write_word(
                             Address::from(free) + Offset(i as i64 * 8),
                             self.lreg(Register(i as u8)).into(),
@@ -790,7 +816,13 @@ impl Cpu {
             // }
             Instruction::Typep { dst, src, compare } => {
                 let src_obj = self.lreg(src);
-                self.set_lreg(dst, self.to_machine_bool(src_obj.tag() as u64 == compare.0));
+                let result = if src_obj == self.lreg(Cpu::NIL) && compare.0 == WordType::Cons as u64
+                {
+                    true
+                } else {
+                    src_obj.tag() as u64 == compare.0
+                };
+                self.set_lreg(dst, self.to_machine_bool(result));
             }
             Instruction::DisableInterrupts => {
                 self.interrupts_disabled = true;
