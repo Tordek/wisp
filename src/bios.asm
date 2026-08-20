@@ -316,12 +316,10 @@ kbpending:
     MOV V0, #3
     MOV V1, 0x6C696E ; 'nil'
     MOV V5, #$0
-    MOV V6, #2
-    REQ V0, V5, V6 ; Allocate a string containting "nil"
+    REQ V0, V5, #2 ; Allocate a string containting "nil"
     MOV V1, #!0 ; Temporary undefined symbol
     MOV V5, #!0 ; Allocate a symbol ["nil", nil]
-    MOV V6, #2
-    REQ V5, V5, V6
+    REQ V5, V5, #2
     GETPAYLOAD V10, V5
     MOV [V10 + 8], V5 ; Actually write NIL into the plist
     MOV NIL, V5 ; Define the real NIL
@@ -390,8 +388,7 @@ kbpending:
     MOV V0, ['builtin]
     MOV V1, 'add
     MOV V5, #?0
-    MOV V6, #2          ; Alloc function
-    REQ V5, V5, V6
+    REQ V5, V5, #2
     CONS V5, R0, V5     ; (+ . add)
     CONS V20, V5, V20
 
@@ -408,11 +405,9 @@ kbpending:
     MOV V2, SP
     MOV V3, 'dumbloop
     MOV V4, V20
-    MOV R0, #0 ; TODO: Fix tag
-    MOV V5, 'error_handler_tag
-    SETTAG R0, V5
-    MOV R1, #5
-    REQ R0, R0, R1 ; TODO: Make REQ take an rvalue?
+    MOV R0, #0
+    SETTAG R0, 'error_handler_tag
+    REQ R0, R0, #5
     CONS EH, R0, EH ; Set error handler
 
     MOV A0, #\Newline
@@ -654,7 +649,9 @@ read_list:
     POP V4
     SETCDR V4, R0
     CALL 'skip_whitespace
-    CALL 'read_string_next_char ; TODO: Die if not )
+    CALL 'read_string_next_char
+    EQ R0, R0, \)
+    JUMPIFNOT R0, 'read_list_error
     POP R0
     MOV RN, #1
     RETURN
@@ -665,7 +662,11 @@ read_list:
     MOV RN, #1
     RETURN                ; Done: R0 contains the list.
 
-  read_list_more_items:
+  read_list_error:
+    MOV A1, ['bad_string]
+    MOV A2, R0
+    INT 'lisp_trap
+
 
 ; Expects:
 ; A0: Pointer to string
@@ -694,7 +695,8 @@ read_symbol:
     MOV8 [V13], R0
     AADD V13, V13, 1 ; Advance buffer
     ADD V4, V4, #1 ; Increase len
-    ; TODO: Die if >256
+    GTE V3, V4, #256
+    JUMPIF V3, 'read_string_error
     CALL 'read_string_next_char
     JUMP 'read_symbol_loop
   read_symbol_endstring:
@@ -715,6 +717,10 @@ read_symbol:
     POP V2
     MOV RN, #1
     RETURN
+  read_symbol_error:
+    MOV A1, ['bad_string]
+    MOV A2, #256
+    JUMP 'lisp_trap
 
 ; Expects:
 ; A0: Pointer to string
@@ -866,9 +872,8 @@ intern_string:
     MEMCPY V10, V13, V4 + #8       ; Put strdata into R0
 
     MOV V5, #!0 ; Request symbol
-    MOV V6, #2
     MOV V1, NIL ; empty plist
-    REQ V3, V5, V6
+    REQ V3, V5, #2
 
     MOV V1, ['symboltable]
     CONS V1, V3, V1
@@ -1172,7 +1177,7 @@ print_arbitrary:
     GETTAG V10, V4
     SETPAYLOAD A0, V10
     PUSH V4
-    CALL 'print
+    CALL 'print_number
     POP V4
 
     MOV A1, #0x07
@@ -1182,7 +1187,7 @@ print_arbitrary:
     MOV A0, #0
     GETPAYLOAD V10, V4
     SETPAYLOAD A0, V10
-    CALL 'print
+    CALL 'print_number
 
     MOV A1, #0x07
     MOV A0, #\>

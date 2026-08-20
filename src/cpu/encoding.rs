@@ -1,3 +1,4 @@
+use bitflags::bitflags;
 use int_enum::IntEnum;
 
 use crate::{
@@ -15,49 +16,81 @@ pub enum DecoderError {
     BadInstruction,
 }
 
+bitflags! {
+    #[derive(PartialEq, Debug)]
+    pub struct Tiebreaker: u8 {
+        const NONE = 0;
+        const RVALUE_OFF = 1;
+        const LVALUE_OFF = 2;
+        const RVALUE_LISP = 4;
+        const LVALUE_LISP = 8;
+        const RVALUE_IND = 16;
+        const LVALUE_IND = 32;
+        const RVALUE_LITERAL = 64;
+    }
+}
+
 impl cpu::RValue {
-    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>, u8) {
+    fn encode(&self) -> (Option<Register>, Native, Tiebreaker) {
         match self {
-            Self::Literal(l) => (Some(Register(0)), Some(Register(0)), Some(*l), 1),
-            Self::Absolute(l) => (None, None, Some(Native(l.0)), 1),
-            Self::Register(RegAndOff { op1, off }) => (Some(*op1), None, *off, off.is_some() as u8),
-            Self::Indirect(RegAndOff { op1, off }) => (None, Some(*op1), *off, off.is_some() as u8),
-            Self::LPointer(RegAndOff { op1, off }) => {
-                (None, Some(*op1), *off, 2 + off.is_some() as u8)
-            }
+            Self::Literal(l) => (None, *l, Tiebreaker::RVALUE_LITERAL),
+            Self::Absolute(l) => (None, Native(l.0), Tiebreaker::RVALUE_OFF),
+            Self::Register(RegAndOff { op1, off }) => (
+                Some(*op1),
+                off.unwrap_or(Native(0)),
+                if off.is_some() {
+                    Tiebreaker::RVALUE_OFF
+                } else {
+                    Tiebreaker::NONE
+                },
+            ),
+            Self::Indirect(RegAndOff { op1, off }) => (
+                Some(*op1),
+                off.unwrap_or(Native(0)),
+                Tiebreaker::RVALUE_IND
+                    | if off.is_some() {
+                        Tiebreaker::RVALUE_OFF
+                    } else {
+                        Tiebreaker::NONE
+                    },
+            ),
+            Self::LPointer(RegAndOff { op1, off }) => (
+                Some(*op1),
+                off.unwrap_or(Native(0)),
+                Tiebreaker::RVALUE_LISP
+                    | if off.is_some() {
+                        Tiebreaker::RVALUE_OFF
+                    } else {
+                        Tiebreaker::NONE
+                    },
+            ),
         }
     }
 
     fn decode(
-        direct: Option<Register>,
-        indirect: Option<Register>,
-        offset: Option<Native>,
-        tiebreak: u8,
+        register: Option<Register>,
+        off: Native,
+        tiebreak: &Tiebreaker,
     ) -> Result<Self, DecoderError> {
-        match (direct, indirect, offset) {
-            (Some(op1), None, off) => Ok(cpu::RValue::Register(RegAndOff {
+        match register {
+            Some(op1) if tiebreak.contains(Tiebreaker::RVALUE_LISP) => {
+                Ok(cpu::RValue::LPointer(RegAndOff {
+                    op1,
+                    off: tiebreak.contains(Tiebreaker::RVALUE_OFF).then_some(off),
+                }))
+            }
+            Some(op1) if tiebreak.contains(Tiebreaker::RVALUE_IND) => {
+                Ok(cpu::RValue::Indirect(RegAndOff {
+                    op1,
+                    off: tiebreak.contains(Tiebreaker::RVALUE_OFF).then_some(off),
+                }))
+            }
+            Some(op1) => Ok(cpu::RValue::Register(RegAndOff {
                 op1,
-                off: if tiebreak & 1 == 1 { off } else { None },
+                off: tiebreak.contains(Tiebreaker::RVALUE_OFF).then_some(off),
             })),
-            (None, Some(op1), off) => {
-                if tiebreak & 2 == 2 {
-                    Ok(cpu::RValue::LPointer(RegAndOff {
-                        op1,
-                        off: if tiebreak & 1 == 1 { off } else { None },
-                    }))
-                } else {
-                    Ok(cpu::RValue::Indirect(RegAndOff {
-                        op1,
-                        off: if tiebreak & 1 == 1 { off } else { None },
-                    }))
-                }
-            }
-            (None, None, Some(abs)) => Ok(cpu::RValue::Absolute(Address::from(abs))),
-            (Some(_), Some(_), Some(off)) => Ok(cpu::RValue::Literal(off)),
-            _ => {
-                dbg!(direct,);
-                Err(DecoderError::BadInstruction)
-            }
+            None if *tiebreak == Tiebreaker::RVALUE_LITERAL => Ok(cpu::RValue::Literal(off)),
+            None => Ok(cpu::RValue::Absolute(Address::from(off))),
         }
     }
 
@@ -73,46 +106,55 @@ impl cpu::RValue {
 }
 
 impl cpu::LValue {
-    fn encode(&self) -> (Option<Register>, Option<Register>, Option<Native>, u8) {
+    fn encode(&self) -> (Option<Register>, Native, Tiebreaker) {
         match self {
-            Self::Absolute(a) => (None, None, Some(Native(a.0)), 4),
-            Self::Register(r) => (Some(*r), None, None, 0),
-            Self::Indirect(RegAndOff { op1, off }) => {
-                (None, Some(*op1), *off, if off.is_some() { 4 } else { 0 })
-            }
-            Self::LPointer(RegAndOff { op1, off }) => (
-                None,
+            Self::Absolute(a) => (None, Native(a.0), Tiebreaker::NONE),
+            Self::Register(r) => (Some(*r), Native(0), Tiebreaker::NONE),
+            Self::Indirect(RegAndOff { op1, off }) => (
                 Some(*op1),
-                *off,
-                8 + if off.is_some() { 4 } else { 0 },
+                off.unwrap_or(Native(0)),
+                Tiebreaker::LVALUE_IND
+                    | if off.is_some() {
+                        Tiebreaker::LVALUE_OFF
+                    } else {
+                        Tiebreaker::NONE
+                    },
+            ),
+            Self::LPointer(RegAndOff { op1, off }) => (
+                Some(*op1),
+                off.unwrap_or(Native(0)),
+                Tiebreaker::LVALUE_IND
+                    | Tiebreaker::LVALUE_LISP
+                    | if off.is_some() {
+                        Tiebreaker::LVALUE_OFF
+                    } else {
+                        Tiebreaker::NONE
+                    },
             ),
         }
     }
 
     fn decode(
-        direct: Option<Register>,
-        indirect: Option<Register>,
-        offset: Option<Native>,
-        tiebreak: u8,
+        reg: Option<Register>,
+        off: Native,
+        tiebreak: &Tiebreaker,
     ) -> Result<Self, DecoderError> {
-        match (direct, indirect, offset) {
-            (Some(d), None, _) => Ok(cpu::LValue::Register(d)),
-            (None, None, Some(off)) => Ok(cpu::LValue::Absolute(Address::from(off))),
-            (None, Some(op1), off) => {
-                if tiebreak & 8 == 8 {
-                    Ok(cpu::LValue::LPointer(RegAndOff {
-                        op1,
-                        off: if tiebreak & 4 == 4 { off } else { None },
-                    }))
-                } else {
-                    Ok(cpu::LValue::Indirect(RegAndOff {
-                        op1,
-                        off: if tiebreak & 4 == 4 { off } else { None },
-                    }))
-                }
+        match reg {
+            None => Ok(cpu::LValue::Absolute(Address::from(off))),
+            Some(op1) if tiebreak.contains(Tiebreaker::LVALUE_LISP) => {
+                Ok(cpu::LValue::LPointer(RegAndOff {
+                    op1,
+                    off: tiebreak.contains(Tiebreaker::LVALUE_OFF).then_some(off),
+                }))
             }
 
-            _ => Err(DecoderError::BadInstruction),
+            Some(op1) if tiebreak.contains(Tiebreaker::LVALUE_IND) => {
+                Ok(cpu::LValue::Indirect(RegAndOff {
+                    op1,
+                    off: tiebreak.contains(Tiebreaker::LVALUE_OFF).then_some(off),
+                }))
+            }
+            Some(d) => Ok(cpu::LValue::Register(d)),
         }
     }
 
@@ -127,7 +169,7 @@ impl cpu::LValue {
 }
 
 #[repr(u8)]
-#[derive(IntEnum)]
+#[derive(IntEnum, Debug)]
 enum Opcode {
     Halt,
     Nop,
@@ -174,6 +216,17 @@ enum Opcode {
     EnableInterrupts,
 }
 
+bitflags! {
+    #[derive(PartialEq, Debug)]
+    pub struct ParamShape: u8 {
+        const NONE = 0;
+        const P0 = 1;
+        const P1 = 2;
+        const P2 = 4;
+        const P3 = 8;
+        const P4 = 16;
+    }
+}
 impl Instruction {
     #[allow(clippy::type_complexity)]
     fn decode_params(
@@ -187,40 +240,37 @@ impl Instruction {
             Option<Register>,
             Option<Register>,
             Option<Register>,
-            u8,
-            Option<Native>,
+            Tiebreaker,
+            Native,
         ),
         DecoderError,
     > {
         let [opcode, param_shape, p0, p1, p2, p3, p4, tiebreak] = lo.to_le_bytes();
 
-        let r0 = if param_shape & 1 != 0 {
+        let param_shape = ParamShape::from_bits_retain(param_shape);
+
+        let r0 = if param_shape.contains(ParamShape::P0) {
             Some(Register(p0))
         } else {
             None
         };
-        let r1 = if param_shape & 2 != 0 {
+        let r1 = if param_shape.contains(ParamShape::P1) {
             Some(Register(p1))
         } else {
             None
         };
-        let r2 = if param_shape & 4 != 0 {
+        let r2 = if param_shape.contains(ParamShape::P2) {
             Some(Register(p2))
         } else {
             None
         };
-        let r3 = if param_shape & 8 != 0 {
+        let r3 = if param_shape.contains(ParamShape::P3) {
             Some(Register(p3))
         } else {
             None
         };
-        let r4 = if param_shape & 16 != 0 {
+        let r4 = if param_shape.contains(ParamShape::P4) {
             Some(Register(p4))
-        } else {
-            None
-        };
-        let off = if param_shape & 32 != 0 {
-            Some(Native(off))
         } else {
             None
         };
@@ -232,8 +282,8 @@ impl Instruction {
             r2,
             r3,
             r4,
-            tiebreak,
-            off,
+            Tiebreaker::from_bits_truncate(tiebreak),
+            Native(off),
         ))
     }
 
@@ -245,250 +295,248 @@ impl Instruction {
         p2: Option<Register>,
         p3: Option<Register>,
         p4: Option<Register>,
-        tiebreak: u8,
-        off: Option<Native>,
+        tiebreak: Tiebreaker,
+        off: Native,
     ) -> (u64, u64) {
-        let mut shape = 0;
+        let mut shape = ParamShape::NONE;
         let r0 = match p0 {
             None => 0,
             Some(r) => {
-                shape |= 1;
+                shape |= ParamShape::P0;
                 r.0
             }
         };
         let r1 = match p1 {
             None => 0,
             Some(r) => {
-                shape |= 2;
+                shape |= ParamShape::P1;
                 r.0
             }
         };
         let r2 = match p2 {
             None => 0,
             Some(r) => {
-                shape |= 4;
+                shape |= ParamShape::P2;
                 r.0
             }
         };
         let r3 = match p3 {
             None => 0,
             Some(r) => {
-                shape |= 8;
+                shape |= ParamShape::P3;
                 r.0
             }
         };
         let r4 = match p4 {
             None => 0,
             Some(r) => {
-                shape |= 16;
-                r.0
-            }
-        };
-        let off = match off {
-            None => 0,
-            Some(r) => {
-                shape |= 32;
+                shape |= ParamShape::P4;
                 r.0
             }
         };
 
         (
-            u64::from_le_bytes([opcode.into(), shape, r0, r1, r2, r3, r4, tiebreak]),
-            off,
+            u64::from_le_bytes([
+                opcode.into(),
+                shape.bits(),
+                r0,
+                r1,
+                r2,
+                r3,
+                r4,
+                tiebreak.bits(),
+            ]),
+            off.0,
         )
     }
 
     pub fn decode(lo: u64, hi: u64) -> Result<Self, DecoderError> {
-        let (opcode, r0, r1, r2, r3, r4, tiebreak, off) = Self::decode_params(lo, hi)?;
+        let (opcode, r0, r1, r2, r3, _, tiebreak, off) = Self::decode_params(lo, hi)?;
 
         match opcode {
             Opcode::Nop => Ok(Self::Nop),
             Opcode::Jump => Ok(Self::Jump {
                 condition: cpu::Condition::Always,
-                target: cpu::RValue::decode(r1, r2, off, tiebreak)?,
+                target: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::JumpIf => Ok(Self::Jump {
                 condition: cpu::Condition::True(r0.ok_or(DecoderError::BadInstruction)?),
-                target: cpu::RValue::decode(r1, r2, off, tiebreak)?,
+                target: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::JumpIfNot => Ok(Self::Jump {
                 condition: cpu::Condition::False(r0.ok_or(DecoderError::BadInstruction)?),
-                target: cpu::RValue::decode(r1, r2, off, tiebreak)?,
+                target: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::Call => Ok(Self::Call {
-                target: cpu::RValue::decode(r0, r1, off, tiebreak)?,
+                target: cpu::RValue::decode(r0, off, &tiebreak)?,
             }),
 
             Opcode::Return => Ok(Self::Return),
             Opcode::MakeClosure => Ok(Self::MakeClosure {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 code: r1.ok_or(DecoderError::BadInstruction)?,
             }),
 
             Opcode::Eq => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Eq,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Ne => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Ne,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Gt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gt,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Gte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Gte,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Lt => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lt,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Lte => Ok(Self::Comparison {
                 op: crate::cpu::Comparison::Lte,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Add => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Add,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Sub => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Sub,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Mul => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Mul,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Shl => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shl,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::Shr => Ok(Self::Binary {
                 op: crate::cpu::BinaryOp::Shr,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
 
             Opcode::Car => Ok(Self::Car {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::Cdr => Ok(Self::Cdr {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::SetCar => Ok(Self::SetCar {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::RValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::SetCdr => Ok(Self::SetCdr {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::RValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::Cons => Ok(Self::Cons {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 car: r1.ok_or(DecoderError::BadInstruction)?,
                 cdr: r2.ok_or(DecoderError::BadInstruction)?,
             }),
             Opcode::Uncons => Ok(Self::Uncons {
                 car: r0.ok_or(DecoderError::BadInstruction)?,
                 cdr: r1.ok_or(DecoderError::BadInstruction)?,
-                src: r2.ok_or(DecoderError::BadInstruction)?,
+                src: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::IDiv => Ok(Self::IDiv {
-                div: r0.ok_or(DecoderError::BadInstruction)?,
-                rem: r1.ok_or(DecoderError::BadInstruction)?,
+                div: cpu::LValue::decode(r0, off, &tiebreak)?,
+                rem: r1,
                 op1: r2.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r3, r4, off, tiebreak)?,
+                op2: cpu::RValue::decode(r3, off, &tiebreak)?,
             }),
             Opcode::Pop => Ok(Self::Pop {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
             }),
             Opcode::Push => Ok(Self::Push {
-                src: r0.ok_or(DecoderError::BadInstruction)?,
+                src: cpu::RValue::decode(r0, off, &tiebreak)?,
             }),
             Opcode::IReturn => Ok(Self::IReturn),
             Opcode::AAdd => Ok(Instruction::MBinary {
                 op: cpu::MBinaryOp::Add,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::ASub => Ok(Instruction::MBinary {
                 op: cpu::MBinaryOp::Sub,
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 op1: r1.ok_or(DecoderError::BadInstruction)?,
-                op2: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                op2: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::GetPayload => Ok(Instruction::GetPayload {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::GetTag => Ok(Instruction::GetTag {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::Halt => Ok(Instruction::Halt),
             Opcode::Int => Ok(Instruction::Int(hi)),
             Opcode::SetPayload => Ok(Instruction::SetPayload {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::SetTag => Ok(Instruction::SetTag {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::Mov => Ok(Instruction::Mov {
-                dst: cpu::LValue::decode(r0, r1, off, tiebreak)?,
-                src: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::Mov8 => Ok(Instruction::Mov8 {
-                dst: cpu::LValue::decode(r0, r1, off, tiebreak)?,
-                src: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
             }),
             Opcode::Typep => Ok(Instruction::Typep {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
-                src: r1.ok_or(DecoderError::BadInstruction)?,
-                compare: Native(hi),
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
+                src: cpu::RValue::decode(r1, off, &tiebreak)?,
+                compare: lo.to_le_bytes()[4],
             }),
             Opcode::MemCpy => Ok(Instruction::MemCpy {
                 dst: r0.ok_or(DecoderError::BadInstruction)?,
                 src: r1.ok_or(DecoderError::BadInstruction)?,
-                count: cpu::RValue::decode(r2, r3, off, tiebreak)?,
+                count: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
             Opcode::DisableInterrupts => Ok(Instruction::DisableInterrupts),
             Opcode::EnableInterrupts => Ok(Instruction::EnableInterrupts),
             Opcode::Req => Ok(Instruction::Req {
-                dst: r0.ok_or(DecoderError::BadInstruction)?,
+                dst: cpu::LValue::decode(r0, off, &tiebreak)?,
                 prototype: r1.ok_or(DecoderError::BadInstruction)?,
-                size: r2.ok_or(DecoderError::BadInstruction)?,
+                size: cpu::RValue::decode(r2, off, &tiebreak)?,
             }),
         }
     }
@@ -512,23 +560,27 @@ impl Instruction {
                     Instruction::DisableInterrupts => Opcode::DisableInterrupts,
                     _ => panic!("Missing branch"),
                 };
-                Instruction::encode_params(opcode, None, None, None, None, None, 0, None)
+                Instruction::encode_params(
+                    opcode,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Tiebreaker::NONE,
+                    Native(0),
+                )
             }
 
             // 1 arg
             Instruction::Pop { dst } => {
-                Instruction::encode_params(Opcode::Pop, Some(*dst), None, None, None, None, 0, None)
+                let (op1, off, tiebreak) = dst.encode();
+                Instruction::encode_params(Opcode::Pop, op1, None, None, None, None, tiebreak, off)
             }
-            Instruction::Push { src } => Instruction::encode_params(
-                Opcode::Push,
-                Some(*src),
-                None,
-                None,
-                None,
-                None,
-                0,
-                None,
-            ),
+            Instruction::Push { src } => {
+                let (src, off, tiebreak) = src.encode();
+                Instruction::encode_params(Opcode::Push, src, None, None, None, None, tiebreak, off)
+            }
             Instruction::Int(i) => Instruction::encode_params(
                 Opcode::Int,
                 None,
@@ -536,15 +588,13 @@ impl Instruction {
                 None,
                 None,
                 None,
-                0,
-                Some(Native(*i)),
+                Tiebreaker::NONE,
+                Native(*i),
             ),
 
             // 2 args:
             i @ (Instruction::Car { dst, src }
             | Instruction::Cdr { dst, src }
-            | Instruction::SetCar { dst, src }
-            | Instruction::SetCdr { dst, src }
             | Instruction::GetPayload { dst, src }
             | Instruction::GetTag { dst, src }
             | Instruction::SetPayload { dst, src }
@@ -560,15 +610,37 @@ impl Instruction {
                     Instruction::SetTag { dst: _, src: _ } => Opcode::SetTag,
                     _ => panic!("Missing branch"),
                 };
+                let (dst, doff, dtiebreak) = dst.encode();
+                let (src, soff, stiebreak) = src.encode();
                 Instruction::encode_params(
                     opcode,
-                    Some(*dst),
-                    Some(*src),
+                    dst,
+                    src,
                     None,
                     None,
                     None,
-                    0,
+                    stiebreak | dtiebreak,
+                    Native(soff.0 + doff.0),
+                )
+            }
+
+            i @ (Instruction::SetCar { dst, src } | Instruction::SetCdr { dst, src }) => {
+                let opcode = match i {
+                    Instruction::SetCar { dst: _, src: _ } => Opcode::SetCar,
+                    Instruction::SetCdr { dst: _, src: _ } => Opcode::SetCdr,
+                    _ => panic!("Missing branch"),
+                };
+                let (dst, doff, dtiebreak) = dst.encode();
+                let (src, soff, stiebreak) = src.encode();
+                Instruction::encode_params(
+                    opcode,
+                    dst,
+                    src,
                     None,
+                    None,
+                    None,
+                    stiebreak | dtiebreak,
+                    Native(soff.0 + doff.0),
                 )
             }
 
@@ -581,16 +653,17 @@ impl Instruction {
                     cpu::BinaryOp::Shr => Opcode::Shr,
                     cpu::BinaryOp::Sub => Opcode::Sub,
                 };
-                let (direct, indirect, off, tiebreak) = op2.encode();
+                let (dst, doff, dtiebreak) = dst.encode();
+                let (op2, soff, stiebreak) = op2.encode();
                 Instruction::encode_params(
                     opcode,
-                    Some(*dst),
+                    dst,
                     Some(*op1),
-                    direct,
-                    indirect,
+                    op2,
                     None,
-                    tiebreak,
-                    off,
+                    None,
+                    stiebreak | dtiebreak,
+                    Native(soff.0 + doff.0),
                 )
             }
             Instruction::MBinary { op, dst, op1, op2 } => {
@@ -598,16 +671,17 @@ impl Instruction {
                     cpu::MBinaryOp::Add => Opcode::AAdd,
                     cpu::MBinaryOp::Sub => Opcode::ASub,
                 };
-                let (direct, indirect, off, tiebreak) = op2.encode();
+                let (dst, doff, dtiebreak) = dst.encode();
+                let (op2, soff, stiebreak) = op2.encode();
                 Instruction::encode_params(
                     opcode,
-                    Some(*dst),
+                    dst,
                     Some(*op1),
-                    direct,
-                    indirect,
+                    op2,
                     None,
-                    tiebreak,
-                    off,
+                    None,
+                    stiebreak | dtiebreak,
+                    Native(soff.0 + doff.0),
                 )
             }
             Instruction::Comparison { op, dst, op1, op2 } => {
@@ -619,25 +693,26 @@ impl Instruction {
                     cpu::Comparison::Gt => Opcode::Gt,
                     cpu::Comparison::Gte => Opcode::Gte,
                 };
-                let (direct, indirect, off, tiebreak) = op2.encode();
+                let (dst, doff, dtiebreak) = dst.encode();
+                let (op2, soff, stiebreak) = op2.encode();
                 Instruction::encode_params(
                     opcode,
-                    Some(*dst),
+                    dst,
                     Some(*op1),
-                    direct,
-                    indirect,
+                    op2,
                     None,
-                    tiebreak,
-                    off,
+                    None,
+                    stiebreak | dtiebreak,
+                    Native(soff.0 + doff.0),
                 )
             }
 
             Instruction::Call { target } => {
-                let (direct, indirect, off, tiebreak) = target.encode();
+                let (direct, off, tiebreak) = target.encode();
                 Instruction::encode_params(
                     Opcode::Call,
                     direct,
-                    indirect,
+                    None,
                     None,
                     None,
                     None,
@@ -646,67 +721,75 @@ impl Instruction {
                 )
             }
             Instruction::Jump { condition, target } => {
-                let (direct, indirect, off, tiebreak) = target.encode();
+                let (direct, off, tiebreak) = target.encode();
                 let (opcode, cond) = match condition {
                     cpu::Condition::Always => (Opcode::Jump, None),
                     cpu::Condition::False(r) => (Opcode::JumpIfNot, Some(*r)),
                     cpu::Condition::True(r) => (Opcode::JumpIf, Some(*r)),
                 };
+                Instruction::encode_params(opcode, cond, direct, None, None, None, tiebreak, off)
+            }
+            Instruction::Cons { dst, car, cdr } => {
+                let (dst, doff, dtiebreak) = dst.encode();
                 Instruction::encode_params(
-                    opcode, cond, direct, indirect, None, None, tiebreak, off,
+                    Opcode::Cons,
+                    dst,
+                    Some(*car),
+                    Some(*cdr),
+                    None,
+                    None,
+                    dtiebreak,
+                    doff,
                 )
             }
-            Instruction::Cons { dst, car, cdr } => Instruction::encode_params(
-                Opcode::Cons,
-                Some(*dst),
-                Some(*car),
-                Some(*cdr),
-                None,
-                None,
-                0,
-                None,
-            ),
-            Instruction::Uncons { car, cdr, src } => Instruction::encode_params(
-                Opcode::Uncons,
-                Some(*car),
-                Some(*cdr),
-                Some(*src),
-                None,
-                None,
-                0,
-                None,
-            ),
+            Instruction::Uncons { car, cdr, src } => {
+                let (src, soff, stiebreak) = src.encode();
+                Instruction::encode_params(
+                    Opcode::Uncons,
+                    Some(*car),
+                    Some(*cdr),
+                    src,
+                    None,
+                    None,
+                    stiebreak,
+                    soff,
+                )
+            }
             Instruction::IDiv { div, rem, op1, op2 } => {
-                let (direct, indirect, off, tiebreak) = op2.encode();
+                let (div, doff, dtiebreak) = div.encode();
+                let (direct, off, tiebreak) = op2.encode();
                 Instruction::encode_params(
                     Opcode::IDiv,
-                    Some(*div),
-                    Some(*rem),
+                    div,
+                    *rem,
                     Some(*op1),
                     direct,
-                    indirect,
-                    tiebreak,
-                    off,
+                    None,
+                    dtiebreak | tiebreak,
+                    Native(doff.0 + off.0),
                 )
             }
-            Instruction::MakeClosure { dst, code } => Instruction::encode_params(
-                Opcode::MakeClosure,
-                Some(*dst),
-                Some(*code),
-                None,
-                None,
-                None,
-                0,
-                None,
-            ),
+            Instruction::MakeClosure { dst, code } => {
+                let (dst, doff, dtiebreak) = dst.encode();
+                Instruction::encode_params(
+                    Opcode::MakeClosure,
+                    dst,
+                    Some(*code),
+                    None,
+                    None,
+                    None,
+                    dtiebreak,
+                    doff,
+                )
+            }
             Instruction::MemCpy { dst, src, count } => {
-                let (direct, indirect, off, tiebreak) = count.encode();
+                let (direct, off, tiebreak) = count.encode();
                 Instruction::encode_params(
                     Opcode::MemCpy,
                     Some(*dst),
                     Some(*src),
                     direct,
-                    indirect,
+                    None,
                     None,
                     tiebreak,
                     off,
@@ -716,62 +799,76 @@ impl Instruction {
                 if dst.needs_second_word() && src.needs_second_word() {
                     return Err(EncoderError::BadInstruction);
                 }
-                let (ddst, idst, odst, tdst) = dst.encode();
-                let (dsrc, isrc, osrc, tsrc) = src.encode();
+                let (ddst, odst, tdst) = dst.encode();
+                let (dsrc, osrc, tsrc) = src.encode();
 
                 Instruction::encode_params(
                     Opcode::Mov,
                     ddst,
-                    idst,
                     dsrc,
-                    isrc,
                     None,
-                    tdst + tsrc,
-                    odst.or(osrc),
+                    None,
+                    None,
+                    tdst | tsrc,
+                    Native(odst.0 + osrc.0),
                 )
             }
             Instruction::Mov8 { dst, src } => {
                 if dst.needs_second_word() && src.needs_second_word() {
                     return Err(EncoderError::BadInstruction);
                 }
-                let (ddst, idst, odst, tdst) = dst.encode();
-                let (dsrc, isrc, osrc, tsrc) = src.encode();
+                let (ddst, odst, tdst) = dst.encode();
+                let (dsrc, osrc, tsrc) = src.encode();
 
                 Instruction::encode_params(
                     Opcode::Mov8,
                     ddst,
-                    idst,
                     dsrc,
-                    isrc,
                     None,
-                    tdst + tsrc,
-                    odst.or(osrc),
+                    None,
+                    None,
+                    tdst | tsrc,
+                    Native(odst.0 + osrc.0),
                 )
             }
             Instruction::Req {
                 dst,
                 prototype,
                 size,
-            } => Instruction::encode_params(
-                Opcode::Req,
-                Some(*dst),
-                Some(*prototype),
-                Some(*size),
-                None,
-                None,
-                0,
-                None,
-            ),
-            Instruction::Typep { dst, src, compare } => Instruction::encode_params(
-                Opcode::Typep,
-                Some(*dst),
-                Some(*src),
-                None,
-                None,
-                None,
-                0,
-                Some(*compare),
-            ),
+            } => {
+                if dst.needs_second_word() && size.needs_second_word() {
+                    return Err(EncoderError::BadInstruction);
+                }
+                let (ddst, odst, tdst) = dst.encode();
+                let (dsrc, osrc, tsrc) = size.encode();
+                Instruction::encode_params(
+                    Opcode::Req,
+                    ddst,
+                    Some(*prototype),
+                    dsrc,
+                    None,
+                    None,
+                    tdst | tsrc,
+                    Native(odst.0 + osrc.0),
+                )
+            }
+            Instruction::Typep { dst, src, compare } => {
+                if dst.needs_second_word() && src.needs_second_word() {
+                    return Err(EncoderError::BadInstruction);
+                }
+                let (ddst, odst, tdst) = dst.encode();
+                let (dsrc, osrc, tsrc) = src.encode();
+                Instruction::encode_params(
+                    Opcode::Typep,
+                    ddst,
+                    dsrc,
+                    Some(Register(*compare)),
+                    None,
+                    None,
+                    tdst | tsrc,
+                    Native(odst.0 + osrc.0),
+                )
+            }
         })
     }
 }

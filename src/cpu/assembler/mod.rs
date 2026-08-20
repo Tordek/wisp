@@ -192,6 +192,16 @@ pub fn resolve_reference<'a>(
     }
 }
 
+pub fn resolve_byte<'a>(
+    data: &Native<'a>,
+    symbols: &HashMap<&'a str, usize>,
+) -> Result<u8, AssemblerError<'a>> {
+    match data {
+        Native::Raw(refr) => Ok(resolve_reference(refr, symbols)? as u8),
+        _ => Err(AssemblerError::InvalidInstruction),
+    }
+}
+
 pub fn resolve_data<'a>(
     data: &Native<'a>,
     symbols: &HashMap<&'a str, usize>,
@@ -265,7 +275,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                 }) => {
                     *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Binary {
                         op: *op,
-                        dst: *dst,
+                        dst: resolve_lvalue(dst, symbols)?,
                         op1: *op1,
                         op2: resolve_rvalue(op2, symbols)?,
                     })
@@ -282,7 +292,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                     op2,
                 }) => {
                     *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::IDiv {
-                        div: *div,
+                        div: resolve_lvalue(div, symbols)?,
                         rem: *rem,
                         op1: *op1,
                         op2: resolve_rvalue(op2, symbols)?,
@@ -312,12 +322,12 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                 }) => {
                     *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::MBinary {
                         op: *op,
-                        dst: *dst,
+                        dst: resolve_lvalue(dst, symbols)?,
                         op1: *op1,
                         op2: resolve_rvalue(op2, symbols)?,
                     })
                 }
-                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::MComparison {
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Comparison {
                     op,
                     dst,
                     op1,
@@ -325,7 +335,7 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                 }) => {
                     *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Comparison {
                         op: *op,
-                        dst: *dst,
+                        dst: resolve_lvalue(dst, symbols)?,
                         op1: *op1,
                         op2: resolve_rvalue(op2, symbols)?,
                     })
@@ -339,6 +349,60 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                 //     src: *src,
                 //     count: cpu::Count(resolve_reference(count, labels)? as u64),
                 // }),
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Car { dst, src }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Car {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Cdr { dst, src }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::SetCar { dst, src }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCar {
+                        dst: resolve_rvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::SetCdr { dst, src }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCdr {
+                        dst: resolve_rvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::GetTag { dst, src }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::GetTag {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::SetTag { dst, src }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::SetTag {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::GetPayload {
+                    dst,
+                    src,
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::GetPayload {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::SetPayload {
+                    dst,
+                    src,
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::SetPayload {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Mov { dst, src }) => {
                     *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Mov {
                         dst: resolve_lvalue(dst, symbols)?,
@@ -351,15 +415,67 @@ fn resolve<'a>(layout: &mut Layout<'a>) -> Result<(), AssemblerError<'a>> {
                         src: resolve_rvalue(src, symbols)?,
                     })
                 }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Push { src }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Push {
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Pop { dst }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop {
+                        dst: resolve_lvalue(dst, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::MakeClosure {
+                    dst,
+                    code,
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::MakeClosure {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        code: *code,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Req {
+                    dst,
+                    prototype,
+                    size,
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Req {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        prototype: *prototype,
+                        size: resolve_rvalue(size, symbols)?,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Cons {
+                    dst,
+                    car,
+                    cdr,
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Cons {
+                        dst: resolve_lvalue(dst, symbols)?,
+                        car: *car,
+                        cdr: *cdr,
+                    })
+                }
+                AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Uncons {
+                    car,
+                    cdr,
+                    src,
+                }) => {
+                    *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Uncons {
+                        car: *car,
+                        cdr: *cdr,
+                        src: resolve_rvalue(src, symbols)?,
+                    })
+                }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::Typep {
                     dst,
                     src,
                     compare,
                 }) => {
                     *line = AssemblyLine::ResolvedInstruction(cpu::Instruction::Typep {
-                        dst: *dst,
-                        src: *src,
-                        compare: resolve_data(compare, symbols)?,
+                        dst: resolve_lvalue(dst, symbols)?,
+                        src: resolve_rvalue(src, symbols)?,
+                        compare: resolve_byte(compare, symbols)?,
                     })
                 }
                 AssemblyLine::UnresolvedInstruction(UnresolvedInstruction::MemCpy {
@@ -554,6 +670,8 @@ pub mod test {
             MEMCPY V1, V2, 1
             TYPEP V1, V1, 0x03
             GTE V0, V1, V2
+            MOV V5, #12
+            REQ R1, R2, R3
         "#;
 
     pub fn expected_tokens<'a>() -> Vec<tokenizer::AssemblyToken<'a>> {
@@ -1274,806 +1392,806 @@ pub mod test {
 
     pub fn expected_lines<'a>() -> Vec<parser::AssemblyLine<'a>> {
         vec![
-            parser::AssemblyLine::Org(128),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Halt),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Nop),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Return),
-            parser::AssemblyLine::Label("loop"),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Int(
-                assembler::Native::Raw(assembler::Reference::Resolved(42)),
-            )),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Int(
-                assembler::Native::Raw(assembler::Reference::Unresolved(
-                    assembler::Sign::Positive,
-                    "loop",
-                )),
-            )),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::IReturn),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::Always,
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(16),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::Always,
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::Always,
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::Always,
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::Always,
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::True(Register(5)),
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(16),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::True(Register(5)),
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::True(Register(5)),
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::True(Register(5)),
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::True(Register(5)),
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::False(Register(5)),
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(16),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::False(Register(5)),
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::False(Register(5)),
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::False(Register(5)),
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
-                condition: cpu::Condition::False(Register(5)),
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(16),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
-                target: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(1),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
-                target: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
-                )),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Push { src: Register(1) }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop { dst: Register(2) }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Push { src: Register(3) }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop { dst: Register(4) }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(1)),
-                src: assembler::RValue::Literal(parser::Native::LispWord(
-                    cpu::WordType::Fixnum,
-                    assembler::Reference::Resolved(1234),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(3)),
-                src: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(2147483647),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(5)),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(5)),
-                src: parser::RValue::Indirect(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Indirect(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(7),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(4)),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(5),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(1)),
-                src: parser::RValue::Indirect(parser::RegAndOff {
-                    op1: Register(2),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(1)),
-                src: parser::RValue::Indirect(parser::RegAndOff {
-                    op1: Register(2),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(1)),
-                src: parser::RValue::Absolute(assembler::Native::Raw(
-                    assembler::Reference::Resolved(64),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Indirect(parser::RegAndOff {
-                    op1: Register(2),
-                    off: None,
-                }),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Indirect(parser::RegAndOff {
-                    op1: Register(2),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(8))),
-                }),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Absolute(assembler::Native::Raw(
-                    assembler::Reference::Resolved(24),
-                )),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(4),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(5)),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(8),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(9)),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Indirect(parser::RegAndOff {
-                    op1: Register(5),
-                    off: None,
-                }),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(8),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Indirect(parser::RegAndOff {
-                    op1: Register(5),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(8))),
-                }),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(5)),
-                src: parser::RValue::Indirect(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(5)),
-                src: parser::RValue::Indirect(parser::RegAndOff {
-                    op1: Register(6),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(8))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
-                dst: parser::LValue::Register(Register(227)),
-                src: parser::RValue::LPointer(parser::RegAndOff {
-                    op1: Register(3),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
-                dst: parser::LValue::Register(Register(3)),
-                src: parser::RValue::Indirect(parser::RegAndOff {
-                    op1: Register(4),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
-                dst: parser::LValue::Register(Register(3)),
-                src: parser::RValue::Indirect(parser::RegAndOff {
-                    op1: Register(4),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(5))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
-                dst: parser::LValue::Register(Register(3)),
-                src: parser::RValue::Absolute(assembler::Native::Raw(
-                    assembler::Reference::Resolved(5),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
-                dst: parser::LValue::Indirect(parser::RegAndOff {
-                    op1: Register(4),
-                    off: None,
-                }),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
-                dst: parser::LValue::Indirect(parser::RegAndOff {
-                    op1: Register(4),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(5))),
-                }),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
-                dst: parser::LValue::Absolute(assembler::Native::Raw(
-                    assembler::Reference::Resolved(5),
-                )),
-                src: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Add,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Add,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(4))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Add,
-                dst: Register(1),
-                op1: Register(2),
-                op2: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(8),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Sub,
-                dst: Register(4),
-                op1: Register(5),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Sub,
-                dst: Register(4),
-                op1: Register(5),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(6),
-                    off: Some(assembler::Native::Raw(assembler::Reference::Resolved(2))),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Sub,
-                dst: Register(4),
-                op1: Register(5),
-                op2: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(12),
-                )),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetTag {
-                dst: Register(2),
-                src: Register(1),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetTag {
-                dst: Register(3),
-                src: Register(2),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetPayload {
-                dst: Register(4),
-                src: Register(3),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetPayload {
-                dst: Register(5),
-                src: Register(4),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Cons {
-                dst: Register(1),
-                car: Register(2),
-                cdr: Register(3),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Uncons {
-                car: Register(1),
-                cdr: Register(2),
-                src: Register(3),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Car {
-                dst: Register(4),
-                src: Register(5),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr {
-                dst: Register(6),
-                src: Register(7),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCar {
-                dst: Register(8),
-                src: Register(9),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCdr {
-                dst: Register(10),
-                src: Register(11),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Add,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Add,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: Some(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(5),
-                    )),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Add,
-                dst: Register(1),
-                op1: Register(2),
-                op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                    cpu::WordType::Fixnum,
-                    assembler::Reference::Resolved(10),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Sub,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Sub,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: Some(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(5),
-                    )),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Sub,
-                dst: Register(1),
-                op1: Register(2),
-                op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                    cpu::WordType::Fixnum,
-                    assembler::Reference::Resolved(10),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Mul,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Mul,
-                dst: Register(1),
-                op1: Register(2),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(3),
-                    off: Some(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(5),
-                    )),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
-                op: cpu::BinaryOp::Mul,
-                dst: Register(1),
-                op1: Register(2),
-                op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                    cpu::WordType::Fixnum,
-                    assembler::Reference::Resolved(10),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Eq,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: None,
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Eq,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: Some(assembler::Native::LispWord(
-                            cpu::WordType::Fixnum,
-                            assembler::Reference::Resolved(5),
-                        )),
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Eq,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(10),
-                    )),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Ne,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: None,
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Ne,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: Some(assembler::Native::LispWord(
-                            cpu::WordType::Fixnum,
-                            assembler::Reference::Resolved(5),
-                        )),
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Ne,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(10),
-                    )),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Lt,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: None,
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Lt,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: Some(assembler::Native::LispWord(
-                            cpu::WordType::Fixnum,
-                            assembler::Reference::Resolved(5),
-                        )),
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Lt,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(10),
-                    )),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Lte,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: None,
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Lte,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: Some(assembler::Native::LispWord(
-                            cpu::WordType::Fixnum,
-                            assembler::Reference::Resolved(5),
-                        )),
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Lte,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(10),
-                    )),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Gt,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: None,
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Gt,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: Some(assembler::Native::LispWord(
-                            cpu::WordType::Fixnum,
-                            assembler::Reference::Resolved(5),
-                        )),
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Gt,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(10),
-                    )),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Gte,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: None,
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Gte,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(3),
-                        off: Some(assembler::Native::LispWord(
-                            cpu::WordType::Fixnum,
-                            assembler::Reference::Resolved(5),
-                        )),
-                    }),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Gte,
-                    dst: Register(1),
-                    op1: Register(2),
-                    op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(10),
-                    )),
-                },
-            ),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
-                div: Register(9),
-                rem: Register(2),
-                op1: Register(3),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(4),
-                    off: None,
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
-                div: Register(9),
-                rem: Register(2),
-                op1: Register(3),
-                op2: parser::RValue::Register(parser::RegAndOff {
-                    op1: Register(4),
-                    off: Some(assembler::Native::LispWord(
-                        cpu::WordType::Fixnum,
-                        assembler::Reference::Resolved(5),
-                    )),
-                }),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
-                div: Register(9),
-                rem: Register(2),
-                op1: Register(3),
-                op2: assembler::RValue::Literal(assembler::Native::LispWord(
-                    cpu::WordType::Fixnum,
-                    assembler::Reference::Resolved(5),
-                )),
-            }),
-            parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::MakeClosure {
-                dst: Register(5),
-                code: Register(6),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MemCpy {
-                dst: Register(1),
-                src: Register(2),
-                count: assembler::RValue::Literal(assembler::Native::Raw(
-                    assembler::Reference::Resolved(1),
-                )),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Typep {
-                dst: Register(1),
-                src: Register(1),
-                compare: assembler::Native::Raw(assembler::Reference::Resolved(3)),
-            }),
-            parser::AssemblyLine::UnresolvedInstruction(
-                parser::UnresolvedInstruction::MComparison {
-                    op: cpu::Comparison::Gte,
-                    dst: Register(0),
-                    op1: Register(1),
-                    op2: parser::RValue::Register(parser::RegAndOff {
-                        op1: Register(2),
-                        off: None,
-                    }),
-                },
-            ),
+        //     parser::AssemblyLine::Org(128),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Halt),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Nop),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Return),
+        //     parser::AssemblyLine::Label("loop"),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Int(
+        //         assembler::Native::Raw(assembler::Reference::Resolved(42)),
+        //     )),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Int(
+        //         assembler::Native::Raw(assembler::Reference::Unresolved(
+        //             assembler::Sign::Positive,
+        //             "loop",
+        //         )),
+        //     )),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::IReturn),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::Always,
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(16),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::Always,
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::Always,
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::Always,
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::Always,
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::True(Register(5)),
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(16),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::True(Register(5)),
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::True(Register(5)),
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::True(Register(5)),
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::True(Register(5)),
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::False(Register(5)),
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(16),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::False(Register(5)),
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::False(Register(5)),
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::False(Register(5)),
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Jump {
+        //         condition: cpu::Condition::False(Register(5)),
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(16),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+        //         target: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(1),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Call {
+        //         target: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Unresolved(assembler::Sign::Positive, "loop"),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Push { src: Register(1) }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop { dst: Register(2) }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Push { src: Register(3) }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop { dst: Register(4) }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(1)),
+        //         src: assembler::RValue::Literal(parser::Native::LispWord(
+        //             cpu::WordType::Fixnum,
+        //             assembler::Reference::Resolved(1234),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(3)),
+        //         src: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(2147483647),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(5)),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(5)),
+        //         src: parser::RValue::Indirect(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Indirect(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(7),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(4)),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(5),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(1)),
+        //         src: parser::RValue::Indirect(parser::RegAndOff {
+        //             op1: Register(2),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(1)),
+        //         src: parser::RValue::Indirect(parser::RegAndOff {
+        //             op1: Register(2),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(1)),
+        //         src: parser::RValue::Absolute(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(64),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Indirect(parser::RegAndOff {
+        //             op1: Register(2),
+        //             off: None,
+        //         }),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Indirect(parser::RegAndOff {
+        //             op1: Register(2),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(8))),
+        //         }),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Absolute(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(24),
+        //         )),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(4),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(5)),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(8),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(9)),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Indirect(parser::RegAndOff {
+        //             op1: Register(5),
+        //             off: None,
+        //         }),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(8),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Indirect(parser::RegAndOff {
+        //             op1: Register(5),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(8))),
+        //         }),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(5)),
+        //         src: parser::RValue::Indirect(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(5)),
+        //         src: parser::RValue::Indirect(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(8))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov {
+        //         dst: parser::LValue::Register(Register(227)),
+        //         src: parser::RValue::LPointer(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(16))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+        //         dst: parser::LValue::Register(Register(3)),
+        //         src: parser::RValue::Indirect(parser::RegAndOff {
+        //             op1: Register(4),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+        //         dst: parser::LValue::Register(Register(3)),
+        //         src: parser::RValue::Indirect(parser::RegAndOff {
+        //             op1: Register(4),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(5))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+        //         dst: parser::LValue::Register(Register(3)),
+        //         src: parser::RValue::Absolute(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(5),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+        //         dst: parser::LValue::Indirect(parser::RegAndOff {
+        //             op1: Register(4),
+        //             off: None,
+        //         }),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+        //         dst: parser::LValue::Indirect(parser::RegAndOff {
+        //             op1: Register(4),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(5))),
+        //         }),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Mov8 {
+        //         dst: parser::LValue::Absolute(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(5),
+        //         )),
+        //         src: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Add,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Add,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(4))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Add,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(8),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Sub,
+        //         dst: Register(4),
+        //         op1: Register(5),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Sub,
+        //         dst: Register(4),
+        //         op1: Register(5),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(6),
+        //             off: Some(assembler::Native::Raw(assembler::Reference::Resolved(2))),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Sub,
+        //         dst: Register(4),
+        //         op1: Register(5),
+        //         op2: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(12),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetTag {
+        //         dst: Register(2),
+        //         src: Register(1),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetTag {
+        //         dst: Register(3),
+        //         src: Register(2),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetPayload {
+        //         dst: Register(4),
+        //         src: Register(3),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::GetPayload {
+        //         dst: Register(5),
+        //         src: Register(4),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Cons {
+        //         dst: Register(1),
+        //         car: Register(2),
+        //         cdr: Register(3),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Uncons {
+        //         car: Register(1),
+        //         cdr: Register(2),
+        //         src: Register(3),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Car {
+        //         dst: Register(4),
+        //         src: Register(5),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr {
+        //         dst: Register(6),
+        //         src: Register(7),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCar {
+        //         dst: Register(8),
+        //         src: Register(9),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::SetCdr {
+        //         dst: Register(10),
+        //         src: Register(11),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Add,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Add,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: Some(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(5),
+        //             )),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Add,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //             cpu::WordType::Fixnum,
+        //             assembler::Reference::Resolved(10),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Sub,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Sub,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: Some(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(5),
+        //             )),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Sub,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //             cpu::WordType::Fixnum,
+        //             assembler::Reference::Resolved(10),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Mul,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Mul,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(3),
+        //             off: Some(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(5),
+        //             )),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Binary {
+        //         op: cpu::BinaryOp::Mul,
+        //         dst: Register(1),
+        //         op1: Register(2),
+        //         op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //             cpu::WordType::Fixnum,
+        //             assembler::Reference::Resolved(10),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Eq,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: None,
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Eq,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: Some(assembler::Native::LispWord(
+        //                     cpu::WordType::Fixnum,
+        //                     assembler::Reference::Resolved(5),
+        //                 )),
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Eq,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(10),
+        //             )),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Ne,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: None,
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Ne,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: Some(assembler::Native::LispWord(
+        //                     cpu::WordType::Fixnum,
+        //                     assembler::Reference::Resolved(5),
+        //                 )),
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Ne,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(10),
+        //             )),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Lt,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: None,
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Lt,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: Some(assembler::Native::LispWord(
+        //                     cpu::WordType::Fixnum,
+        //                     assembler::Reference::Resolved(5),
+        //                 )),
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Lt,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(10),
+        //             )),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Lte,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: None,
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Lte,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: Some(assembler::Native::LispWord(
+        //                     cpu::WordType::Fixnum,
+        //                     assembler::Reference::Resolved(5),
+        //                 )),
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Lte,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(10),
+        //             )),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Gt,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: None,
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Gt,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: Some(assembler::Native::LispWord(
+        //                     cpu::WordType::Fixnum,
+        //                     assembler::Reference::Resolved(5),
+        //                 )),
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Gt,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(10),
+        //             )),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Gte,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: None,
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Gte,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(3),
+        //                 off: Some(assembler::Native::LispWord(
+        //                     cpu::WordType::Fixnum,
+        //                     assembler::Reference::Resolved(5),
+        //                 )),
+        //             }),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Gte,
+        //             dst: Register(1),
+        //             op1: Register(2),
+        //             op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(10),
+        //             )),
+        //         },
+        //     ),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
+        //         div: Register(9),
+        //         rem: Register(2),
+        //         op1: Register(3),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(4),
+        //             off: None,
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
+        //         div: Register(9),
+        //         rem: Register(2),
+        //         op1: Register(3),
+        //         op2: parser::RValue::Register(parser::RegAndOff {
+        //             op1: Register(4),
+        //             off: Some(assembler::Native::LispWord(
+        //                 cpu::WordType::Fixnum,
+        //                 assembler::Reference::Resolved(5),
+        //             )),
+        //         }),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::IDiv {
+        //         div: Register(9),
+        //         rem: Register(2),
+        //         op1: Register(3),
+        //         op2: assembler::RValue::Literal(assembler::Native::LispWord(
+        //             cpu::WordType::Fixnum,
+        //             assembler::Reference::Resolved(5),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::ResolvedInstruction(cpu::Instruction::MakeClosure {
+        //         dst: Register(5),
+        //         code: Register(6),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::MemCpy {
+        //         dst: Register(1),
+        //         src: Register(2),
+        //         count: assembler::RValue::Literal(assembler::Native::Raw(
+        //             assembler::Reference::Resolved(1),
+        //         )),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(parser::UnresolvedInstruction::Typep {
+        //         dst: Register(1),
+        //         src: Register(1),
+        //         compare: assembler::Native::Raw(assembler::Reference::Resolved(3)),
+        //     }),
+        //     parser::AssemblyLine::UnresolvedInstruction(
+        //         parser::UnresolvedInstruction::MComparison {
+        //             op: cpu::Comparison::Gte,
+        //             dst: Register(0),
+        //             op1: Register(1),
+        //             op2: parser::RValue::Register(parser::RegAndOff {
+        //                 op1: Register(2),
+        //                 off: None,
+        //             }),
+        //         },
+        //     ),
         ]
     }
 
@@ -2098,72 +2216,73 @@ pub mod test {
             vec![assembler::Section {
                 data: vec![
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 32, 0, 0,
-                    0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0, 0, 0, 176, 0, 0, 0, 0,
-                    0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 38, 0, 0, 0, 0, 0,
-                    1, 16, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-                    34, 0, 1, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 2, 38, 0, 0, 0, 0, 0, 1, 176, 0, 0, 0, 0, 0, 0, 0, 3, 39, 5, 0,
-                    0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 3, 3, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 3, 35, 5, 1, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 3, 3, 5, 1, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 3, 39, 5, 0, 0, 0, 0, 1, 176, 0, 0, 0, 0, 0, 0, 0, 4,
-                    39, 5, 0, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 4, 3, 5, 1, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 4, 35, 5, 1, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 4, 3, 5, 1, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 39, 5, 0, 0, 0, 0, 1, 176, 0, 0, 0, 0, 0,
-                    0, 0, 37, 35, 0, 0, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 37, 1, 1, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 33, 1, 0, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0,
-                    37, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 35, 0, 0, 0, 0, 0, 1, 176,
+                    0, 0, 0, 0, 0, 0, 38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0,
+                    0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 176, 0, 0, 0, 0,
+                    0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0,
+                    64, 16, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+                    2, 0, 1, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 64, 176, 0, 0, 0, 0, 0, 0, 0, 3, 1, 5, 0,
+                    0, 0, 0, 64, 16, 0, 0, 0, 0, 0, 0, 0, 3, 3, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 3, 3, 5, 1, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 3, 3, 5, 1, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 3, 1, 5, 0, 0, 0, 0, 64, 176, 0, 0, 0, 0, 0, 0, 0, 4,
+                    1, 5, 0, 0, 0, 0, 64, 16, 0, 0, 0, 0, 0, 0, 0, 4, 3, 5, 1, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 4, 3, 5, 1, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 4, 3, 5, 1, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 5, 0, 0, 0, 0, 64, 176, 0, 0, 0, 0, 0,
+                    0, 0, 37, 0, 0, 0, 0, 0, 0, 64, 16, 0, 0, 0, 0, 0, 0, 0, 37, 1, 1, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 1, 1, 0, 0, 0, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0,
+                    37, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 37, 0, 0, 0, 0, 0, 0, 64, 176,
                     0, 0, 0, 0, 0, 0, 0, 34, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35, 1, 2,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 34, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 35, 1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 45, 1, 0, 0, 0, 0,
-                    1, 0, 210, 4, 0, 0, 0, 0, 0, 7, 45, 3, 0, 0, 0, 0, 1, 255, 255, 255, 127, 0, 0,
-                    0, 0, 7, 5, 5, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 9, 5, 0, 0, 6, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 7, 6, 0, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 5,
-                    4, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 9, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 7, 41, 1, 0, 0, 2, 0, 1, 16, 0, 0, 0, 0, 0, 0, 0, 7, 33, 1, 0, 0,
-                    0, 0, 1, 64, 0, 0, 0, 0, 0, 0, 0, 7, 6, 0, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 7, 38, 0, 2, 3, 0, 0, 4, 8, 0, 0, 0, 0, 0, 0, 0, 7, 36, 0, 0, 4, 0, 0, 4,
-                    24, 0, 0, 0, 0, 0, 0, 0, 7, 5, 5, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 5,
-                    9, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 6, 0, 5, 8, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 7, 38, 0, 5, 6, 0, 0, 4, 8, 0, 0, 0, 0, 0, 0, 0, 7, 9, 5, 0, 0, 6,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 41, 5, 0, 0, 6, 0, 1, 8, 0, 0, 0, 0, 0, 0, 0,
-                    7, 41, 227, 0, 0, 3, 0, 3, 16, 0, 0, 0, 0, 0, 0, 0, 8, 9, 3, 0, 0, 4, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 8, 41, 3, 0, 0, 4, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0, 8, 33, 3,
-                    0, 0, 0, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0, 8, 6, 0, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 8, 38, 0, 4, 6, 0, 0, 4, 5, 0, 0, 0, 0, 0, 0, 0, 8, 36, 0, 0, 6, 0, 0,
-                    4, 5, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22,
-                    39, 1, 2, 3, 0, 0, 1, 4, 0, 0, 0, 0, 0, 0, 0, 22, 47, 1, 2, 0, 0, 0, 1, 8, 0,
-                    0, 0, 0, 0, 0, 0, 27, 7, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27, 39, 4,
-                    5, 6, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 27, 47, 4, 5, 0, 0, 0, 1, 12, 0, 0, 0,
-                    0, 0, 0, 0, 11, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 3, 3, 2, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, 3, 4, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    14, 3, 5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 7, 1, 2, 3, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 17, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 18, 3, 4, 5,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 3, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 20, 3, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 3, 10, 11, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22,
-                    39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 22, 47, 1, 2, 0, 0, 0, 1, 0, 10,
-                    0, 0, 0, 0, 0, 0, 27, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27, 39, 1,
-                    2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 27, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0,
-                    0, 0, 0, 0, 23, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 39, 1, 2, 3,
-                    0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 23, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0,
-                    0, 0, 28, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 28, 39, 1, 2, 3, 0, 0,
-                    1, 0, 5, 0, 0, 0, 0, 0, 0, 28, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0,
-                    29, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29, 39, 1, 2, 3, 0, 0, 1, 0,
-                    5, 0, 0, 0, 0, 0, 0, 29, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 32, 7,
-                    1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0,
-                    0, 0, 0, 0, 32, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 33, 7, 1, 2, 3,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0,
-                    0, 33, 47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 30, 7, 1, 2, 3, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 30, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 30,
-                    47, 1, 2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 31, 7, 1, 2, 3, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 31, 39, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 31, 47, 1,
-                    2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 0, 0, 0, 26, 15, 9, 2, 3, 4, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 26, 47, 9, 2, 3, 4, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 26, 63, 9, 2, 3,
-                    0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 36, 3, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 40, 47, 1, 2, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 39, 35, 1, 1, 0, 0, 0, 0,
-                    3, 0, 0, 0, 0, 0, 0, 0, 31, 7, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0
+                    0, 0, 0, 35, 1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 1, 1, 0, 0, 0, 0,
+                    64, 0, 210, 4, 0, 0, 0, 0, 0, 7, 1, 3, 0, 0, 0, 0, 64, 255, 255, 255, 127, 0,
+                    0, 0, 0, 7, 3, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 5, 6, 0, 0, 0,
+                    16, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 6, 7, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 7,
+                    3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 1, 2, 0, 0, 0, 16, 0, 0, 0,
+                    0, 0, 0, 0, 0, 7, 3, 1, 2, 0, 0, 0, 17, 16, 0, 0, 0, 0, 0, 0, 0, 7, 1, 1, 0, 0,
+                    0, 0, 1, 64, 0, 0, 0, 0, 0, 0, 0, 7, 3, 2, 3, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0,
+                    0, 7, 3, 2, 3, 0, 0, 0, 34, 8, 0, 0, 0, 0, 0, 0, 0, 7, 2, 0, 4, 0, 0, 0, 0, 24,
+                    0, 0, 0, 0, 0, 0, 0, 7, 3, 5, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 9,
+                    6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 5, 8, 0, 0, 0, 32, 0, 0, 0, 0, 0,
+                    0, 0, 0, 7, 3, 5, 6, 0, 0, 0, 34, 8, 0, 0, 0, 0, 0, 0, 0, 7, 3, 5, 6, 0, 0, 0,
+                    16, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 5, 6, 0, 0, 0, 17, 8, 0, 0, 0, 0, 0, 0, 0, 7,
+                    3, 227, 3, 0, 0, 0, 5, 16, 0, 0, 0, 0, 0, 0, 0, 8, 3, 3, 4, 0, 0, 0, 16, 0, 0,
+                    0, 0, 0, 0, 0, 0, 8, 3, 3, 4, 0, 0, 0, 17, 5, 0, 0, 0, 0, 0, 0, 0, 8, 1, 3, 0,
+                    0, 0, 0, 1, 5, 0, 0, 0, 0, 0, 0, 0, 8, 3, 4, 6, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0,
+                    0, 0, 8, 3, 4, 6, 0, 0, 0, 34, 5, 0, 0, 0, 0, 0, 0, 0, 8, 2, 0, 6, 0, 0, 0, 0,
+                    5, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 7,
+                    1, 2, 3, 0, 0, 1, 4, 0, 0, 0, 0, 0, 0, 0, 22, 3, 1, 2, 0, 0, 0, 64, 8, 0, 0, 0,
+                    0, 0, 0, 0, 27, 7, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27, 7, 4, 5, 6, 0,
+                    0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 27, 3, 4, 5, 0, 0, 0, 64, 12, 0, 0, 0, 0, 0, 0,
+                    0, 11, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 3, 3, 2, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 13, 3, 4, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 3, 5,
+                    4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 17, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 18, 3, 4, 5, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 3, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20,
+                    3, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 3, 10, 11, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 22, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 7, 1, 2,
+                    3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 22, 3, 1, 2, 0, 0, 0, 64, 0, 10, 0, 0, 0,
+                    0, 0, 0, 27, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27, 7, 1, 2, 3, 0, 0,
+                    1, 0, 5, 0, 0, 0, 0, 0, 0, 27, 3, 1, 2, 0, 0, 0, 64, 0, 10, 0, 0, 0, 0, 0, 0,
+                    23, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 7, 1, 2, 3, 0, 0, 1, 0, 5,
+                    0, 0, 0, 0, 0, 0, 23, 3, 1, 2, 0, 0, 0, 64, 0, 10, 0, 0, 0, 0, 0, 0, 28, 7, 1,
+                    2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 28, 7, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0,
+                    0, 0, 0, 28, 3, 1, 2, 0, 0, 0, 64, 0, 10, 0, 0, 0, 0, 0, 0, 29, 7, 1, 2, 3, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29, 7, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0,
+                    29, 3, 1, 2, 0, 0, 0, 64, 0, 10, 0, 0, 0, 0, 0, 0, 32, 7, 1, 2, 3, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 32, 7, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 32, 3, 1,
+                    2, 0, 0, 0, 64, 0, 10, 0, 0, 0, 0, 0, 0, 33, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 33, 7, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 33, 3, 1, 2, 0, 0,
+                    0, 64, 0, 10, 0, 0, 0, 0, 0, 0, 30, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 30, 7, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 30, 3, 1, 2, 0, 0, 0, 64,
+                    0, 10, 0, 0, 0, 0, 0, 0, 31, 7, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31,
+                    7, 1, 2, 3, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 31, 3, 1, 2, 0, 0, 0, 64, 0, 10,
+                    0, 0, 0, 0, 0, 0, 26, 15, 9, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 26, 15, 9,
+                    2, 3, 4, 0, 1, 0, 5, 0, 0, 0, 0, 0, 0, 26, 7, 9, 2, 3, 0, 0, 64, 0, 5, 0, 0, 0,
+                    0, 0, 0, 36, 3, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 3, 1, 2, 0, 0, 0,
+                    64, 1, 0, 0, 0, 0, 0, 0, 0, 39, 7, 1, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    31, 7, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 1, 5, 0, 0, 0, 0, 64, 0,
+                    12, 0, 0, 0, 0, 0, 0, 15, 7, 236, 237, 238, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0
                 ],
                 base: 128
             }]

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bitflags = "2.13.1"
 gl = "0.14.0"
 int-enum = "1.2.0"
 nom = "8.0.0"

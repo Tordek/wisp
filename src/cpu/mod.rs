@@ -277,44 +277,44 @@ pub enum Instruction {
     },
     MBinary {
         op: MBinaryOp,
-        dst: Register,
+        dst: LValue,
         op1: Register,
         op2: RValue,
     },
     Comparison {
         op: Comparison,
-        dst: Register,
+        dst: LValue,
         op1: Register,
         op2: RValue,
     },
     SetTag {
-        dst: Register,
-        src: Register,
+        dst: LValue,
+        src: RValue,
     },
     GetTag {
-        dst: Register,
-        src: Register,
+        dst: LValue,
+        src: RValue,
     },
     SetPayload {
-        dst: Register,
-        src: Register,
+        dst: LValue,
+        src: RValue,
     },
     GetPayload {
-        dst: Register,
-        src: Register,
+        dst: LValue,
+        src: RValue,
     },
     EnableInterrupts,
     DisableInterrupts,
 
     // Higher level
     Req {
-        dst: Register,
+        dst: LValue,
         prototype: Register,
-        size: Register,
+        size: RValue,
     },
     // Higher level
     Cons {
-        dst: Register,
+        dst: LValue,
         car: Register,
         cdr: Register,
     },
@@ -322,57 +322,57 @@ pub enum Instruction {
     Uncons {
         car: Register,
         cdr: Register,
-        src: Register,
+        src: RValue,
     },
     /// Gets the first part of a cons - typechecks.
     Car {
-        dst: Register,
-        src: Register,
+        dst: LValue,
+        src: RValue,
     },
     /// Gets the second part of a cons - typechecks.
     Cdr {
-        dst: Register,
-        src: Register,
+        dst: LValue,
+        src: RValue,
     },
     /// Sets the first part of a cons - typechecks.
     SetCar {
-        dst: Register,
-        src: Register,
+        dst: RValue,
+        src: RValue,
     },
     /// Sets the second part of a cons - typechecks.
     SetCdr {
-        dst: Register,
-        src: Register,
+        dst: RValue,
+        src: RValue,
     },
     /// Calculates div <- op1 / (op2 + imm), rem <- op1 % (op2 + imm)
     IDiv {
-        div: Register,
-        rem: Register,
+        div: LValue,
+        rem: Option<Register>,
         op1: Register,
         op2: RValue,
     },
     Binary {
         op: BinaryOp,
-        dst: Register,
+        dst: LValue,
         op1: Register,
         op2: RValue,
     },
     MakeClosure {
-        dst: Register,
+        dst: LValue,
         code: Register,
     },
     /// Push a word onto the stack
     Push {
-        src: Register,
+        src: RValue,
     },
     /// Pop a word onto the stack - and validate it's a word.
     Pop {
-        dst: Register,
+        dst: LValue,
     },
     Typep {
-        dst: Register,
-        src: Register,
-        compare: Native,
+        dst: LValue,
+        src: RValue,
+        compare: u8,
     },
     /// while (count--) *dst++ = *src++
     MemCpy {
@@ -433,11 +433,11 @@ impl Cpu {
         memory.read_word(address).into()
     }
 
-    fn to_machine_bool(&self, val: bool) -> LispWord {
+    fn to_machine_bool(&self, val: bool) -> Native {
         if val {
-            self.lreg(Cpu::T)
+            self.reg(Cpu::T)
         } else {
-            self.lreg(Cpu::NIL)
+            self.reg(Cpu::NIL)
         }
     }
 
@@ -486,6 +486,28 @@ impl Cpu {
             RValue::Absolute(adr) => bus.read_byte(adr),
             RValue::Indirect(pos) => bus.read_byte(Address::from(self.get_offset_raw(pos))),
             RValue::LPointer(r) => bus.read_byte(Address(self.get_offset_lisp(r).payload())),
+        }
+    }
+
+    fn read_lval(&self, bus: &Bus, rval: LValue) -> Native {
+        match rval {
+            LValue::Register(r) => self.reg(r),
+            LValue::Absolute(adr) => bus.read_word(adr),
+            LValue::Indirect(pos) => bus.read_word(Address::from(self.get_offset_raw(pos))),
+            LValue::LPointer(r) => bus.read_word(Address(self.get_offset_lisp(r).payload())),
+        }
+    }
+
+    fn set_lval(&mut self, bus: &mut Bus, dst: LValue, value: Native) {
+        match dst {
+            LValue::Absolute(a) => bus.write_word(a, value),
+            LValue::Register(r) => self.set_lreg(r, LispWord::from(value)),
+            LValue::Indirect(target) => {
+                bus.write_word(Address::from(self.get_offset_raw(target)), value)
+            }
+            LValue::LPointer(target) => {
+                bus.write_word(Address(self.get_offset_lisp(target).payload()), value);
+            }
         }
     }
 
@@ -588,7 +610,7 @@ impl Cpu {
                     Comparison::Lte => op1_obj <= op2_obj,
                 };
 
-                self.set_lreg(dst, self.to_machine_bool(result));
+                self.set_lval(memory, dst, self.to_machine_bool(result));
             }
 
             Instruction::Binary { op, dst, op1, op2 } => {
@@ -603,7 +625,7 @@ impl Cpu {
                     BinaryOp::Shr => op1_obj >> op2_obj,
                 });
 
-                self.set_lreg(dst, result);
+                self.set_lval(memory, dst, Native::from(result));
             }
 
             Instruction::Int(interruption) => {
@@ -629,47 +651,57 @@ impl Cpu {
             }
 
             Instruction::Car { dst, src } => {
-                let car = if src == Cpu::NIL {
-                    self.lreg(Cpu::NIL)
+                let value = self.read_rval(memory, src);
+                let nil = self.reg(Cpu::NIL);
+                let car = if value == nil {
+                    nil
                 } else {
-                    let src_obj = self.lreg(src).ensure(WordType::Cons)?;
+                    let src_obj = self.read_rval(memory, src);
+                    let src_lobj = LispWord::from(src_obj).ensure(WordType::Cons)?;
 
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CAR_OFFSET)
+                    memory.read_word(Address(src_lobj.payload()) + ConsLayout::CAR_OFFSET)
                 };
 
-                self.set_lreg(dst, car);
+                self.set_lval(memory, dst, car);
             }
 
             Instruction::Cdr { dst, src } => {
-                let cdr = if src == Cpu::NIL {
-                    self.lreg(Cpu::NIL)
+                let value = self.read_rval(memory, src);
+                let nil = self.reg(Cpu::NIL);
+                let cdr = if value == nil {
+                    nil
                 } else {
-                    let src_obj = self.lreg(src).ensure(WordType::Cons)?;
+                    let src_obj = self.read_rval(memory, src);
+                    let src_lobj = LispWord::from(src_obj).ensure(WordType::Cons)?;
 
-                    Self::read_word(memory, Address(src_obj.payload()) + ConsLayout::CDR_OFFSET)
+                    memory.read_word(Address(src_lobj.payload()) + ConsLayout::CDR_OFFSET)
                 };
 
-                self.set_lreg(dst, cdr);
+                self.set_lval(memory, dst, cdr);
             }
 
             Instruction::SetCar { dst, src } => {
-                let dst_obj = self.lreg(dst).ensure(WordType::Cons)?;
-                let val_obj = self.lreg(src);
+                let dst_obj = self.read_rval(memory, dst);
+                let dst_objl = LispWord::from(dst_obj).ensure(WordType::Cons)?;
+                let val_obj = self.read_rval(memory, src);
 
                 memory.write_word(
-                    Address(dst_obj.payload()) + ConsLayout::CAR_OFFSET,
-                    val_obj.into(),
+                    Address(dst_objl.payload()) + ConsLayout::CAR_OFFSET,
+                    val_obj,
                 );
             }
+
             Instruction::SetCdr { dst, src } => {
-                let dst_obj = self.lreg(dst).ensure(WordType::Cons)?;
-                let val_obj = self.lreg(src);
+                let dst_obj = self.read_rval(memory, dst);
+                let dst_objl = LispWord::from(dst_obj).ensure(WordType::Cons)?;
+                let val_obj = self.read_rval(memory, src);
 
                 memory.write_word(
-                    Address(dst_obj.payload()) + ConsLayout::CDR_OFFSET,
-                    val_obj.into(),
+                    Address(dst_objl.payload()) + ConsLayout::CDR_OFFSET,
+                    val_obj,
                 );
             }
+
             Instruction::Cons { dst, car, cdr } => {
                 let free = self.reg(Self::CONS_FREE);
                 if free.0 + 16 <= self.reg(Self::CONS_END).0 {
@@ -681,7 +713,7 @@ impl Cpu {
                         Address::from(free) + ConsLayout::CDR_OFFSET,
                         self.lreg(cdr).into(),
                     );
-                    self.set_lreg(dst, LispWord::cons(free.0));
+                    self.set_lval(memory, dst, Native::from(LispWord::cons(free.0)));
                     self.set_reg(Self::CONS_FREE, free + Native(16));
                 } else {
                     return self.run_interrupt(memory, 0x03, Address::from(self.reg(Self::PC))); // Come back.
@@ -693,7 +725,7 @@ impl Cpu {
                 prototype,
                 size,
             } => {
-                let sizew = self.lreg(size).as_fixnum()? as u64;
+                let sizew = LispWord::from(self.read_rval(memory, size)).as_fixnum()? as u64;
                 let sizeb = sizew * 8;
                 let free = self.reg(Self::GEN_FREE);
                 if free.0 + sizeb <= self.reg(Self::GEN_END).0 {
@@ -703,9 +735,10 @@ impl Cpu {
                             self.lreg(Register(i as u8)).into(),
                         )
                     }
+                    dbg!(sizew);
                     let prototype = self.lreg(prototype);
                     let result = LispWord::new(prototype.tag(), free.0);
-                    self.set_lreg(dst, result);
+                    self.set_lval(memory, dst, Native::from(result));
                     self.set_reg(Self::GEN_FREE, free + Native(sizeb));
                 } else {
                     return self.run_interrupt(memory, 0x03, Address::from(self.reg(Self::PC))); // Come back.
@@ -713,7 +746,7 @@ impl Cpu {
             }
 
             Instruction::Uncons { car, cdr, src } => {
-                let src_obj = self.lreg(src).ensure(WordType::Cons)?;
+                let src_obj = LispWord::from(self.read_rval(memory, src)).ensure(WordType::Cons)?;
 
                 self.set_lreg(
                     car,
@@ -728,16 +761,23 @@ impl Cpu {
             Instruction::IDiv { div, rem, op1, op2 } => {
                 let op1_obj = self.lreg(op1).as_fixnum()?;
                 let op2_obj = LispWord::from(self.read_rval(memory, op2)).as_fixnum()?;
-                self.set_lreg(div, LispWord::fixnum(op1_obj / op2_obj));
-                self.set_lreg(rem, LispWord::fixnum(op1_obj % op2_obj));
+                self.set_lval(
+                    memory,
+                    div,
+                    Native::from(LispWord::fixnum(op1_obj / op2_obj)),
+                );
+                if let Some(rem) = rem {
+                    self.set_lreg(rem, LispWord::fixnum(op1_obj % op2_obj))
+                }
             }
 
             Instruction::Pop { dst } => {
                 let result = self.pop(memory);
-                self.set_reg(dst, result);
+                self.set_lval(memory, dst, result);
             }
+
             Instruction::Push { src } => {
-                self.push(memory, self.reg(src));
+                self.push(memory, self.read_rval(memory, src));
             }
 
             Instruction::MBinary { op, dst, op1, op2 } => {
@@ -747,23 +787,46 @@ impl Cpu {
                     MBinaryOp::Add => val1 + val2,
                     MBinaryOp::Sub => val1 - val2,
                 };
-                self.set_reg(dst, result);
+                self.set_lval(memory, dst, result);
             }
+
             Instruction::GetPayload { dst, src } => {
-                self.set_reg(dst, Native(self.lreg(src).payload()));
-            }
-            Instruction::GetTag { src, dst } => {
-                self.set_reg(dst, Native(self.lreg(src).tag() as WordSize));
-            }
-            Instruction::SetPayload { dst, src } => {
-                self.set_lreg(dst, LispWord::new(self.lreg(dst).tag(), self.reg(src).0));
-            }
-            Instruction::SetTag { src, dst } => {
-                self.set_lreg(
+                self.set_lval(
+                    memory,
                     dst,
-                    LispWord::new(self.reg(src).0 as u8, self.lreg(dst).payload()),
+                    Native(LispWord::from(self.read_rval(memory, src)).payload()),
                 );
             }
+
+            Instruction::GetTag { src, dst } => {
+                self.set_lval(
+                    memory,
+                    dst,
+                    Native(LispWord::from(self.read_rval(memory, src)).tag() as WordSize),
+                );
+            }
+
+            Instruction::SetPayload { dst, src } => {
+                let val = LispWord::from(self.read_lval(memory, dst));
+                self.set_lval(
+                    memory,
+                    dst,
+                    Native::from(LispWord::new(val.tag(), self.read_rval(memory, src).0)),
+                );
+            }
+
+            Instruction::SetTag { src, dst } => {
+                let val = LispWord::from(self.read_lval(memory, dst));
+                self.set_lval(
+                    memory,
+                    dst,
+                    Native::from(LispWord::new(
+                        self.read_rval(memory, src).0 as u8,
+                        val.payload(),
+                    )),
+                );
+            }
+
             Instruction::Mov8 { dst, src } => {
                 let value = self.read_rval_byte(memory, src);
                 match dst {
@@ -779,19 +842,12 @@ impl Cpu {
                     }
                 }
             }
+
             Instruction::Mov { dst, src } => {
                 let value = self.read_rval(memory, src);
-                match dst {
-                    LValue::Absolute(a) => memory.write_word(a, value),
-                    LValue::Register(r) => self.set_lreg(r, LispWord::from(value)),
-                    LValue::Indirect(target) => {
-                        memory.write_word(Address::from(self.get_offset_raw(target)), value)
-                    }
-                    LValue::LPointer(target) => {
-                        memory.write_word(Address(self.get_offset_lisp(target).payload()), value);
-                    }
-                }
+                self.set_lval(memory, dst, value);
             }
+
             Instruction::MemCpy { dst, src, count } => {
                 let srcadd = Address::from(self.reg(src));
                 let dstadd = Address::from(self.reg(dst));
@@ -815,18 +871,19 @@ impl Cpu {
             //         + Offset(Cpu::INSTRUCTION_SIZE as i64))
             // }
             Instruction::Typep { dst, src, compare } => {
-                let src_obj = self.lreg(src);
-                let result = if src_obj == self.lreg(Cpu::NIL) && compare.0 == WordType::Cons as u64
-                {
+                let src_obj = LispWord::from(self.read_rval(memory, src));
+                let result = if src_obj == self.lreg(Cpu::NIL) && compare == WordType::Cons as u8 {
                     true
                 } else {
-                    src_obj.tag() as u64 == compare.0
+                    src_obj.tag() == compare
                 };
-                self.set_lreg(dst, self.to_machine_bool(result));
+                self.set_lval(memory, dst, self.to_machine_bool(result));
             }
+
             Instruction::DisableInterrupts => {
                 self.interrupts_disabled = true;
             }
+
             Instruction::EnableInterrupts => {
                 self.interrupts_disabled = false;
             }

@@ -32,7 +32,9 @@ pub enum UnresolvedInstruction<'input> {
         condition: cpu::Condition,
         target: RValue<'input>,
     },
+
     Int(Native<'input>),
+
     Mov {
         dst: LValue<'input>,
         src: RValue<'input>,
@@ -43,27 +45,90 @@ pub enum UnresolvedInstruction<'input> {
     },
     MBinary {
         op: cpu::MBinaryOp,
-        dst: cpu::Register,
+        dst: LValue<'input>,
         op1: cpu::Register,
         op2: RValue<'input>,
     },
+    Comparison {
+        op: cpu::Comparison,
+        dst: LValue<'input>,
+        op1: cpu::Register,
+        op2: RValue<'input>,
+    },
+    SetTag {
+        dst: LValue<'input>,
+        src: RValue<'input>,
+    },
+    GetTag {
+        dst: LValue<'input>,
+        src: RValue<'input>,
+    },
+    SetPayload {
+        dst: LValue<'input>,
+        src: RValue<'input>,
+    },
+    GetPayload {
+        dst: LValue<'input>,
+        src: RValue<'input>,
+    },
+
+    Req {
+        dst: LValue<'input>,
+        prototype: cpu::Register,
+        size: RValue<'input>,
+    },
+    Cons {
+        dst: LValue<'input>,
+        car: cpu::Register,
+        cdr: cpu::Register,
+    },
+    Uncons {
+        car: cpu::Register,
+        cdr: cpu::Register,
+        src: RValue<'input>,
+    },
+    Car {
+        dst: LValue<'input>,
+        src: RValue<'input>,
+    },
+    Cdr {
+        dst: LValue<'input>,
+        src: RValue<'input>,
+    },
+    SetCar {
+        dst: RValue<'input>,
+        src: RValue<'input>,
+    },
+    SetCdr {
+        dst: RValue<'input>,
+        src: RValue<'input>,
+    },
     IDiv {
-        div: cpu::Register,
-        rem: cpu::Register,
+        div: LValue<'input>,
+        rem: Option<cpu::Register>,
         op1: cpu::Register,
         op2: RValue<'input>,
     },
     Binary {
         op: cpu::BinaryOp,
-        dst: cpu::Register,
+        dst: LValue<'input>,
         op1: cpu::Register,
         op2: RValue<'input>,
     },
-    MComparison {
-        op: cpu::Comparison,
-        dst: cpu::Register,
-        op1: cpu::Register,
-        op2: RValue<'input>,
+    MakeClosure {
+        dst: LValue<'input>,
+        code: cpu::Register,
+    },
+    Push {
+        src: RValue<'input>,
+    },
+    Pop {
+        dst: LValue<'input>,
+    },
+    Typep {
+        dst: LValue<'input>,
+        src: RValue<'input>,
+        compare: Native<'input>,
     },
     MemCpy {
         dst: cpu::Register,
@@ -73,15 +138,10 @@ pub enum UnresolvedInstruction<'input> {
     // MemSet {
     //     dst: cpu::Register,
     //     src: cpu::Register,
-    //     count: Native,
+    //     count: Count,
     // },
     Call {
         target: RValue<'input>,
-    },
-    Typep {
-        dst: cpu::Register,
-        src: cpu::Register,
-        compare: Native<'input>,
     },
 }
 
@@ -606,29 +666,17 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
     fn parse_push(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("PUSH")?;
-        let reg = self.try_register();
-        if let Some(r) = reg {
-            return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Push {
-                src: r,
-            }));
-        }
-        Err(ParserError::Expected {
-            expected: "A location to push from",
-            rest: self.tokens[self.position..].to_vec(),
-        })
+        let reg = self.expect_rvalue()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Push { src: reg },
+        ))
     }
     fn parse_pop(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("POP")?;
-        let reg = self.try_register();
-        if let Some(r) = reg {
-            return Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Pop {
-                dst: r,
-            }));
-        }
-        Err(ParserError::Expected {
-            expected: "A location to pop to",
-            rest: self.tokens[self.position..].to_vec(),
-        })
+        let r = self.expect_lvalue()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Pop { dst: r },
+        ))
     }
 
     fn expect_rvalue(&mut self) -> Result<RValue<'input>, ParserError<'input>> {
@@ -672,15 +720,6 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         }
     }
 
-    fn parse_mov(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("MOV")?;
-        let dst = self.expect_lvalue()?;
-        self.expect_comma()?;
-        let src = self.expect_rvalue()?;
-        Ok(AssemblyLine::UnresolvedInstruction(
-            UnresolvedInstruction::Mov { dst, src },
-        ))
-    }
     fn parse_mov8(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("MOV8")?;
         let dst = self.expect_lvalue()?;
@@ -694,110 +733,55 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     fn parse_mbin(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         let instr = self.peek().cloned();
         self.next();
-        let dst = self.peek().cloned();
-        match dst {
-            Some(AssemblyToken::Register(dst)) => {
-                self.next();
-                self.expect_comma()?;
-                let op = match instr {
-                    Some(AssemblyToken::Identifier("AADD")) => cpu::MBinaryOp::Add,
-                    Some(AssemblyToken::Identifier("ASUB")) => cpu::MBinaryOp::Sub,
-                    _ => {
-                        return Err(ParserError::Expected {
-                            expected: "ADD or SUB",
-                            rest: self.tokens[self.position..].to_vec(),
-                        });
-                    }
-                };
-                let op1 = self.try_register();
-                let op1 = self.expect(op1, "A source")?;
-                self.expect_comma()?;
-                let op2 = self.expect_rvalue()?;
-                Ok(AssemblyLine::UnresolvedInstruction(
-                    UnresolvedInstruction::MBinary { op, dst, op1, op2 },
-                ))
+        let dst = self.expect_lvalue()?;
+        self.expect_comma()?;
+        let op = match instr {
+            Some(AssemblyToken::Identifier("AADD")) => cpu::MBinaryOp::Add,
+            Some(AssemblyToken::Identifier("ASUB")) => cpu::MBinaryOp::Sub,
+            _ => {
+                return Err(ParserError::Expected {
+                    expected: "ADD or SUB",
+                    rest: self.tokens[self.position..].to_vec(),
+                });
             }
-            _ => Err(ParserError::Expected {
-                expected: "ADD or SUB",
-                rest: self.tokens[self.position..].to_vec(),
-            }),
-        }
-    }
-    fn parse_settag(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("SETTAG")?;
-        let dst = self.try_register();
+        };
+        let op1 = self.try_register();
+        let op1 = self.expect(op1, "A source")?;
         self.expect_comma()?;
-        let dst = self.expect(dst, "A register")?;
-        let src = self.try_register();
-        let src = self.expect(src, "A machine register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::SetTag { dst, src },
+        let op2 = self.expect_rvalue()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::MBinary { op, dst, op1, op2 },
         ))
     }
-    fn parse_gettag(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("GETTAG")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A machine register")?;
-        self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::GetTag { dst, src },
-        ))
-    }
-    fn parse_setpayload(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("SETPAYLOAD")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A register")?;
-        self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A machine register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::SetPayload { dst, src },
-        ))
-    }
-    fn parse_getpayload(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("GETPAYLOAD")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A machine register")?;
-        self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::GetPayload { dst, src },
-        ))
-    }
+
     fn parse_req(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("REQ")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A register")?;
+        let dst = self.expect_lvalue()?;
         self.expect_comma()?;
         let prototype = self.try_register();
         let prototype = self.expect(prototype, "A register")?;
         self.expect_comma()?;
-        let size = self.try_register();
-        let size = self.expect(size, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Req {
-            dst,
-            prototype,
-            size,
-        }))
+        let size = self.expect_rvalue()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Req {
+                dst,
+                prototype,
+                size,
+            },
+        ))
     }
     fn parse_cons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("CONS")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A register")?;
+        let dst = self.expect_lvalue()?;
         self.expect_comma()?;
         let car = self.try_register();
         let car = self.expect(car, "A register")?;
         self.expect_comma()?;
         let cdr = self.try_register();
         let cdr = self.expect(cdr, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Cons {
-            dst,
-            car,
-            cdr,
-        }))
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Cons { dst, car, cdr },
+        ))
     }
     fn parse_uncons(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("UNCONS")?;
@@ -807,63 +791,58 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         let cdr = self.try_register();
         let cdr = self.expect(cdr, "A register")?;
         self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::Uncons { car, cdr, src },
+        let src = self.expect_rvalue()?;
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::Uncons { car, cdr, src },
         ))
     }
-    fn parse_car(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("CAR")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A machine register")?;
+    fn parse_unary(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        let op = self.peek().cloned();
+        self.next();
+        let dst = self.expect_lvalue()?;
         self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Car {
-            dst,
-            src,
+        let src = self.expect_rvalue()?;
+        Ok(AssemblyLine::UnresolvedInstruction(match op {
+            Some(AssemblyToken::Identifier("CAR")) => UnresolvedInstruction::Car { dst, src },
+            Some(AssemblyToken::Identifier("CDR")) => UnresolvedInstruction::Cdr { dst, src },
+            Some(AssemblyToken::Identifier("GETTAG")) => UnresolvedInstruction::GetTag { dst, src },
+            Some(AssemblyToken::Identifier("SETTAG")) => UnresolvedInstruction::SetTag { dst, src },
+            Some(AssemblyToken::Identifier("GETPAYLOAD")) => {
+                UnresolvedInstruction::GetPayload { dst, src }
+            }
+            Some(AssemblyToken::Identifier("SETPAYLOAD")) => {
+                UnresolvedInstruction::SetPayload { dst, src }
+            }
+            Some(AssemblyToken::Identifier("MOV")) => UnresolvedInstruction::Mov { dst, src },
+            _ => {
+                return Err(ParserError::Expected {
+                    expected: "A valid unary operator",
+                    rest: self.tokens[self.position..].to_vec(),
+                });
+            }
         }))
     }
-    fn parse_cdr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("CDR")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A machine register")?;
+    fn parse_unary_lisp(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
+        let op = self.peek().cloned();
+        self.next();
+        let dst = self.expect_rvalue()?;
         self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(cpu::Instruction::Cdr {
-            dst,
-            src,
+        let src = self.expect_rvalue()?;
+        Ok(AssemblyLine::UnresolvedInstruction(match op {
+            Some(AssemblyToken::Identifier("SETCAR")) => UnresolvedInstruction::SetCar { dst, src },
+            Some(AssemblyToken::Identifier("SETCDR")) => UnresolvedInstruction::SetCdr { dst, src },
+            _ => {
+                return Err(ParserError::Expected {
+                    expected: "A valid unary operator",
+                    rest: self.tokens[self.position..].to_vec(),
+                });
+            }
         }))
-    }
-    fn parse_setcar(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("SETCAR")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A machine register")?;
-        self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::SetCar { dst, src },
-        ))
-    }
-    fn parse_setcdr(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
-        self.expect_identifier("SETCDR")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A machine register")?;
-        self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::SetCdr { dst, src },
-        ))
     }
     fn parse_bin(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         let instr = self.peek().cloned();
         self.next();
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A destination register")?;
+        let dst = self.expect_lvalue()?;
         self.expect_comma()?;
         let op = match instr {
             Some(AssemblyToken::Identifier("ADD")) => cpu::BinaryOp::Add,
@@ -888,8 +867,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     }
     fn parse_div(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("DIV")?;
-        let div = self.try_register();
-        let div = self.expect(div, "A destination register")?;
+        let div = self.expect_lvalue()?;
         self.expect_comma()?;
         let rem = self.try_register();
         let rem = self.expect(rem, "A destination register")?;
@@ -899,27 +877,29 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         self.expect_comma()?;
         let op2 = self.expect_rvalue()?;
         Ok(AssemblyLine::UnresolvedInstruction(
-            UnresolvedInstruction::IDiv { div, rem, op1, op2 },
+            UnresolvedInstruction::IDiv {
+                div,
+                rem: Some(rem), // TODO: Handle optional remainder.
+                op1,
+                op2,
+            },
         ))
     }
     fn parse_makeclosure(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("MAKECLOSURE")?;
-        let dst = self.try_register();
+        let dst = self.expect_lvalue()?;
         self.expect_comma()?;
-        let dst = self.expect(dst, "A register")?;
         let code = self.try_register();
         let code = self.expect(code, "A machine register")?;
-        Ok(AssemblyLine::ResolvedInstruction(
-            cpu::Instruction::MakeClosure { dst, code },
+        Ok(AssemblyLine::UnresolvedInstruction(
+            UnresolvedInstruction::MakeClosure { dst, code },
         ))
     }
     fn parse_typep(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         self.expect_identifier("TYPEP")?;
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A place to store result")?;
+        let dst = self.expect_lvalue()?;
         self.expect_comma()?;
-        let src = self.try_register();
-        let src = self.expect(src, "A source")?;
+        let src = self.expect_rvalue()?;
         self.expect_comma()?;
         let sign = self.try_sign().unwrap_or(Sign::Positive);
         let compare = self.expect_any_value(sign)?;
@@ -955,8 +935,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
     fn parse_comparison(&mut self) -> Result<AssemblyLine<'input>, ParserError<'input>> {
         let instr = self.peek().cloned();
         self.next();
-        let dst = self.try_register();
-        let dst = self.expect(dst, "A register")?;
+        let dst = self.expect_lvalue()?;
         self.expect_comma()?;
         let op = match instr {
             Some(AssemblyToken::Identifier("EQ")) => cpu::Comparison::Eq,
@@ -977,7 +956,7 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
         self.expect_comma()?;
         let op2 = self.expect_rvalue()?;
         Ok(AssemblyLine::UnresolvedInstruction(
-            UnresolvedInstruction::MComparison { op, dst, op1, op2 },
+            UnresolvedInstruction::Comparison { op, dst, op1, op2 },
         ))
     }
 
@@ -1003,8 +982,17 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(AssemblyToken::Identifier("PUSH")) => Ok(Some(self.parse_push()?)),
             Some(AssemblyToken::Identifier("POP")) => Ok(Some(self.parse_pop()?)),
 
-            Some(AssemblyToken::Identifier("MOV")) => Ok(Some(self.parse_mov()?)),
+            Some(AssemblyToken::Identifier("CAR")) => Ok(Some(self.parse_unary()?)),
+            Some(AssemblyToken::Identifier("CDR")) => Ok(Some(self.parse_unary()?)),
+            Some(AssemblyToken::Identifier("GETTAG")) => Ok(Some(self.parse_unary()?)),
+            Some(AssemblyToken::Identifier("GETPAYLOAD")) => Ok(Some(self.parse_unary()?)),
+            Some(AssemblyToken::Identifier("SETTAG")) => Ok(Some(self.parse_unary()?)),
+            Some(AssemblyToken::Identifier("SETPAYLOAD")) => Ok(Some(self.parse_unary()?)),
+            Some(AssemblyToken::Identifier("MOV")) => Ok(Some(self.parse_unary()?)),
             Some(AssemblyToken::Identifier("MOV8")) => Ok(Some(self.parse_mov8()?)),
+
+            Some(AssemblyToken::Identifier("SETCAR")) => Ok(Some(self.parse_unary_lisp()?)),
+            Some(AssemblyToken::Identifier("SETCDR")) => Ok(Some(self.parse_unary_lisp()?)),
 
             Some(AssemblyToken::Identifier("AADD")) => Ok(Some(self.parse_mbin()?)),
             Some(AssemblyToken::Identifier("ASUB")) => Ok(Some(self.parse_mbin()?)),
@@ -1024,19 +1012,9 @@ impl<'tokens, 'input> NParser<'tokens, 'input> {
             Some(AssemblyToken::Identifier("LT")) => Ok(Some(self.parse_comparison()?)),
             Some(AssemblyToken::Identifier("LTE")) => Ok(Some(self.parse_comparison()?)),
 
-            Some(AssemblyToken::Identifier("SETTAG")) => Ok(Some(self.parse_settag()?)),
-            Some(AssemblyToken::Identifier("GETTAG")) => Ok(Some(self.parse_gettag()?)),
-            Some(AssemblyToken::Identifier("SETPAYLOAD")) => Ok(Some(self.parse_setpayload()?)),
-            Some(AssemblyToken::Identifier("GETPAYLOAD")) => Ok(Some(self.parse_getpayload()?)),
-
             Some(AssemblyToken::Identifier("REQ")) => Ok(Some(self.parse_req()?)),
             Some(AssemblyToken::Identifier("CONS")) => Ok(Some(self.parse_cons()?)),
             Some(AssemblyToken::Identifier("UNCONS")) => Ok(Some(self.parse_uncons()?)),
-
-            Some(AssemblyToken::Identifier("CAR")) => Ok(Some(self.parse_car()?)),
-            Some(AssemblyToken::Identifier("CDR")) => Ok(Some(self.parse_cdr()?)),
-            Some(AssemblyToken::Identifier("SETCAR")) => Ok(Some(self.parse_setcar()?)),
-            Some(AssemblyToken::Identifier("SETCDR")) => Ok(Some(self.parse_setcdr()?)),
 
             Some(AssemblyToken::Identifier("MAKECLOSURE")) => Ok(Some(self.parse_makeclosure()?)),
             Some(AssemblyToken::Identifier("TYPEP")) => Ok(Some(self.parse_typep()?)),
